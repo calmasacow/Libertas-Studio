@@ -59,8 +59,27 @@ bool wlcap_begin_session(WlCap& cap, const std::string& output_name, bool with_c
 
 /// Wraps an exported Vulkan image as a wl_buffer and captures exactly one frame into it.
 /// On success the VkImage holds the screen contents. Blocks until `ready` or `failed`.
+///
+/// `slot` lets a caller rotate between several images. Capturing repeatedly into ONE image
+/// serializes the compositor against us - it cannot draw the next frame while we hold its only
+/// destination - so a single-buffer measurement understates the achievable rate and invents a
+/// latency tail that the protocol does not have.
 bool wlcap_capture_frame(WlCap& cap, const VkExportedImage& img, std::uint32_t drm_format,
                          std::string& error);
+
+/// Registers `img` as a reusable buffer slot. The wl_buffer is created once and kept, rather than
+/// built and destroyed per frame, which is what the real capture worker must do.
+bool wlcap_add_slot(WlCap& cap, const VkExportedImage& img, std::uint32_t drm_format,
+                    std::string& error);
+
+/// Captures one frame into slot `index`, blocking until that frame is ready.
+///
+/// `out_presented_ns` receives the compositor's presentation timestamp for the frame, when it
+/// sends one. That is the only way to tell "the capture path is slow" from "the screen did not
+/// change": inter-arrival time measures the latter, and on an idle desktop it measures nothing
+/// else at all.
+bool wlcap_capture_slot(WlCap& cap, std::size_t index, std::uint32_t width, std::uint32_t height,
+                        std::uint64_t* out_presented_ns, std::string& error);
 
 /// major:minor of the dmabuf device, for matching against a Vulkan device's DRM properties.
 std::string wlcap_device_str(std::uint64_t dev);

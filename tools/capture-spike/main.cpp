@@ -15,6 +15,7 @@
 #include <lcore/log.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <format>
@@ -45,6 +46,8 @@ usage:
   --output NAME        capture this output by connector name, e.g. DP-1 (implies --wayland)
   --second-gpu MAJ:MIN transfer the frame to a second GPU and import it there (ADR-0007)
   --scale WxH          downscale on the compositing GPU before the cross-GPU transfer
+  --frames N           capture N frames (default 3); use a few hundred to measure throughput
+  --slots N            rotate between N capture buffers (default 4; 1 serializes the compositor)
   --forget             delete the cached restore token and exit
   --sweep              try every modifier variant inside ONE portal session (one picker click)
   --drm-node MAJ:MIN   select the Vulkan device by DRM node (never by index)
@@ -414,7 +417,7 @@ bool run_cross_gpu(libertas::spike::VkCtx& src_ctx, const libertas::spike::VkExp
 int run_wayland_backend(const std::string& output_name, bool with_cursor, bool want_cursor_set,
                         const std::string& prefer_drm_node, std::uint32_t frames,
                         const std::string& second_node, std::uint32_t scale_w,
-                        std::uint32_t scale_h) {
+                        std::uint32_t scale_h, std::uint32_t slots) {
     std::string err;
     libertas::spike::WlCapPtr cap = libertas::spike::wlcap_open(err);
     if (!cap) {
@@ -470,35 +473,75 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
         if (common.empty())
             continue;
 
-        libertas::spike::VkExportedImage img;
-        if (!libertas::spike::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
-                                                   common, false, img, err)) {
-            lc::warn("could not allocate an exportable image for {}: {}",
-                     libertas::spike::fourcc_str(f.drm_format), err);
+        // A ring of buffers, not one. With a single destination the compositor is serialized
+        // against us - it cannot draw frame N+1 while we hold its only target - so a one-buffer
+        // measurement both understates the rate and invents a latency tail.
+        std::vector<libertas::spike::VkExportedImage> ring(slots);
+        bool alloc_ok = true;
+        for (std::uint32_t si = 0; si < slots; ++si) {
+            if (!libertas::spike::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
+                                                       common, false, ring[si], err)) {
+                lc::warn("could not allocate exportable image {} for {}: {}", si,
+                         libertas::spike::fourcc_str(f.drm_format), err);
+                alloc_ok = false;
+                break;
+            }
+            if (!libertas::spike::wlcap_add_slot(*cap, ring[si], f.drm_format, err)) {
+                lc::warn("could not register buffer slot {}: {}", si, err);
+                alloc_ok = false;
+                break;
+            }
+        }
+        if (!alloc_ok) {
+            for (auto& r : ring)
+                libertas::spike::vk_destroy_exportable(*vk, r);
             continue;
         }
-        lc::info("allocated {}x{} {} modifier {} planes {} stride {} -> dmabuf fd {}", img.width,
+        libertas::spike::VkExportedImage& img = ring.front();
+        lc::info("allocated {} slot(s) of {}x{} {} modifier {} planes {} stride {}, fd {}", slots,
+                 img.width,
                  img.height, libertas::spike::fourcc_str(f.drm_format),
                  libertas::spike::modifier_str(img.modifier), img.n_planes, img.strides[0],
                  img.dmabuf_fd);
 
         std::uint32_t captured = 0;
         std::vector<std::uint8_t> pixels;
+        std::vector<double> frame_ms;   // wall time between delivered frames
+        std::vector<double> present_ms; // compositor-reported time between the frames themselves
+        frame_ms.reserve(frames);
+        std::uint64_t prev_present = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        auto prev = t0;
         for (std::uint32_t i = 0; i < frames; ++i) {
-            if (!libertas::spike::wlcap_capture_frame(*cap, img, f.drm_format, err)) {
+            std::uint64_t presented = 0;
+            if (!libertas::spike::wlcap_capture_slot(*cap, i % slots, caps.width, caps.height,
+                                                     &presented, err)) {
                 lc::error("capture failed on frame {}: {}", i, err);
                 break;
             }
             ++captured;
+            const auto now = std::chrono::steady_clock::now();
+            frame_ms.push_back(std::chrono::duration<double, std::milli>(now - prev).count());
+            prev = now;
+            if (presented != 0 && prev_present != 0 && presented > prev_present)
+                present_ms.push_back(static_cast<double>(presented - prev_present) / 1e6);
+            if (presented != 0)
+                prev_present = presented;
         }
+        const double total_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                .count();
         if (captured == 0) {
-            libertas::spike::vk_destroy_exportable(*vk, img);
+            for (auto& r : ring)
+                libertas::spike::vk_destroy_exportable(*vk, r);
             continue;
         }
 
-        if (!libertas::spike::vk_readback_exported(*vk, img, true, pixels, err)) {
+        libertas::spike::VkExportedImage& last = ring[(captured - 1) % slots];
+        if (!libertas::spike::vk_readback_exported(*vk, last, true, pixels, err)) {
             lc::error("readback failed: {}", err);
-            libertas::spike::vk_destroy_exportable(*vk, img);
+            for (auto& r : ring)
+                libertas::spike::vk_destroy_exportable(*vk, r);
             return 5;
         }
 
@@ -509,18 +552,51 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
             if ((pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0)
                 ++nonzero;
         }
-        const std::uint32_t total = img.width * img.height;
+        const std::uint32_t total = last.width * last.height;
 
+        // Report the distribution, not just the mean: a capture path that averages 60 fps but
+        // stalls for 40 ms once a second drops frames on a live stream, and an average hides that
+        // completely.
         std::printf("\n=== result ===\n");
-        std::printf("  frames        : %u captured\n", captured);
+        std::printf("  frames        : %u captured in %.1f ms\n", captured, total_ms);
+        if (!frame_ms.empty()) {
+            std::vector<double> sorted = frame_ms;
+            std::sort(sorted.begin(), sorted.end());
+            const double mean = total_ms / static_cast<double>(frame_ms.size());
+            std::printf("  per frame     : mean %.2f ms (%.1f fps)  min %.2f  p50 %.2f  p99 %.2f  "
+                        "max %.2f\n",
+                        mean, mean > 0 ? 1000.0 / mean : 0.0, sorted.front(),
+                        sorted[sorted.size() / 2], sorted[(sorted.size() * 99) / 100],
+                        sorted.back());
+            if (!present_ms.empty()) {
+                std::vector<double> ps = present_ms;
+                std::sort(ps.begin(), ps.end());
+                double sum = 0;
+                for (double v : ps)
+                    sum += v;
+                const double pmean = sum / static_cast<double>(ps.size());
+                std::printf("  presented gap : mean %.2f ms (%.1f fps)  p50 %.2f  p99 %.2f\n",
+                            pmean, pmean > 0 ? 1000.0 / pmean : 0.0, ps[ps.size() / 2],
+                            ps[(ps.size() * 99) / 100]);
+                std::printf("      ^ this is how often the SCREEN CHANGED. Inter-arrival time\n");
+                std::printf("        above cannot be faster than this, so on a still desktop it\n");
+                std::printf("        measures the content, not the capture path.\n");
+            }
+            const double budget = 1000.0 / 60.0;
+            const std::size_t over = static_cast<std::size_t>(
+                std::count_if(sorted.begin(), sorted.end(),
+                              [budget](double v) { return v > budget; }));
+            std::printf("  over 60fps budget (%.2f ms): %zu / %zu frames\n", budget, over,
+                        sorted.size());
+        }
         std::printf("  modifier      : %s\n", libertas::spike::modifier_str(img.modifier).c_str());
-        std::printf("  readback      : %zu bytes (%ux%u)\n", pixels.size(), img.width, img.height);
+        std::printf("  readback      : %zu bytes (%ux%u)\n", pixels.size(), last.width, last.height);
         std::printf("  non-black px  : %u / %u (%.1f%%)\n", nonzero, total,
                     total > 0 ? 100.0 * nonzero / total : 0.0);
         std::printf("  fnv checksum  : 0x%016lx\n", checksum);
 
         if (std::FILE* fp = std::fopen("/tmp/capture-spike-frame.ppm", "wb"); fp != nullptr) {
-            std::fprintf(fp, "P6\n%u %u\n255\n", img.width, img.height);
+            std::fprintf(fp, "P6\n%u %u\n255\n", last.width, last.height);
             for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) {
                 const std::uint8_t rgb[3] = {pixels[i + 2], pixels[i + 1], pixels[i]};
                 std::fwrite(rgb, 1, 3, fp);
@@ -532,10 +608,11 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
         // ---- ADR-0007's cross-GPU transfer, measured rather than assumed.
         bool cross_ok = true;
         if (!second_node.empty()) {
-            cross_ok = run_cross_gpu(*vk, img, f.drm_format, second_node, scale_w, scale_h);
+            cross_ok = run_cross_gpu(*vk, last, f.drm_format, second_node, scale_w, scale_h);
         }
 
-        libertas::spike::vk_destroy_exportable(*vk, img);
+        for (auto& r : ring)
+            libertas::spike::vk_destroy_exportable(*vk, r);
         const bool pass = nonzero > 0 && cross_ok;
         std::printf("\n  VERDICT: %s\n\n",
                     pass ? "PASS - compositor rendered into our Vulkan image, real pixel content"
@@ -567,6 +644,8 @@ int main(int argc, char** argv) {
     bool cursor_set = false;
     std::string wl_output;
     std::string second_node;
+    std::uint32_t wl_frames = 3;
+    std::uint32_t wl_slots = 4;
     std::uint32_t scale_w = 0;
     std::uint32_t scale_h = 0;
     bool explicit_token = false;
@@ -627,6 +706,14 @@ int main(int argc, char** argv) {
         } else if (a == "--second-gpu" && i + 1 < args.size()) {
             second_node = std::string(args[++i]);
             use_wayland = true;
+        } else if (a == "--slots" && i + 1 < args.size()) {
+            wl_slots = static_cast<std::uint32_t>(
+                std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
+            if (wl_slots == 0)
+                wl_slots = 1;
+        } else if (a == "--frames" && i + 1 < args.size()) {
+            wl_frames = static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(),
+                                                                nullptr, 10));
         } else if (a == "--scale" && i + 1 < args.size()) {
             const std::string v(args[++i]);
             if (const std::size_t x = v.find('x'); x != std::string::npos) {
@@ -650,7 +737,8 @@ int main(int argc, char** argv) {
     // through into the portal flow (ADR-0011).
     if (use_wayland)
         return run_wayland_backend(wl_output, req.cursor_mode == libertas::spike::CursorMode::Embedded,
-                                   cursor_set, prefer_drm_node, 3, second_node, scale_w, scale_h);
+                                   cursor_set, prefer_drm_node, wl_frames, second_node, scale_w, scale_h,
+                                   wl_slots);
 
     // -------------------------------------------------------- stage 0: Vulkan, before any click
     // Bring Vulkan up first so negotiation can advertise the modifiers this device can really

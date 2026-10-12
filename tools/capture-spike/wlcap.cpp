@@ -50,10 +50,13 @@ struct WlCap {
     bool caps_done = false;
     bool stopped = false;
 
+    std::vector<wl_buffer*> slots;
+
     // Per-frame state.
     bool frame_ready = false;
     bool frame_failed = false;
     std::uint32_t frame_failure_reason = 0;
+    std::uint64_t frame_presented_ns = 0;
 };
 
 namespace {
@@ -165,8 +168,13 @@ constexpr ext_image_copy_capture_session_v1_listener kSessionListener = {
 void on_frame_transform(void*, ext_image_copy_capture_frame_v1*, std::uint32_t) {}
 void on_frame_damage(void*, ext_image_copy_capture_frame_v1*, std::int32_t, std::int32_t,
                      std::int32_t, std::int32_t) {}
-void on_frame_presentation_time(void*, ext_image_copy_capture_frame_v1*, std::uint32_t,
-                                std::uint32_t, std::uint32_t) {}
+void on_frame_presentation_time(void* data, ext_image_copy_capture_frame_v1*,
+                                std::uint32_t tv_sec_hi, std::uint32_t tv_sec_lo,
+                                std::uint32_t tv_nsec) {
+    auto* cap = static_cast<WlCap*>(data);
+    const std::uint64_t sec = (static_cast<std::uint64_t>(tv_sec_hi) << 32) | tv_sec_lo;
+    cap->frame_presented_ns = sec * 1'000'000'000ULL + tv_nsec;
+}
 
 void on_frame_ready(void* data, ext_image_copy_capture_frame_v1*) {
     static_cast<WlCap*>(data)->frame_ready = true;
@@ -370,9 +378,66 @@ bool wlcap_capture_frame(WlCap& cap, const VkExportedImage& img, std::uint32_t d
     return ok;
 }
 
+bool wlcap_add_slot(WlCap& cap, const VkExportedImage& img, std::uint32_t drm_format,
+                    std::string& error) {
+    zwp_linux_buffer_params_v1* params = zwp_linux_dmabuf_v1_create_params(cap.dmabuf);
+    for (std::uint32_t i = 0; i < img.n_planes; ++i)
+        zwp_linux_buffer_params_v1_add(params, img.dmabuf_fd, i, img.offsets[i], img.strides[i],
+                                       static_cast<std::uint32_t>(img.modifier >> 32),
+                                       static_cast<std::uint32_t>(img.modifier & 0xffffffffu));
+    wl_buffer* buffer = zwp_linux_buffer_params_v1_create_immed(
+        params, static_cast<std::int32_t>(img.width), static_cast<std::int32_t>(img.height),
+        drm_format, 0);
+    zwp_linux_buffer_params_v1_destroy(params);
+    if (buffer == nullptr) {
+        error = "create_immed failed for buffer slot";
+        return false;
+    }
+    cap.slots.push_back(buffer);
+    return true;
+}
+
+bool wlcap_capture_slot(WlCap& cap, std::size_t index, std::uint32_t width, std::uint32_t height,
+                        std::uint64_t* out_presented_ns, std::string& error) {
+    if (index >= cap.slots.size()) {
+        error = "slot index out of range";
+        return false;
+    }
+    ext_image_copy_capture_frame_v1* frame =
+        ext_image_copy_capture_session_v1_create_frame(cap.session);
+    ext_image_copy_capture_frame_v1_add_listener(frame, &kFrameListener, &cap);
+    ext_image_copy_capture_frame_v1_attach_buffer(frame, cap.slots[index]);
+    ext_image_copy_capture_frame_v1_damage_buffer(frame, 0, 0, static_cast<std::int32_t>(width),
+                                                  static_cast<std::int32_t>(height));
+    ext_image_copy_capture_frame_v1_capture(frame);
+
+    cap.frame_ready = false;
+    cap.frame_failed = false;
+    cap.frame_presented_ns = 0;
+    bool ok = true;
+    while (!cap.frame_ready && !cap.frame_failed) {
+        if (wl_display_dispatch(cap.display) < 0) {
+            error = "wl_display_dispatch failed while waiting for the frame";
+            ok = false;
+            break;
+        }
+    }
+    if (ok && cap.frame_failed) {
+        error = std::format("compositor failed the capture: {}",
+                            frame_failure_str(cap.frame_failure_reason));
+        ok = false;
+    }
+    if (out_presented_ns != nullptr)
+        *out_presented_ns = cap.frame_presented_ns;
+    ext_image_copy_capture_frame_v1_destroy(frame);
+    return ok;
+}
+
 void wlcap_close(WlCap* cap) {
     if (cap == nullptr)
         return;
+    for (wl_buffer* b : cap->slots)
+        wl_buffer_destroy(b);
     if (cap->session != nullptr)
         ext_image_copy_capture_session_v1_destroy(cap->session);
     if (cap->source != nullptr)
