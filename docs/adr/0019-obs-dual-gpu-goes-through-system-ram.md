@@ -204,11 +204,31 @@ The same instrumentation answered a question nobody had asked. In normal operati
 record 0.054 + submit 0.023 + gpu-wait 1.567 + copy 1.161
 ```
 
-The GPU is not the cost, and neither is recording. **It is the copy** - and there are two of them,
-because `vk_convert_nv12` memcpys the staging buffer into a vector and `encoder_video_nv12` then
-copies that vector into FFmpeg's frame. 5.27 MiB moved twice for no reason. Writing the staging
-buffer straight into the AVFrame's planes removes one of them outright, and is the obvious next
-cut before anything more ambitious.
+The GPU is not the cost, and neither is recording. **It is the copy** - and counting them properly
+found **four**, not two:
+
+1. staging buffer -> `Nv12Frame::data`, inside `vk_convert_nv12`;
+2. `local_nv12` -> `latest.nv12`, handing the frame to the encoder thread;
+3. `latest.nv12` -> the encoder thread's `nv12`, taking it;
+4. `nv12.data` -> the AVFrame's planes.
+
+Copies 2 and 3 are pure handoff between two threads and buy nothing: a `std::swap` exchanges the
+buffers in O(1) and lets them rotate instead of being duplicated. Done, and the frames stay intact
+(1800 frames, clean decode, smooth luma continuity across duplicates - a torn frame would show
+there first).
+
+**But the stage timings did not move, and that is the finding.** Copies 2 and 3 happened *outside*
+every timer: copy 2 after the `convert+readback` clock stopped, copy 3 before the `encode` clock
+started. They were real work - 2 x 5.27 MiB per new frame on the GPU path, 2 x 14.06 MiB on the
+CPU path - and **no number in this document ever contained them.** At the 162 captures/s of the
+vkcube run that is 1.71 GiB/s of memory traffic that was invisible.
+
+This is the third time in one day that the expensive thing was outside the instrumentation:
+swscale sat outside the `encode+convert` timer (ADR-0018), the readback's real cost was hidden
+behind a two-sample mean (ADR-0018), and now two full-frame copies sat between the timers
+entirely. The per-stage totals quoted above are therefore **lower bounds on both paths**, not
+complete accounts. A timer that brackets a named stage does not measure a pipeline; only wall
+clock over the whole loop does, and that is the instrument this spike should have had first.
 
 ### Confirmed on real content
 

@@ -26,6 +26,7 @@
 #include <string>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -321,10 +322,14 @@ int main(int argc, char** argv) {
             }
             {
                 std::lock_guard<std::mutex> lk(latest.mu);
+                // Swap, never assign. These are 5.27 MiB (NV12) or 14.06 MiB (BGRA) vectors,
+                // and assigning them copies the lot. Swapping hands the filled buffer over and
+                // takes the stale one back to fill next time, so the buffers rotate between the
+                // two threads instead of being duplicated. Four copies per frame become two.
                 if (gpu_convert)
-                    latest.nv12 = local_nv12;
+                    std::swap(latest.nv12, local_nv12);
                 else
-                    latest.pixels = local;
+                    std::swap(latest.pixels, local);
                 latest.presented_ns = presented_ns;
                 ++latest.seq;
             }
@@ -342,9 +347,9 @@ int main(int argc, char** argv) {
                 std::lock_guard<std::mutex> lk(latest.mu);
                 if (latest.seq > 0) {
                     if (gpu_convert)
-                        nv12 = latest.nv12;
+                        std::swap(nv12, latest.nv12);
                     else
-                        pixels = latest.pixels;
+                        std::swap(pixels, latest.pixels);
                     last_seq = latest.seq;
                     break;
                 }
@@ -395,10 +400,11 @@ int main(int argc, char** argv) {
                 break;
             }
             if (latest.seq != last_seq) {
+                // Swap rather than copy: see the note on the producer side.
                 if (gpu_convert)
-                    nv12 = latest.nv12;
+                    std::swap(nv12, latest.nv12);
                 else
-                    pixels = latest.pixels;
+                    std::swap(pixels, latest.pixels);
                 last_seq = latest.seq;
                 fresh = true;
             }
