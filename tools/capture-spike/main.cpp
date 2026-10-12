@@ -11,6 +11,7 @@
 #include "stream.hpp"
 #include "vk_import.hpp"
 #include "wlcap.hpp"
+#include "v4l2cap.hpp"
 
 #include <lcore/log.hpp>
 
@@ -48,6 +49,9 @@ usage:
   --scale WxH          downscale on the compositing GPU before the cross-GPU transfer
   --frames N           capture N frames (default 3); use a few hundred to measure throughput
   --slots N            rotate between N capture buffers (default 4; 1 serializes the compositor)
+  --v4l2 DEVICE        capture from a V4L2 device (capture card, webcam) and report its timing
+  --v4l2-size WxH      request this capture size      --v4l2-format NV12   request this fourcc
+  --v4l2-fps N         request this frame rate        --v4l2-dmabuf        test VIDIOC_EXPBUF
   --forget             delete the cached restore token and exit
   --sweep              try every modifier variant inside ONE portal session (one picker click)
   --drm-node MAJ:MIN   select the Vulkan device by DRM node (never by index)
@@ -312,6 +316,82 @@ bool acquire_capture_session(libertas::spike::PortalRequest req, Acquired& out,
     }
     error = "could not acquire a usable capture session";
     return false;
+}
+
+/// Captures from a V4L2 device and reports timing from the DRIVER's timestamps.
+///
+/// Two things this answers that nothing else can: whether a capture card is actually receiving a
+/// signal (it streams black frames at full rate when it is not), and what rate the source is
+/// really sending - which need not be what either machine was configured for.
+int run_v4l2(const libertas::spike::V4l2Config& cfg) {
+    libertas::spike::V4l2Result r;
+    std::string err;
+    if (!libertas::spike::v4l2_capture(cfg, r, err)) {
+        lc::error("v4l2 capture failed: {}", err);
+        return 3;
+    }
+    if (!err.empty())
+        lc::warn("capture ended early: {}", err);
+
+    std::printf("\n=== %s ===\n", cfg.device.c_str());
+    std::printf("  negotiated    : %ux%u %s\n", r.width, r.height,
+                libertas::spike::v4l2_fourcc_str(r.fourcc).c_str());
+    std::printf("  frames        : %u\n", r.captured);
+    std::printf("  dmabuf export : %s\n", r.dmabuf_exported ? "yes (zero-copy possible)"
+                                                             : "no (mmap copy required)");
+
+    const auto stats = [](std::vector<double> v, const char* label) {
+        if (v.empty())
+            return;
+        std::sort(v.begin(), v.end());
+        double sum = 0;
+        for (double x : v)
+            sum += x;
+        const double mean = sum / static_cast<double>(v.size());
+        std::printf("  %-13s : mean %.3f ms (%.2f fps)  p50 %.3f  p99 %.3f  max %.3f\n", label,
+                    mean, mean > 0 ? 1000.0 / mean : 0.0, v[v.size() / 2],
+                    v[(v.size() * 99) / 100], v.back());
+    };
+    stats(r.driver_ms, "driver gap");
+    stats(r.wall_ms, "wall gap");
+
+    // Signal detection, because this device has no ioctl for it.
+    //
+    // Measured on the 4K X: with no input it streams Y=0 everywhere (and neutral chroma 128). With
+    // a valid input it is limited-range Rec.709, so even true video black is Y=16. That gap is the
+    // discriminator - but only on the luma plane, and only after the device has settled.
+    const std::uint32_t settle = r.luma.size() > 8 ? 4u : 0u;
+    std::uint32_t startup_black = 0;
+    for (std::size_t i = 0; i < r.luma_max.size() && r.luma_max[i] == 0; ++i)
+        ++startup_black;
+
+    double lmean = 0;
+    unsigned lo = 255;
+    unsigned hi = 0;
+    std::size_t n = 0;
+    for (std::size_t i = settle; i < r.luma.size(); ++i) {
+        lmean += r.luma[i];
+        lo = std::min<unsigned>(lo, r.luma_min[i]);
+        hi = std::max<unsigned>(hi, r.luma_max[i]);
+        ++n;
+    }
+    lmean = n > 0 ? lmean / static_cast<double>(n) : 0.0;
+
+    std::printf("  luma (plane 0): mean %.2f  min %u  max %u   [first %zu frames skipped]\n", lmean,
+                lo, hi, static_cast<std::size_t>(settle));
+    std::printf("  startup black : %u frame(s) of Y=0 before content\n", startup_black);
+
+    const bool signal = hi > 0;
+    if (!signal) {
+        std::printf("  SIGNAL        : ABSENT - luma is identically 0. The card streams at full "
+                    "rate with no input, so frame flow alone proves nothing.\n");
+    } else if (hi <= 16) {
+        std::printf("  SIGNAL        : PRESENT, picture is black (luma pinned at limited-range "
+                    "black, not 0 - the source is sending, the content is dark)\n");
+    } else {
+        std::printf("  SIGNAL        : PRESENT  (%s range)\n", lo < 16 ? "full" : "limited");
+    }
+    return signal ? 0 : 6;
 }
 
 /// Hands a captured frame to a *second* GPU, the way a second encoder would receive it.
@@ -646,6 +726,8 @@ int main(int argc, char** argv) {
     std::string second_node;
     std::uint32_t wl_frames = 3;
     std::uint32_t wl_slots = 4;
+    libertas::spike::V4l2Config v4l2cfg;
+    bool use_v4l2 = false;
     std::uint32_t scale_w = 0;
     std::uint32_t scale_h = 0;
     bool explicit_token = false;
@@ -706,6 +788,23 @@ int main(int argc, char** argv) {
         } else if (a == "--second-gpu" && i + 1 < args.size()) {
             second_node = std::string(args[++i]);
             use_wayland = true;
+        } else if (a == "--v4l2" && i + 1 < args.size()) {
+            v4l2cfg.device = std::string(args[++i]);
+            use_v4l2 = true;
+        } else if (a == "--v4l2-size" && i + 1 < args.size()) {
+            const std::string v(args[++i]);
+            if (const std::size_t x = v.find('x'); x != std::string::npos) {
+                v4l2cfg.width = static_cast<std::uint32_t>(std::strtoul(v.c_str(), nullptr, 10));
+                v4l2cfg.height =
+                    static_cast<std::uint32_t>(std::strtoul(v.c_str() + x + 1, nullptr, 10));
+            }
+        } else if (a == "--v4l2-format" && i + 1 < args.size()) {
+            v4l2cfg.fourcc = libertas::spike::v4l2_fourcc_parse(std::string(args[++i]));
+        } else if (a == "--v4l2-fps" && i + 1 < args.size()) {
+            v4l2cfg.fps_num =
+                static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
+        } else if (a == "--v4l2-dmabuf") {
+            v4l2cfg.export_dmabuf = true;
         } else if (a == "--slots" && i + 1 < args.size()) {
             wl_slots = static_cast<std::uint32_t>(
                 std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
@@ -731,6 +830,11 @@ int main(int argc, char** argv) {
             lc::error("unknown argument '{}' (try --help)", a);
             return 1;
         }
+    }
+
+    if (use_v4l2) {
+        v4l2cfg.frames = wl_frames > 3 ? wl_frames : 120;
+        return run_v4l2(v4l2cfg);
     }
 
     // The Wayland backend is a different path end to end, so it returns rather than falling

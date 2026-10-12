@@ -1,0 +1,45 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace libertas::spike {
+
+struct V4l2Config {
+    std::string device;
+    std::uint32_t width = 0;      ///< 0 = keep the device's current setting
+    std::uint32_t height = 0;
+    std::uint32_t fourcc = 0;     ///< V4L2_PIX_FMT_*; 0 = keep current
+    std::uint32_t fps_num = 0;    ///< 0 = do not request a rate
+    std::uint32_t fps_den = 1;
+    std::uint32_t frames = 120;
+    bool export_dmabuf = false;   ///< use VIDIOC_EXPBUF to test the zero-copy path
+};
+
+struct V4l2Result {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t fourcc = 0;
+    std::uint32_t captured = 0;
+    bool dmabuf_exported = false;
+    /// Intervals from the DRIVER's buffer timestamps, which are when the frame arrived at the
+    /// hardware - not when our process got round to reading it.
+    std::vector<double> driver_ms;
+    std::vector<double> wall_ms;
+    /// Per-frame statistics over the LUMA PLANE ONLY. A capture card with no input still delivers
+    /// frames at full rate, and they are black, so "frames are flowing" is not evidence of signal.
+    std::vector<double> luma;
+    std::vector<std::uint8_t> luma_min;
+    std::vector<std::uint8_t> luma_max;
+};
+
+/// Captures from a V4L2 device and reports timing from the driver's own timestamps.
+bool v4l2_capture(const V4l2Config& cfg, V4l2Result& out, std::string& error);
+
+std::string v4l2_fourcc_str(std::uint32_t fourcc);
+std::uint32_t v4l2_fourcc_parse(const std::string& s);
+
+} // namespace libertas::spike

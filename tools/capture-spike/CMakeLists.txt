@@ -16,6 +16,7 @@ add_executable(capture-spike
     stream.cpp
     vk_import.cpp
     wlcap.cpp
+    v4l2cap.cpp
 )
 
 # ext-image-copy-capture-v1 is the primary Linux capture backend (ADR-0011); the portal path above
