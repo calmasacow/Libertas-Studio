@@ -168,6 +168,33 @@ GVariant* build_start(const std::string& token, void* ud) {
 
 } // namespace
 
+void close_screencast_session(const std::string& session_handle) {
+    if (session_handle.empty())
+        return;
+
+    GError* err = nullptr;
+    GDBusConnection* bus = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &err);
+    if (bus == nullptr) {
+        if (err != nullptr)
+            g_error_free(err);
+        return;
+    }
+
+    GVariant* reply = g_dbus_connection_call_sync(
+        bus, kBus, session_handle.c_str(), "org.freedesktop.portal.Session", "Close", nullptr,
+        nullptr, G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, &err);
+    if (reply != nullptr)
+        g_variant_unref(reply);
+    if (err != nullptr) {
+        lc::debug("session Close failed (likely already gone): {}",
+                  err->message != nullptr ? err->message : "?");
+        g_error_free(err);
+    } else {
+        lc::debug("closed portal session {}", session_handle);
+    }
+    g_object_unref(bus);
+}
+
 bool negotiate_screencast(const PortalRequest& req, PortalSession& out, std::string& error) {
     Ctx ctx;
     GError* err = nullptr;

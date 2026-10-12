@@ -13,6 +13,7 @@ add_executable(capture-spike
     main.cpp
     portal.cpp
     stream.cpp
+    vk_import.cpp
 )
 
 target_link_libraries(capture-spike PRIVATE

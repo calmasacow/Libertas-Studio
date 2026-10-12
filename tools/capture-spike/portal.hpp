@@ -41,6 +41,11 @@ struct PortalRequest {
     std::uint32_t persist_mode = 2;
 };
 
+/// Closes a ScreenCast session via org.freedesktop.portal.Session.Close.
+/// MUST be called when done: a leaked session leaves a live capture stream on the compositor side,
+/// and after a few of those, new sessions fail to negotiate a format.
+void close_screencast_session(const std::string& session_handle);
+
 /// Drives the full portal handshake: CreateSession -> SelectSources -> Start -> OpenPipeWireRemote.
 /// Blocks on a private GMainLoop. Shows a picker dialog unless a valid restore_token is supplied.
 /// Returns false and fills `error` on failure (including user cancellation).

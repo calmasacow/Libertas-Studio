@@ -2,9 +2,9 @@
 SPDX-FileCopyrightText: Libertas-Studio contributors
 SPDX-License-Identifier: GPL-3.0-or-later
 -->
-# ADR 0009 — Capture path: portal -> PipeWire -> dmabuf works; the negotiation protocol in full
+# ADR 0009 — Capture path: portal -> PipeWire -> dmabuf works; Vulkan import unproven
 
-- **Status:** accepted (stages 1-2 of the capture spike)
+- **Status:** accepted for stages 1-2; **stage 3 (Vulkan import) is written but NOT yet proven**
 - **Date:** 2026-10-11
 
 ## Context
@@ -57,23 +57,42 @@ Two C++-specific traps: SPA's `SPA_RECTANGLE`/`SPA_FRACTION` are C compound lite
 cannot be taken in C++ (use named constants), and `std::format` needs a compile-time format string
 so runtime-built shell commands must be concatenated.
 
-## The failure that wasted the most time: a stale restore token
+## Correction: the restore-token theory was wrong
 
-`--restore-token <tok>` with a token from an earlier session caused every negotiation to fail with
-`no more input formats`, with `param_changed` never firing. The identical code on a **fresh**
-session, picker and all, negotiated immediately. The portal happily returns a session handle and a
-node id for a token it cannot really restore, and the resulting node never produces a usable format.
+An earlier draft of this ADR blamed intermittent `no more input formats` failures on stale
+`--restore-token` values. **That conclusion was incorrect** and is retracted. Two real causes were
+found afterwards, and a third remains open:
 
-**Consequences for the real implementation:**
+1. **Four monitors, each a different capture source.** This machine has DP-1, DP-2, DP-3 (all
+   2560x1440@165) and HDMI-A-3 (3840x2160@60). The portal picker selects one per session, and the
+   spike logs `mapping_id` — runs that "succeeded" were DP-3 and DP-1, failures were other picks.
+   Comparisons of modifier lists across runs were therefore comparing *different sources*, which is
+   not an experiment. **Any future measurement must pin the output** (log and assert `mapping_id`).
+2. **Leaked portal sessions.** `org.freedesktop.portal.Session.Close()` was never called, so every
+   run left a live capture session on the compositor. Adding the close improved consecutive-run
+   success from roughly 1-in-3 to 3-in-4. A `SessionCloser` RAII guard now runs on every exit path.
+   **A real implementation must close its sessions**; leaking them degrades the compositor for every
+   subsequent client, not just itself.
+3. **Still unexplained:** negotiation remains intermittent even with sessions closed and the output
+   held constant, and restarting both `xdg-desktop-portal` and
+   `xdg-desktop-portal-hyprland` did not restore reliability. No leaked PipeWire nodes were visible
+   in `pw-dump` (0 screencast-related of 54 total), so the residual state is likely inside Hyprland's
+   own screencopy bookkeeping. Unresolved.
 
-- **Never trust a restore token blindly.** Treat a negotiation failure on a restored session as
-  "token invalid": discard it and fall back to a fresh session with the picker, rather than
-  reporting a capture error to the user.
-- Persist restore tokens, but **validate by successful negotiation**, not by the portal's acceptance
-  of the token.
-- Diagnostics must distinguish "the compositor offered nothing we can use" from "this session is
-  dead". `--dump-formats` exists for exactly this, and asks the node for its `EnumFormat` params
-  via the registry rather than guessing.
+## A harness bug to avoid repeating
+
+A `--sweep` mode was added to test every modifier variant inside one portal session (one picker
+interaction instead of dozens). It reported *all* variants failing, including ones that had just
+succeeded standalone — a result that is **invalid**, because:
+
+- `run_stream` calls `pw_init()` and `pw_deinit()` per invocation, and those are not reliably
+  re-entrant within a process;
+- the fd from `OpenPipeWireRemote` is effectively single-use, so `dup()`-ing it per attempt does not
+  give independent connections.
+
+The fix is to hold **one** `pw_init` + `pw_context` + `pw_core` for the process lifetime and create
+and destroy only `pw_stream` objects inside it — which is also how the real capture worker must be
+structured, since it will hold a long-lived connection and restart streams on reconfiguration.
 
 ## What the compositor actually offers
 
@@ -92,9 +111,29 @@ that the modifier list is per-format. `DRM_FORMAT_MOD_LINEAR` is *not* in the ad
 this node, yet LINEAR is what the fixation round settled on — so the advertised enumeration is not
 the whole truth, and the fixation result is the only authority on what we actually got.
 
+## Honest status of stage 3
+
+The Vulkan import path is **written, compiling, and never successfully exercised.** It has not failed
+either: negotiation never survived long enough in a stage-3 run to hand it a frame. Nothing here
+should be read as evidence either way about whether the import works.
+
+What stage 3 *did* establish, via `vkGetPhysicalDeviceFormatProperties2` +
+`VkDrmFormatModifierPropertiesListEXT` on the RTX 5080 for `DRM_FORMAT_ARGB8888`:
+
+```
+importable: NVIDIA(0x300000000606010 .. 0x300000000606015), LINEAR     (7 total)
+```
+
+And one genuinely interesting mismatch: a successful stage-2 run settled on
+**`NVIDIA(0x300000000e08014)`**, which is **not** in the device's importable list, while the node's
+advertised set contained both `0x...606010-015` and `0x...e08010-015`. If that holds up, it is
+exactly the "accept a format then fail at import" trap the design set out to avoid, and the reason
+modifier intersection must be computed from the Vulkan list rather than assumed. **It needs
+confirming on a pinned output before being treated as fact.**
+
 ## Still open
 
-- **Stage 3: Vulkan import.** Bring the dmabuf fd into a `VkImage` via
+- **Prove stage 3.** Bring the dmabuf fd into a `VkImage` via
   `VK_EXT_image_drm_format_modifier` + `VK_KHR_external_memory_fd`, with `sync_file` acquire/release
   on an exported timeline semaphore, and prove correctness by readback.
 - The modifier list we advertise should come from
