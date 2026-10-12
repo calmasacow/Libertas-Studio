@@ -96,6 +96,20 @@ sampled** — one every 5.4 s, about 5300 over an eight-hour show. And `driver s
 at all, because it counts frames the **card** produced, not frames the **source** sent. The loss
 happens upstream of the counter entirely.
 
+**Scope correction.** An earlier draft of this ADR presented the ~5300 lost frames as a problem to
+solve. Field evidence says otherwise, and the correction matters: the operator runs a 120 Hz
+mirrored output captured at **59.94**, and a 6-hour unlisted YouTube broadcast under that
+configuration produced roughly **20 dropped frames in total, all attributed to render-lag and none
+to capture.** The drift is real but its cost is configuration-dependent. When capture rate is
+roughly half the source rate the pipeline is already decimating ~2:1, every captured frame simply
+takes whatever is on the wire, and "a source frame was never sampled" has no visible consequence -
+half of them are being discarded by design. The drift only produces a visible periodic hitch in
+the **1:1 case**, where a frame-for-frame correspondence is implied but not maintained.
+
+The practical rule is therefore narrower than the measurement first suggested: *do not capture at
+the source's own rate unless the card genlocks to it.* Capturing at a clean fraction of the source
+rate is robust, and is what already works in production here.
+
 This extends ADR-0013 rather than contradicting it. There, the lesson was that inter-arrival time
 measures content, so trust the producer's timestamp. Here, even the producer's own counter is
 blind, because the producer is not the origin. Confirming such a drop directly requires a counter
