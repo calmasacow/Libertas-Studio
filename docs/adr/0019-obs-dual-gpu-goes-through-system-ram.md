@@ -42,6 +42,31 @@ purely so the frame can be DMA'd straight back out to the iGPU.
 The frame crosses PCIe twice to reach a device that was already on the bus. This is precisely the
 problem ADR-0012 set out to measure, and OBS's answer to it is a full host round trip.
 
+## The A/B, run live
+
+The author then moved the Twitch output from QuickSync to a second NVENC session, which keeps it
+on the texture path, and the readback disappeared:
+
+```
+                           Twitch on QSV      Twitch on NVENC
+NVENC sessions                   1                  2
+libobs:graphics thread        34.1 %             24.4 %
+OBS process total            191 %              162.8 %
+NVIDIA GPU utilisation        80 %               78 %
+```
+
+The graphics-thread drop is the signature of `download_frame()` no longer running: the second
+output stopped charging the first one for its existence. (`top` samples over two seconds, so the
+direction is solid and the last digit is not.)
+
+The GPU row is the point worth keeping. **Adding an entire second 1080p60 encode changed NVIDIA
+GPU utilisation by nothing** - because NVENC is dedicated silicon, not shader cores. A second
+encode genuinely is close to free when it is not made to travel through system RAM to get there.
+The 2x render-time penalty was never the cost of encoding; it was the cost of the detour.
+
+This is the Phase-1.5 bar, now with both a failing and a passing example measured on the same
+machine on the same evening.
+
 ## Why this matters more than any other finding so far
 
 The author's stated reason for this project is years of trouble with OBS on Linux, and their
