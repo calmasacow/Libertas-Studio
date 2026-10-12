@@ -53,9 +53,14 @@ struct VkExportedImage {
 };
 
 /// Creates an image the compositor can render into, picking from `allowed` (most preferred first).
+///
+/// `host_memory` places the allocation in system RAM rather than VRAM. That is required for a
+/// buffer a *different* GPU must also read: a dmabuf backed by one card's VRAM cannot generally be
+/// addressed by another, and the failure surfaces far from the cause - on this machine as
+/// `intel: the execbuf ioctl keeps returning ENOMEM` at submit time, after the import succeeded.
 bool vk_create_exportable(VkCtx& ctx, std::uint32_t width, std::uint32_t height,
                           std::uint32_t drm_format, const std::vector<std::uint64_t>& allowed,
-                          VkExportedImage& out, std::string& error);
+                          bool host_memory, VkExportedImage& out, std::string& error);
 
 /// Copies an exported image back to host memory as BGRA. `written_by_foreign` must be true when a
 /// compositor (not us) produced the contents, so the barrier acquires queue ownership.
@@ -63,6 +68,18 @@ bool vk_readback_exported(VkCtx& ctx, const VkExportedImage& img, bool written_b
                           std::vector<std::uint8_t>& out, std::string& error);
 
 void vk_destroy_exportable(VkCtx& ctx, VkExportedImage& img);
+
+/// Blits `src` into `dst`, scaling if their sizes differ, and releases `dst` to the foreign queue
+/// family so another device may acquire it.
+///
+/// This is ADR-0007's cross-GPU transfer step. Scaling happens here, on the compositing GPU,
+/// deliberately: moving a 1440p buffer across the bus to downscale it on the far side wastes the
+/// bandwidth that is the scarce resource in a dual-encode setup.
+bool vk_blit_exported(VkCtx& ctx, const VkExportedImage& src, bool src_foreign,
+                      const VkExportedImage& dst, std::string& error);
+
+/// Describes an exported image as a CapturedFrame, so the import path can consume it.
+CapturedFrame vk_exported_as_frame(const VkExportedImage& img, std::uint32_t drm_format);
 
 bool vk_import_and_readback(VkCtx& ctx, const CapturedFrame& frame, std::vector<std::uint8_t>& out,
                             std::string& error);

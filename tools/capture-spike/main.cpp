@@ -43,6 +43,8 @@ usage:
   --no-probe           skip the node readiness probe and connect immediately
   --wayland, --wl      use the ext-image-copy-capture-v1 backend (no portal, NO PICKER)
   --output NAME        capture this output by connector name, e.g. DP-1 (implies --wayland)
+  --second-gpu MAJ:MIN transfer the frame to a second GPU and import it there (ADR-0007)
+  --scale WxH          downscale on the compositing GPU before the cross-GPU transfer
   --forget             delete the cached restore token and exit
   --sweep              try every modifier variant inside ONE portal session (one picker click)
   --drm-node MAJ:MIN   select the Vulkan device by DRM node (never by index)
@@ -309,12 +311,110 @@ bool acquire_capture_session(libertas::spike::PortalRequest req, Acquired& out,
     return false;
 }
 
+/// Hands a captured frame to a *second* GPU, the way a second encoder would receive it.
+///
+/// This is the load-bearing risk in the dual-encode design: the show streams 1440p from NVENC to
+/// YouTube and 1080p from VAAPI on the Intel iGPU to Twitch, which only works if a buffer the
+/// NVIDIA GPU produced can be read by Intel. A vendor-specific block-linear modifier cannot cross,
+/// so the transfer buffer is LINEAR - and the downscale happens here, on the compositing GPU,
+/// because moving full-resolution pixels across the bus to shrink them on the far side spends the
+/// bandwidth that is the actual scarce resource.
+bool run_cross_gpu(libertas::spike::VkCtx& src_ctx, const libertas::spike::VkExportedImage& captured,
+                   std::uint32_t drm_format, const std::string& second_node, std::uint32_t scale_w,
+                   std::uint32_t scale_h) {
+    std::string err;
+    const std::uint32_t w = scale_w != 0 ? scale_w : captured.width;
+    const std::uint32_t h = scale_h != 0 ? scale_h : captured.height;
+
+    std::printf("\n=== cross-GPU transfer: %ux%u -> %ux%u, then import on %s ===\n",
+                captured.width, captured.height, w, h, second_node.c_str());
+
+    libertas::spike::VkCtxPtr dst_ctx = libertas::spike::vk_init(second_node, err);
+    if (!dst_ctx) {
+        lc::error("second device init failed: {}", err);
+        return false;
+    }
+    lc::info("second device: {}", libertas::spike::vk_device_name(*dst_ctx));
+
+    const std::vector<std::uint64_t> dst_mods =
+        libertas::spike::vk_supported_modifiers(*dst_ctx, drm_format);
+    const bool dst_takes_linear =
+        std::find(dst_mods.begin(), dst_mods.end(), libertas::spike::kModifierLinear) !=
+        dst_mods.end();
+    std::printf("  second device can import %zu modifier(s) for %s; LINEAR: %s\n", dst_mods.size(),
+                libertas::spike::fourcc_str(drm_format).c_str(), dst_takes_linear ? "yes" : "NO");
+    if (!dst_takes_linear) {
+        lc::error("the second device cannot import LINEAR, so there is no common layout");
+        return false;
+    }
+
+    // Allocate the transfer buffer on the SOURCE device, LINEAR, so both vendors can address it.
+    libertas::spike::VkExportedImage transfer;
+    // host_memory = true: see vk_create_exportable's contract. A VRAM-backed dmabuf imports
+    // cleanly on the second card and then fails at submit, which is a miserable thing to debug.
+    if (!libertas::spike::vk_create_exportable(src_ctx, w, h, drm_format,
+                                               {libertas::spike::kModifierLinear}, true, transfer,
+                                               err)) {
+        lc::error("could not allocate a LINEAR transfer image on the source device: {}", err);
+        return false;
+    }
+    lc::info("transfer buffer: {}x{} modifier {} stride {}", transfer.width, transfer.height,
+             libertas::spike::modifier_str(transfer.modifier), transfer.strides[0]);
+
+    if (!libertas::spike::vk_blit_exported(src_ctx, captured, true, transfer, err)) {
+        lc::error("blit/scale on the source device failed: {}", err);
+        libertas::spike::vk_destroy_exportable(src_ctx, transfer);
+        return false;
+    }
+
+    // Import on the second device through the ordinary import path - the same code the portal
+    // backend uses, so this exercises it too.
+    const libertas::spike::CapturedFrame frame =
+        libertas::spike::vk_exported_as_frame(transfer, drm_format);
+    std::vector<std::uint8_t> pixels;
+    const bool ok = libertas::spike::vk_import_and_readback(*dst_ctx, frame, pixels, err);
+    if (!ok) {
+        lc::error("import on the second device failed: {}", err);
+        libertas::spike::vk_destroy_exportable(src_ctx, transfer);
+        return false;
+    }
+
+    std::uint32_t nonzero = 0;
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) {
+        checksum = checksum * 1099511628211ULL ^ pixels[i];
+        if ((pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0)
+            ++nonzero;
+    }
+    const std::uint32_t total = w * h;
+    std::printf("  imported on second device: %zu bytes, non-black %u / %u (%.1f%%)\n",
+                pixels.size(), nonzero, total, total > 0 ? 100.0 * nonzero / total : 0.0);
+    std::printf("  fnv checksum  : 0x%016lx\n", checksum);
+
+    if (std::FILE* fp = std::fopen("/tmp/capture-spike-crossgpu.ppm", "wb"); fp != nullptr) {
+        std::fprintf(fp, "P6\n%u %u\n255\n", w, h);
+        for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) {
+            const std::uint8_t rgb[3] = {pixels[i + 2], pixels[i + 1], pixels[i]};
+            std::fwrite(rgb, 1, 3, fp);
+        }
+        std::fclose(fp);
+        std::printf("  wrote         : /tmp/capture-spike-crossgpu.ppm\n");
+    }
+
+    libertas::spike::vk_destroy_exportable(src_ctx, transfer);
+    const bool pass = nonzero > 0;
+    std::printf("  CROSS-GPU: %s\n", pass ? "PASS" : "FAIL - imported but every pixel is black");
+    return pass;
+}
+
 /// The ext-image-copy-capture-v1 path, end to end: enumerate outputs, open a session, intersect
 /// modifiers, allocate the buffer ourselves, let the compositor render into it, read it back.
 ///
 /// No picker and no portal, so unlike the PipeWire path this can be run as many times as needed.
 int run_wayland_backend(const std::string& output_name, bool with_cursor, bool want_cursor_set,
-                        const std::string& prefer_drm_node, std::uint32_t frames) {
+                        const std::string& prefer_drm_node, std::uint32_t frames,
+                        const std::string& second_node, std::uint32_t scale_w,
+                        std::uint32_t scale_h) {
     std::string err;
     libertas::spike::WlCapPtr cap = libertas::spike::wlcap_open(err);
     if (!cap) {
@@ -372,7 +472,7 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
 
         libertas::spike::VkExportedImage img;
         if (!libertas::spike::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
-                                                   common, img, err)) {
+                                                   common, false, img, err)) {
             lc::warn("could not allocate an exportable image for {}: {}",
                      libertas::spike::fourcc_str(f.drm_format), err);
             continue;
@@ -429,8 +529,14 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
             std::printf("  wrote         : /tmp/capture-spike-frame.ppm\n");
         }
 
+        // ---- ADR-0007's cross-GPU transfer, measured rather than assumed.
+        bool cross_ok = true;
+        if (!second_node.empty()) {
+            cross_ok = run_cross_gpu(*vk, img, f.drm_format, second_node, scale_w, scale_h);
+        }
+
         libertas::spike::vk_destroy_exportable(*vk, img);
-        const bool pass = nonzero > 0;
+        const bool pass = nonzero > 0 && cross_ok;
         std::printf("\n  VERDICT: %s\n\n",
                     pass ? "PASS - compositor rendered into our Vulkan image, real pixel content"
                          : "FAIL - capture succeeded but every pixel is black");
@@ -460,6 +566,9 @@ int main(int argc, char** argv) {
     bool use_wayland = false;
     bool cursor_set = false;
     std::string wl_output;
+    std::string second_node;
+    std::uint32_t scale_w = 0;
+    std::uint32_t scale_h = 0;
     bool explicit_token = false;
     std::string prefer_drm_node;
     libertas::spike::PortalRequest req;
@@ -515,6 +624,15 @@ int main(int argc, char** argv) {
             no_probe = true;
         } else if (a == "--wayland" || a == "--wl") {
             use_wayland = true;
+        } else if (a == "--second-gpu" && i + 1 < args.size()) {
+            second_node = std::string(args[++i]);
+            use_wayland = true;
+        } else if (a == "--scale" && i + 1 < args.size()) {
+            const std::string v(args[++i]);
+            if (const std::size_t x = v.find('x'); x != std::string::npos) {
+                scale_w = static_cast<std::uint32_t>(std::strtoul(v.c_str(), nullptr, 10));
+                scale_h = static_cast<std::uint32_t>(std::strtoul(v.c_str() + x + 1, nullptr, 10));
+            }
         } else if (a == "--output" && i + 1 < args.size()) {
             wl_output = std::string(args[++i]);
             use_wayland = true;
@@ -532,7 +650,7 @@ int main(int argc, char** argv) {
     // through into the portal flow (ADR-0011).
     if (use_wayland)
         return run_wayland_backend(wl_output, req.cursor_mode == libertas::spike::CursorMode::Embedded,
-                                   cursor_set, prefer_drm_node, 3);
+                                   cursor_set, prefer_drm_node, 3, second_node, scale_w, scale_h);
 
     // -------------------------------------------------------- stage 0: Vulkan, before any click
     // Bring Vulkan up first so negotiation can advertise the modifiers this device can really

@@ -531,10 +531,28 @@ bool vk_import_and_readback(VkCtx& ctx, const CapturedFrame& frame, std::vector<
 
 namespace {
 
-/// Picks a DEVICE_LOCAL memory type from a requirements mask.
-std::uint32_t device_local_memory_type(VkPhysicalDevice phys, std::uint32_t type_bits) {
+/// Picks a memory type: device-local for normal use, or host-visible system memory for a buffer
+/// that a second GPU must also reach.
+std::uint32_t pick_memory_type(VkPhysicalDevice phys, std::uint32_t type_bits, bool host_memory) {
     VkPhysicalDeviceMemoryProperties mp{};
     vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    if (host_memory) {
+        // Prefer host-visible and *not* device-local: that combination is system RAM, which is the
+        // only place both cards can address. A host-visible but device-local type on a discrete
+        // card is resizable-BAR VRAM, which is exactly what must be avoided here.
+        for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+            const auto flags = mp.memoryTypes[i].propertyFlags;
+            if ((type_bits & (1u << i)) != 0u &&
+                (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u &&
+                (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0u)
+                return i;
+        }
+        for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i)
+            if ((type_bits & (1u << i)) != 0u &&
+                (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u)
+                return i;
+        return UINT32_MAX;
+    }
     for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i)
         if ((type_bits & (1u << i)) != 0u &&
             (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0u)
@@ -564,7 +582,7 @@ std::uint32_t modifier_plane_count(VkPhysicalDevice phys, VkFormat fmt, std::uin
 
 bool vk_create_exportable(VkCtx& ctx, std::uint32_t width, std::uint32_t height,
                           std::uint32_t drm_format, const std::vector<std::uint64_t>& allowed,
-                          VkExportedImage& out, std::string& error) {
+                          bool host_memory, VkExportedImage& out, std::string& error) {
     const VkFormat fmt = drm_to_vk(drm_format);
     if (fmt == VK_FORMAT_UNDEFINED) {
         error = std::format("unsupported drm format 0x{:08x}", drm_format);
@@ -616,9 +634,10 @@ bool vk_create_exportable(VkCtx& ctx, std::uint32_t width, std::uint32_t height,
 
     VkMemoryRequirements mr{};
     vkGetImageMemoryRequirements(ctx.device, image, &mr);
-    const std::uint32_t type = device_local_memory_type(ctx.phys, mr.memoryTypeBits);
+    const std::uint32_t type = pick_memory_type(ctx.phys, mr.memoryTypeBits, host_memory);
     if (type == UINT32_MAX) {
-        error = "no device-local memory type for the exportable image";
+        error = host_memory ? "no host-visible memory type for a cross-GPU transfer image"
+                            : "no device-local memory type for the exportable image";
         vkDestroyImage(ctx.device, image, nullptr);
         return false;
     }
@@ -719,6 +738,119 @@ bool vk_readback_exported(VkCtx& ctx, const VkExportedImage& img, bool written_b
                           std::vector<std::uint8_t>& out, std::string& error) {
     return readback_image(ctx, static_cast<VkImage>(img.image), img.width, img.height,
                           written_by_foreign, out, error);
+}
+
+
+bool vk_blit_exported(VkCtx& ctx, const VkExportedImage& src, bool src_foreign,
+                      const VkExportedImage& dst, std::string& error) {
+    VkCommandBufferAllocateInfo cbai{};
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = ctx.pool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(ctx.device, &cbai, &cmd);
+
+    VkCommandBufferBeginInfo cbbi{};
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &cbbi);
+
+    const std::uint32_t foreign =
+        ctx.have_foreign_queue ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_EXTERNAL;
+
+    std::array<VkImageMemoryBarrier, 2> pre{};
+    pre[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    pre[0].srcAccessMask = 0;
+    pre[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    pre[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    pre[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    pre[0].srcQueueFamilyIndex = src_foreign ? foreign : VK_QUEUE_FAMILY_IGNORED;
+    pre[0].dstQueueFamilyIndex = src_foreign ? ctx.queue_family : VK_QUEUE_FAMILY_IGNORED;
+    pre[0].image = static_cast<VkImage>(src.image);
+    pre[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    pre[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    pre[1].srcAccessMask = 0;
+    pre[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    pre[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    pre[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    pre[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pre[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pre[1].image = static_cast<VkImage>(dst.image);
+    pre[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                         0, nullptr, 0, nullptr, static_cast<std::uint32_t>(pre.size()), pre.data());
+
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[1] = {static_cast<std::int32_t>(src.width),
+                          static_cast<std::int32_t>(src.height), 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[1] = {static_cast<std::int32_t>(dst.width),
+                          static_cast<std::int32_t>(dst.height), 1};
+    vkCmdBlitImage(cmd, static_cast<VkImage>(src.image), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   static_cast<VkImage>(dst.image), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   VK_FILTER_LINEAR);
+
+    // Release ownership so the *other* device's acquire barrier is well defined. Skipping this is
+    // undefined behaviour that appears to work on some drivers - the worst kind to ship.
+    VkImageMemoryBarrier release{};
+    release.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    release.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    release.dstAccessMask = 0;
+    release.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    release.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    release.srcQueueFamilyIndex = ctx.queue_family;
+    release.dstQueueFamilyIndex = foreign;
+    release.image = static_cast<VkImage>(dst.image);
+    release.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &release);
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+
+    VkFenceCreateInfo fci{};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence = VK_NULL_HANDLE;
+    vkCreateFence(ctx.device, &fci, nullptr, &fence);
+
+    bool ok = true;
+    if (vkQueueSubmit(ctx.queue, 1, &si, fence) != VK_SUCCESS) {
+        error = "vkQueueSubmit (blit) failed";
+        ok = false;
+    } else if (vkWaitForFences(ctx.device, 1, &fence, VK_TRUE, 2'000'000'000ULL) != VK_SUCCESS) {
+        error = "blit fence wait timed out";
+        ok = false;
+    }
+
+    vkDestroyFence(ctx.device, fence, nullptr);
+    vkFreeCommandBuffers(ctx.device, ctx.pool, 1, &cmd);
+    return ok;
+}
+
+CapturedFrame vk_exported_as_frame(const VkExportedImage& img, std::uint32_t drm_format) {
+    CapturedFrame f;
+    f.width = img.width;
+    f.height = img.height;
+    f.drm_format = drm_format;
+    f.modifier = img.modifier;
+    f.is_dmabuf = true;
+    for (std::uint32_t i = 0; i < img.n_planes; ++i) {
+        DmabufPlane p;
+        // Borrowed: the import path dups the fd, and the exported image still owns it.
+        p.fd = img.dmabuf_fd;
+        p.offset = img.offsets[i];
+        p.stride = img.strides[i];
+        f.planes.push_back(p);
+    }
+    return f;
 }
 
 } // namespace libertas::spike
