@@ -1,0 +1,10 @@
+build/
+build-*/
+.cache/
+compile_commands.json
+*.user
+.DS_Store
+# spike / probe scratch output
+*.mkv
+*.mp4
+*.h264
