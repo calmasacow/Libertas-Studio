@@ -110,6 +110,10 @@ allocated 2560x1440 AR24 modifier NVIDIA(0x300000000606014) planes 1 stride 1024
 | DP-3 (MSI MAG322CQR, 2560x1440@165) | **PASS** | `0x300000000606014` | 100% |
 | HDMI-A-3 (Samsung, 3840x2160@60) | **PASS** | `0x300000000606014` | 97.8% |
 
+Confirmed on the reference target `argus` as well (RTX 2070, Turing, HDMI-A-1 2560x1440@60):
+**PASS**, same modifier `0x300000000606014`, 100% non-black. So the result holds across two NVIDIA
+generations five years apart (Turing and Blackwell) and across DisplayPort and HDMI.
+
 The readback was written to a PPM and inspected: it is the actual desktop, correct colours and
 geometry. **This closes Phase 0's capture question and proves the Vulkan path that ADR-0009 and
 ADR-0010 left open** - a dmabuf shared with the compositor, filled by it, read back correctly.
