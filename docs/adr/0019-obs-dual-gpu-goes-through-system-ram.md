@@ -64,11 +64,22 @@ GPU utilisation by nothing** - because NVENC is dedicated silicon, not shader co
 encode genuinely is close to free when it is not made to travel through system RAM to get there.
 The 2x render-time penalty was never the cost of encoding; it was the cost of the detour.
 
-Nor does the second session contend for the encode engine in any way that shows up. NVENC's own
-reported latency, sampled while both sessions ran, was **7713 / 7260 / 8255 us** against
-**7971 us** when only the 1440p session existed. A first reading of 9563 us looked like
-contention and was a transient; three samples say there is none. The RTX 2070 has a single NVENC
-engine and is carrying 1440p60 and 1080p60 on it concurrently for free.
+The graphics-thread figure reproduces across two separate streaming sessions an hour apart:
+24.4% both times, with the OBS process at 156.3 / 164.4 / 161.8 / 162.8%. Both destinations were
+confirmed to be genuinely delivering, not merely connected - socket byte counters over 10 s give
+**Twitch 8094 kbps** (against its configured 8000) and **YouTube 41110 kbps**.
+
+**On NVENC contention, an earlier claim in this ADR was overstated and is withdrawn.** It read:
+"three samples say there is none." Five further samples give latencies of 10503 / 11253 / 11089 /
+7478 / 7450 us, against 7971 us for the single session - a range of 7.4-11.3 us-thousands and a
+mean above the single-session figure. The honest statement is that NVENC latency is noisy at this
+granularity and **a modest cost to the second session cannot be ruled out**; what can be said is
+that it is nowhere near the cost of the sysmem detour, and that it did not move frame delivery
+(59-60 fps throughout, 2 lagged frames in 21236 on the Twitch output's own stop record).
+
+This is the second time in one session that a conclusion was drawn from a handful of samples -
+ADR-0018 was written about exactly that error and then it was repeated here within the hour. The
+rule needs to bind when the number is *convenient*, which is when it does not feel like a risk.
 
 This is the Phase-1.5 bar, now with both a failing and a passing example measured on the same
 machine on the same evening.
