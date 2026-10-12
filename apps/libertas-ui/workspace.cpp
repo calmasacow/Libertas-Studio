@@ -1,0 +1,466 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "workspace.hpp"
+
+#include "llayout/serialize.hpp"
+
+#include <QVariantList>
+
+#include <algorithm>
+#include <array>
+#include <utility>
+
+namespace libertas::ui {
+namespace {
+
+/// The panels the shell knows how to open. A panel not in this table still works -- the layout
+/// engine only ever sees strings -- but it will not appear in the reopen list, which is the one
+/// place a human-readable name is required.
+struct KnownPanel {
+    const char* id;
+    const char* title;
+};
+
+constexpr std::array kKnownPanels = {
+    KnownPanel{"program", "Program"},
+    KnownPanel{"scenes", "Scenes"},
+    KnownPanel{"sources", "Sources"},
+    KnownPanel{"audio-mixer", "Audio Mixer"},
+    KnownPanel{"controls", "Controls"},
+    KnownPanel{"stats", "Stats"},
+    KnownPanel{"log", "Log"},
+};
+
+QRectF to_qrect(const llayout::Rect& r) {
+    return QRectF{r.x, r.y, r.w, r.h};
+}
+
+std::string to_std(const QString& s) {
+    const QByteArray b = s.toUtf8();
+    return std::string{b.constData(), static_cast<std::size_t>(b.size())};
+}
+
+/// Set by configure() before the QML engine instantiates the singleton.
+std::filesystem::path g_config_path;
+bool g_headless = false;
+
+} // namespace
+
+void Workspace::configure(std::filesystem::path config_path, bool headless) {
+    g_config_path = std::move(config_path);
+    g_headless = headless;
+}
+
+Workspace* Workspace::create(QQmlEngine*, QJSEngine*) {
+    // The engine takes ownership of what it is handed here.
+    auto* w = new Workspace{g_config_path};
+    w->headless_ = g_headless;
+    return w;
+}
+
+Workspace::Workspace(std::filesystem::path config_path, QObject* parent)
+    : QObject(parent), history_(llayout::Layout::default_studio()),
+      config_path_(std::move(config_path)) {
+    llayout::LoadOutcome outcome = llayout::load_or_default(config_path_);
+    history_.reset(std::move(outcome.layout));
+    if (!outcome.complaint.empty()) {
+        // ADR-0015 rule 5: fall back to the default *and say so*. A silent fallback is
+        // indistinguishable from the bug it is covering for.
+        layout_source_ = QStringLiteral("default layout (%1 could not be read: %2)")
+                             .arg(QString::fromStdString(config_path_.string()),
+                                  QString::fromStdString(outcome.complaint));
+    } else if (outcome.used_default) {
+        layout_source_ = QStringLiteral("default layout");
+    } else {
+        layout_source_ = QString::fromStdString(config_path_.string());
+    }
+
+    // Layout writes are debounced: a divider drag produces a change per mouse move and none of
+    // the intermediate states are worth an fsync.
+    save_timer_.setSingleShot(true);
+    save_timer_.setInterval(600);
+    connect(&save_timer_, &QTimer::timeout, this, &Workspace::saveNow);
+}
+
+Workspace::~Workspace() {
+    if (save_timer_.isActive())
+        saveNow();
+}
+
+const llayout::Layout& Workspace::layout() const {
+    return working_ ? *working_ : history_.current();
+}
+
+void Workspace::touch() {
+    ++revision_;
+    emit layoutChanged();
+    scheduleSave();
+}
+
+void Workspace::scheduleSave() {
+    save_timer_.start();
+}
+
+void Workspace::saveNow() {
+    save_timer_.stop();
+    const auto r = llayout::save(history_.current(), config_path_);
+    if (!r) {
+        emit notice(QStringLiteral("Could not save the layout: %1")
+                        .arg(QString::fromStdString(r.error())));
+    }
+}
+
+// ---- exposure ------------------------------------------------------------------------------
+
+int Workspace::panelCount() const {
+    return static_cast<int>(layout().leaves(vp_, constraints_).size());
+}
+
+int Workspace::dividerCount() const {
+    return static_cast<int>(layout().dividers(vp_, constraints_).size());
+}
+
+QVariantMap Workspace::panelAt(int index) const {
+    QVariantMap m;
+    const auto leaves = layout().leaves(vp_, constraints_);
+    if (index < 0 || static_cast<std::size_t>(index) >= leaves.size())
+        return m;
+    const llayout::LeafRect& lf = leaves[static_cast<std::size_t>(index)];
+    const llayout::Node* n = layout().find(lf.node);
+    if (!n)
+        return m;
+
+    QStringList tabs;
+    QStringList titles;
+    for (const std::string& t : n->tabs) {
+        tabs << QString::fromStdString(t);
+        titles << title(QString::fromStdString(t));
+    }
+    m["node"] = static_cast<int>(lf.node);
+    m["x"] = lf.rect.x;
+    m["y"] = lf.rect.y;
+    m["w"] = lf.rect.w;
+    m["h"] = lf.rect.h;
+    m["tabs"] = tabs;
+    m["titles"] = titles;
+    m["active"] = static_cast<int>(n->active);
+    m["activeId"] = n->active < n->tabs.size()
+                        ? QString::fromStdString(n->tabs[n->active])
+                        : QString{};
+    return m;
+}
+
+QVariantMap Workspace::dividerAt(int index) const {
+    QVariantMap m;
+    const auto ds = layout().dividers(vp_, constraints_);
+    if (index < 0 || static_cast<std::size_t>(index) >= ds.size())
+        return m;
+    const llayout::DividerHandle& d = ds[static_cast<std::size_t>(index)];
+    m["split"] = static_cast<int>(d.split);
+    m["index"] = static_cast<int>(d.index);
+    m["horizontal"] = d.axis == llayout::Axis::Horizontal;
+    m["x"] = d.rect.x;
+    m["y"] = d.rect.y;
+    m["w"] = d.rect.w;
+    m["h"] = d.rect.h;
+    return m;
+}
+
+QStringList Workspace::closedPanels() const {
+    // The answer to "losing the main canvas, or having it pop out and go off screen completely":
+    // every panel the shell knows about, including the program canvas, can always be brought
+    // back, because it was never an OS window to lose.
+    QStringList out;
+    for (const KnownPanel& p : kKnownPanels) {
+        if (!layout().has_panel(p.id))
+            out << QString::fromLatin1(p.id);
+    }
+    return out;
+}
+
+QString Workspace::title(const QString& panel) const {
+    const std::string id = to_std(panel);
+    for (const KnownPanel& p : kKnownPanels) {
+        if (id == p.id)
+            return QString::fromLatin1(p.title);
+    }
+    // An unknown id still gets something readable rather than nothing.
+    QString t = panel;
+    t.replace(QLatin1Char('-'), QLatin1Char(' '));
+    if (!t.isEmpty())
+        t[0] = t[0].toUpper();
+    return t;
+}
+
+void Workspace::setViewport(qreal w, qreal h) {
+    if (qFuzzyCompare(vp_.bounds.w, w) && qFuzzyCompare(vp_.bounds.h, h))
+        return;
+    vp_.bounds = llayout::Rect{0.0, 0.0, w, h};
+    // A resize is not a layout change: the tree holds proportions, so nothing to save and nothing
+    // to undo. Only the derived geometry moved.
+    ++revision_;
+    emit layoutChanged();
+}
+
+// ---- panel drag ----------------------------------------------------------------------------
+
+QString Workspace::dragPanel() const {
+    return drag_ ? drag_->panel : QString{};
+}
+
+QString Workspace::dragTitle() const {
+    return drag_ ? title(drag_->panel) : QString{};
+}
+
+QPointF Workspace::dragPos() const {
+    return drag_ ? drag_->pos : QPointF{};
+}
+
+QRectF Workspace::dropPreview() const {
+    if (!drag_ || !drag_->target || !drag_->refusal.isEmpty())
+        return {};
+    return to_qrect(drag_->target->preview);
+}
+
+QRectF Workspace::dropTargetRect() const {
+    if (!drag_ || !drag_->target || drag_->target->is_edge)
+        return {};
+    const auto r = layout().rect_of(drag_->target->node, vp_, constraints_);
+    return r ? to_qrect(*r) : QRectF{};
+}
+
+QRectF Workspace::dropCentreRect() const {
+    const QRectF t = dropTargetRect();
+    if (t.isEmpty())
+        return {};
+    const llayout::Rect r{t.x(), t.y(), t.width(), t.height()};
+    return to_qrect(llayout::centre_rect(r));
+}
+
+bool Workspace::dropValid() const {
+    return drag_ && drag_->target && drag_->refusal.isEmpty();
+}
+
+QString Workspace::dropDescription() const {
+    if (!drag_)
+        return {};
+    if (!drag_->refusal.isEmpty())
+        return drag_->refusal;
+    if (!drag_->target)
+        return QStringLiteral("Release outside the workspace to cancel");
+
+    const llayout::DropTarget& t = *drag_->target;
+    if (t.is_edge) {
+        return QStringLiteral("Dock %1 against the %2 edge of the workspace")
+            .arg(dragTitle(), QString::fromLatin1(llayout::to_string(t.edge)));
+    }
+    const llayout::Node* n = layout().find(t.node);
+    const QString over = (n && !n->tabs.empty())
+                             ? title(QString::fromStdString(n->tabs[n->active]))
+                             : QStringLiteral("panel");
+    if (t.zone == llayout::Zone::Center)
+        return QStringLiteral("Group %1 with %2 as tabs").arg(dragTitle(), over);
+    return QStringLiteral("Dock %1 to the %2 of %3")
+        .arg(dragTitle(), QString::fromLatin1(llayout::to_string(t.zone)), over);
+}
+
+void Workspace::beginDrag(const QString& panel) {
+    if (panel.isEmpty())
+        return;
+    drag_ = Drag{panel, QPointF{}, std::nullopt, QString{}};
+    emit dragChanged();
+}
+
+void Workspace::recompute_drag_target() {
+    if (!drag_)
+        return;
+    drag_->target =
+        layout().hit_test(drag_->pos.x(), drag_->pos.y(), vp_, constraints_);
+    drag_->refusal.clear();
+    if (!drag_->target)
+        return;
+
+    // Ask the engine what *would* happen, on a copy, so the highlight tells the truth before the
+    // operator commits. ADR-0016 rule 8: a zone that would starve a panel does not light up.
+    llayout::Layout probe = layout();
+    const llayout::DockResult r =
+        probe.dock(to_std(drag_->panel), *drag_->target, vp_, constraints_);
+    if (r.status == llayout::DockStatus::Rejected)
+        drag_->refusal = QString::fromStdString(r.reason);
+}
+
+void Workspace::updateDrag(qreal x, qreal y) {
+    if (!drag_)
+        return;
+    drag_->pos = QPointF{x, y};
+    recompute_drag_target();
+    emit dragChanged();
+}
+
+bool Workspace::endDrag() {
+    if (!drag_) {
+        return false;
+    }
+    const Drag d = *drag_;
+    drag_.reset();
+    emit dragChanged();
+
+    if (!d.target || !d.refusal.isEmpty()) {
+        if (!d.refusal.isEmpty())
+            emit notice(d.refusal);
+        return false;
+    }
+
+    llayout::Layout next = history_.current();
+    const llayout::DockResult r = next.dock(to_std(d.panel), *d.target, vp_, constraints_);
+    if (r.status == llayout::DockStatus::Rejected) {
+        emit notice(QString::fromStdString(r.reason));
+        return false;
+    }
+    if (!history_.commit(std::move(next)))
+        return false;
+    touch();
+    return true;
+}
+
+void Workspace::cancelDrag() {
+    if (!drag_)
+        return;
+    drag_.reset();
+    emit dragChanged();
+}
+
+// ---- dividers ------------------------------------------------------------------------------
+
+int Workspace::dividerAxisAtPoint(qreal x, qreal y) const {
+    const auto d = layout().hit_test_divider(x, y, vp_, constraints_);
+    if (!d)
+        return -1;
+    return d->axis == llayout::Axis::Horizontal ? 0 : 1;
+}
+
+int Workspace::dividerIndexAtPoint(qreal x, qreal y) const {
+    const auto hit = layout().hit_test_divider(x, y, vp_, constraints_);
+    if (!hit)
+        return -1;
+    const auto ds = layout().dividers(vp_, constraints_);
+    for (std::size_t i = 0; i < ds.size(); ++i) {
+        if (ds[i].split == hit->split && ds[i].index == hit->index)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+bool Workspace::beginDividerDrag(qreal x, qreal y) {
+    const auto d = layout().hit_test_divider(x, y, vp_, constraints_);
+    if (!d)
+        return false;
+    working_ = history_.current();
+    divider_drag_ = DividerDrag{d->split, d->index, d->axis, QPointF{x, y}, history_.current()};
+    return true;
+}
+
+void Workspace::dragDividerTo(qreal x, qreal y) {
+    if (!divider_drag_ || !working_)
+        return;
+    const bool horizontal = divider_drag_->axis == llayout::Axis::Horizontal;
+    const qreal delta = horizontal ? x - divider_drag_->last.x() : y - divider_drag_->last.y();
+    if (qFuzzyIsNull(delta))
+        return;
+
+    if (working_->move_divider(divider_drag_->split, divider_drag_->index, delta, vp_,
+                               constraints_)) {
+        // Only advance the reference point when the divider actually moved. Otherwise pushing
+        // past the clamp accumulates phantom travel and the divider refuses to come back until
+        // the pointer has returned all the way past where it stopped.
+        divider_drag_->last = QPointF{x, y};
+        ++revision_;
+        emit layoutChanged();
+    }
+}
+
+void Workspace::endDividerDrag() {
+    if (!divider_drag_ || !working_) {
+        working_.reset();
+        divider_drag_.reset();
+        return;
+    }
+    llayout::Layout final_layout = std::move(*working_);
+    working_.reset();
+    divider_drag_.reset();
+
+    // One undo step for the whole drag, not one per mouse move.
+    if (history_.commit(std::move(final_layout)))
+        touch();
+    else
+        emit layoutChanged();
+}
+
+// ---- panels --------------------------------------------------------------------------------
+
+void Workspace::activate(const QString& panel) {
+    llayout::Layout next = history_.current();
+    if (!next.activate(to_std(panel)))
+        return;
+    if (history_.commit(std::move(next)))
+        touch();
+}
+
+void Workspace::closePanel(const QString& panel) {
+    llayout::Layout next = history_.current();
+    if (!next.close_panel(to_std(panel)))
+        return;
+    if (history_.commit(std::move(next)))
+        touch();
+}
+
+void Workspace::openPanel(const QString& panel) {
+    if (panel.isEmpty() || layout().has_panel(to_std(panel)))
+        return;
+
+    llayout::Layout next = history_.current();
+    // Put it where there is most room, as a tab. Guessing a split would be a layout decision the
+    // operator did not make; a tab in the largest group is the least destructive answer, and the
+    // drag gesture is right there to move it.
+    const auto leaves = next.leaves(vp_, constraints_);
+    llayout::NodeId biggest = next.root();
+    double best = -1.0;
+    for (const llayout::LeafRect& lf : leaves) {
+        const double area = lf.rect.w * lf.rect.h;
+        if (area > best) {
+            best = area;
+            biggest = lf.node;
+        }
+    }
+    const llayout::DockResult r =
+        next.dock(to_std(panel), biggest, llayout::Zone::Center, vp_, constraints_);
+    if (r.status == llayout::DockStatus::Rejected) {
+        emit notice(QString::fromStdString(r.reason));
+        return;
+    }
+    if (history_.commit(std::move(next)))
+        touch();
+}
+
+// ---- history and persistence ---------------------------------------------------------------
+
+void Workspace::undo() {
+    if (history_.undo())
+        touch();
+}
+
+void Workspace::redo() {
+    if (history_.redo())
+        touch();
+}
+
+void Workspace::resetLayout() {
+    llayout::Layout next = llayout::Layout::default_studio();
+    if (history_.commit(std::move(next))) {
+        layout_source_ = QStringLiteral("default layout");
+        touch();
+    }
+}
+
+} // namespace libertas::ui

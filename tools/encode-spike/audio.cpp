@@ -83,12 +83,22 @@ void on_process(void* data) {
     pw_stream_queue_buffer(cap->stream, b);
 }
 
-const pw_stream_events kEvents = {
-    .version = PW_VERSION_STREAM_EVENTS,
-    .state_changed = on_state,
-    .param_changed = on_param_changed,
-    .process = on_process,
-};
+/// Built by assignment rather than with designated initializers.
+///
+/// PipeWire's own idiom is a designated initializer, but `pw_stream_events` gains callbacks
+/// between releases, and every field left out is a -Wmissing-field-initializers diagnostic --
+/// which is an error under the CI preset. Zero-initialising and assigning the four we implement
+/// says the same thing and keeps saying it when PipeWire adds a fifth.
+pw_stream_events make_stream_events() {
+    pw_stream_events e{};
+    e.version = PW_VERSION_STREAM_EVENTS;
+    e.state_changed = on_state;
+    e.param_changed = on_param_changed;
+    e.process = on_process;
+    return e;
+}
+
+const pw_stream_events kEvents = make_stream_events();
 
 } // namespace
 

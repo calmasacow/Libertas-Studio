@@ -6,13 +6,19 @@
 add_library(libertas_flags INTERFACE)
 add_library(libertas::flags ALIAS libertas_flags)
 
+# -Wnon-virtual-dtor and -Woverloaded-virtual are C++-only, and generated Wayland protocol code
+# is C: without this guard every one of those .c files compiles with a cc1 "valid for C++ but not
+# for C" warning, which is noise in every build log on every machine.
+target_compile_options(libertas_flags INTERFACE
+    $<$<COMPILE_LANGUAGE:CXX>:-Wnon-virtual-dtor>
+    $<$<COMPILE_LANGUAGE:CXX>:-Woverloaded-virtual>
+)
+
 target_compile_options(libertas_flags INTERFACE
     -Wall -Wextra -Wpedantic
     -Wshadow
-    -Wnon-virtual-dtor
     -Wcast-align
     -Wunused
-    -Woverloaded-virtual
     -Wconversion -Wsign-conversion
     -Wdouble-promotion
     -Wformat=2

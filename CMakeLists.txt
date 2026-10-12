@@ -42,10 +42,15 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
         "Only Linux is supported at this stage. macOS and Windows arrive in Phase 3 (see the plan).")
 endif()
 
+if(LIBERTAS_BUILD_TESTS)
+    enable_testing()
+endif()
+
 add_subdirectory(libs/lcore)
 add_subdirectory(libs/llayout)
 add_subdirectory(libs/ltheme)
 add_subdirectory(apps/libertas)
+add_subdirectory(apps/libertas-ui)
 
 if(LIBERTAS_BUILD_TOOLS)
     add_subdirectory(tools/spike-core)
@@ -54,7 +59,6 @@ if(LIBERTAS_BUILD_TOOLS)
 endif()
 
 if(LIBERTAS_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests/unit)
 endif()
 

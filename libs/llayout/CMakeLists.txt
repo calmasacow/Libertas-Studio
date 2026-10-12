@@ -11,6 +11,7 @@ find_package(tomlplusplus CONFIG REQUIRED)
 
 add_library(llayout STATIC
     src/dropzone.cpp
+    src/history.cpp
     src/layout.cpp
     src/serialize.cpp
 )

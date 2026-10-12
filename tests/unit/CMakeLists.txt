@@ -16,5 +16,6 @@ endfunction()
 
 libertas_unit_test(test_dropzone        libertas::llayout)
 libertas_unit_test(test_layout          libertas::llayout)
+libertas_unit_test(test_layout_history  libertas::llayout)
 libertas_unit_test(test_layout_serialize libertas::llayout libertas::lcore)
 libertas_unit_test(test_theme            libertas::ltheme libertas::lcore)

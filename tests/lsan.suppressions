@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Libertas-Studio contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# LeakSanitizer suppressions for leaks inside third-party libraries we initialise but do not
+# control. Each entry names a specific library, never a function of ours, so a leak we introduce
+# can never be hidden by one of these lines.
+
+# The NVIDIA GL driver allocates a few one-time structures at context creation and never frees
+# them, including under Qt's offscreen platform. 183 bytes, four allocations, every run, entirely
+# inside libnvidia-glcore. Nothing we can release.
+leak:libnvidia-glcore
+leak:libnvidia-eglcore
+leak:libGLX_nvidia
+
+# Mesa and the X/Wayland client libraries do the same with their one-time driver loader state.
+leak:libglapi
+leak:swrast_dri
+leak:libEGL_mesa
