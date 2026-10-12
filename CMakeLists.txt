@@ -44,7 +44,7 @@ endif()
 
 add_subdirectory(libs/lcore)
 add_subdirectory(libs/llayout)
-
+add_subdirectory(libs/ltheme)
 add_subdirectory(apps/libertas)
 
 if(LIBERTAS_BUILD_TOOLS)
