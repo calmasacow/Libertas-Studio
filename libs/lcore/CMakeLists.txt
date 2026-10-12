@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 add_library(lcore STATIC
+    src/atomic_file.cpp
     src/log.cpp
 )
 add_library(libertas::lcore ALIAS lcore)
