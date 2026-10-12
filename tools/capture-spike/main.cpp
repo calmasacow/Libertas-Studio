@@ -39,6 +39,7 @@ usage:
 
   --stage N            stop after stage N (1=portal, 2=stream, 3=vulkan import)
   --no-restore         ignore the cached restore token and always show the picker
+  --no-probe           skip the node readiness probe and connect immediately
   --forget             delete the cached restore token and exit
   --sweep              try every modifier variant inside ONE portal session (one picker click)
   --drm-node MAJ:MIN   select the Vulkan device by DRM node (never by index)
@@ -181,12 +182,8 @@ std::vector<std::uint64_t> order_candidates(const std::vector<std::uint64_t>& ou
         take(m);
     for (std::uint64_t m : src.offered)
         take(m);
-    // DRM_FORMAT_MOD_INVALID means "implicit, producer's choice", which gives up the guarantee
-    // that what we receive is importable. Keep it as the last rung, never as a preference.
-    if (std::find(ours.begin(), ours.end(), libertas::spike::kModifierInvalid) != ours.end() &&
-        std::find(src.offered.begin(), src.offered.end(), libertas::spike::kModifierInvalid) !=
-            src.offered.end())
-        out.push_back(libertas::spike::kModifierInvalid);
+    // DRM_FORMAT_MOD_INVALID is deliberately never added. It is the absence of a modifier, not a
+    // modifier, and the ladder's implicit/shm rung is how we express "no explicit modifier".
     return out;
 }
 
@@ -202,7 +199,7 @@ std::vector<std::uint64_t> order_candidates(const std::vector<std::uint64_t>& ou
 ///      it would just reprompt the user forever.
 bool acquire_capture_session(libertas::spike::PortalRequest req, Acquired& out,
                              const std::function<bool(Acquired&, std::string&)>& verify,
-                             std::string& error) {
+                             bool probe_node, bool persist_token, std::string& error) {
     for (int attempt = 0; attempt < 2; ++attempt) {
         const bool restoring = !req.restore_token.empty();
         if (restoring)
@@ -220,6 +217,14 @@ bool acquire_capture_session(libertas::spike::PortalRequest req, Acquired& out,
             return false;
         }
 
+        // Log the source NOW. The offered formats differ per output, so a run whose capture source
+        // is unknown is not a measurement - and the summary block below only prints on success.
+        for (const auto& st : session.streams)
+            lc::info("CAPTURE SOURCE: {} ({}) {}x{} at ({},{}) node {}",
+                     st.mapping_id.empty() ? std::string("(no mapping_id)") : st.mapping_id,
+                     source_type_name(st.source_type), st.width, st.height, st.pos_x, st.pos_y,
+                     st.node_id);
+
         // From here on the session must be closed on every failure path.
         const std::uint32_t node_id = session.streams.front().node_id;
         std::string serr;
@@ -232,11 +237,31 @@ bool acquire_capture_session(libertas::spike::PortalRequest req, Acquired& out,
             return false;
         }
 
+        // --no-probe exists to test whether the readiness probe is itself the problem. It binds
+        // the node over the registry and enumerates its params, and the only stage-2 run that
+        // ever delivered frames was the one written before the probe existed.
         libertas::spike::NodeFormats formats;
         const libertas::spike::NodeReadiness r =
-            libertas::spike::pw_probe_node(*pw, node_id, &formats);
+            probe_node ? libertas::spike::pw_probe_node(*pw, node_id, &formats)
+                       : libertas::spike::NodeReadiness::Ready;
         std::string why;
+        if (r == libertas::spike::NodeReadiness::Ready && probe_node) {
+            lc::info("node {} offers {} modifier(s) before we connect:", node_id,
+                     formats.offered.size());
+            for (std::uint64_t m : formats.offered)
+                lc::info("  offered: {}{}", libertas::spike::modifier_str(m),
+                         std::find(formats.preferred.begin(), formats.preferred.end(), m) !=
+                                 formats.preferred.end()
+                             ? "   <- published as a fixed value (its current layout)"
+                             : "");
+        }
         if (r == libertas::spike::NodeReadiness::Ready) {
+            // Persist the token HERE, on validation, not after the whole run succeeds. The token
+            // records that the user authorised this source; whether our pipeline then works is a
+            // separate question. Saving it only on full success meant every debugging run cost
+            // another picker click - the opposite of what the policy was for.
+            if (!session.restore_token.empty() && persist_token)
+                save_cached_token(session.restore_token);
             out.session = std::move(session);
             out.pw = std::move(pw);
             out.formats = std::move(formats);
@@ -264,8 +289,17 @@ bool acquire_capture_session(libertas::spike::PortalRequest req, Acquired& out,
             return false;
         }
 
-        lc::warn("discarding the restore token and falling back to a fresh picker session");
-        forget_cached_token();
+        // Discard the token only on definitive evidence that it is bad - a node that does not
+        // exist, or exists with no formats. A failure *in use* is far more likely to be a bug of
+        // ours, and throwing the token away for that means every debugging run costs the user
+        // another picker click, which is exactly backwards.
+        if (r != libertas::spike::NodeReadiness::Ready) {
+            lc::warn("discarding the restore token: the node it names is unusable");
+            forget_cached_token();
+        } else {
+            lc::warn("keeping the restore token (the node was valid; the failure was in use)");
+        }
+        lc::warn("falling back to a fresh picker session");
         req.restore_token.clear();
     }
     error = "could not acquire a usable capture session";
@@ -287,6 +321,7 @@ int main(int argc, char** argv) {
     bool mirror = false;
     bool sweep = false;
     bool no_restore = false;
+    bool no_probe = false;
     bool explicit_token = false;
     std::string prefer_drm_node;
     libertas::spike::PortalRequest req;
@@ -337,6 +372,8 @@ int main(int argc, char** argv) {
             explicit_token = true;
         } else if (a == "--no-restore") {
             no_restore = true;
+        } else if (a == "--no-probe") {
+            no_probe = true;
         } else if (a == "--forget") {
             forget_cached_token();
             lc::info("cached restore token removed ({})", token_cache_path());
@@ -514,6 +551,7 @@ int main(int argc, char** argv) {
         // dies. Each rung is logged, because silently taking a slower path is how performance
         // problems become unexplainable.
         std::vector<std::uint64_t> candidates = sc.modifiers;
+        bool tried_implicit = false;
         for (int rung = 0;; ++rung) {
             sc.modifiers = candidates;
             // 8s is a no-progress watchdog, not a total budget: it is re-armed on every frame, so
@@ -526,20 +564,32 @@ int main(int argc, char** argv) {
                                                : std::string("none (shm)"));
                 return true;
             }
-            // Only a modifier that was actually fixated can be blamed; anything else means the
-            // failure was not modifier-specific and retrying would just repeat it.
-            if (!fmt.have_modifier || candidates.empty())
-                break;
-            const std::uint64_t failed = fmt.modifier;
-            const auto it = std::find(candidates.begin(), candidates.end(), failed);
-            if (it == candidates.end())
-                break;
-            candidates.erase(it);
-            lc::warn("modifier {} negotiated but could not deliver frames ({}); "
-                     "dropping it and retrying with {} candidate(s)",
-                     libertas::spike::modifier_str(failed), serr, candidates.size());
-            if (candidates.empty())
-                break;
+            // Exhaust the explicit candidates first: only a modifier that was actually
+            // fixated can be blamed, so drop that one and try the next.
+            bool dropped = false;
+            if (fmt.have_modifier) {
+                const auto it = std::find(candidates.begin(), candidates.end(), fmt.modifier);
+                if (it != candidates.end()) {
+                    lc::warn("modifier {} negotiated but could not deliver frames ({}); "
+                             "dropping it and retrying",
+                             libertas::spike::modifier_str(fmt.modifier), serr);
+                    candidates.erase(it);
+                    dropped = !candidates.empty();
+                }
+            }
+            // Last rung: no modifier property at all - the implicit/shm path. This is the
+            // bottom of ADR-0007's ladder and the one configuration proven to deliver frames on
+            // this machine. It is NOT "{INVALID, LINEAR}": INVALID is the absence of a modifier,
+            // and advertising the sentinel as though it were one is what produced a stream that
+            // reached `streaming` and then starved.
+            if (!dropped) {
+                if (tried_implicit || shm_only || !explicit_mods.empty())
+                    break;
+                tried_implicit = true;
+                candidates.clear();
+                lc::warn("explicit modifiers exhausted; falling back to the implicit/shm path "
+                         "(no modifier property) - zero-copy is given up, the stream survives");
+            }
             stats = Stats{};
         }
         lc::error("stream failed: {}", serr);
@@ -561,7 +611,7 @@ int main(int argc, char** argv) {
     std::function<bool(Acquired&, std::string&)> verifier;
     if (stream_verifies)
         verifier = stream_once;
-    if (!acquire_capture_session(req, acq, verifier, error)) {
+    if (!acquire_capture_session(req, acq, verifier, !no_probe, !no_restore, error)) {
         lc::error("portal negotiation failed: {}", error);
         return 2;
     }
@@ -594,14 +644,6 @@ int main(int argc, char** argv) {
     if (!session.restore_token.empty())
         std::printf("  restore token : %s\n", session.restore_token.c_str());
     std::printf("\n");
-
-    // Cache the token now that the session is *validated*, rather than waiting for frames.
-    // ADR-0009 originally said "only after frames have flowed", to avoid persisting a phantom
-    // session. Validation already rules that out, and it separates the two concerns properly: the
-    // token records that the user authorised this source, whereas frames flowing tests our own
-    // pipeline. A modifier mismatch is our bug, and must not cost the user another picker click.
-    if (!session.restore_token.empty() && !no_restore)
-        save_cached_token(session.restore_token);
 
     if (stage <= 1) {
         lc::info("stage 1 complete");

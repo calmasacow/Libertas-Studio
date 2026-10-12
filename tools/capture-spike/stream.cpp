@@ -238,8 +238,14 @@ std::vector<std::uint64_t> extract_modifiers(const spa_pod_prop* prop) {
 ///
 /// Our list is ordered by preference and contains only modifiers this device can import, so
 /// honouring our order (rather than the server's) is what makes negotiation mean something.
-/// DRM_FORMAT_MOD_INVALID is deliberately last: it means "implicit, producer's choice", which
-/// gives up the guarantee that the buffer we get is one we can import.
+///
+/// `DRM_FORMAT_MOD_INVALID` is never chosen. It is not a modifier - it is the *absence* of one,
+/// meaning "implicit, driver's choice" - so fixating it asks the compositor for something
+/// meaningless. Measured: fixating INVALID on DP-1 reaches `streaming`, the node goes
+/// `running -> idle` within a millisecond having allocated nothing, and the stream then errors
+/// with `no more input formats`. A source that offers only INVALID is telling us it has no
+/// explicit-modifier path, and the right answer is to drop the modifier property altogether
+/// (the implicit/shm format we always advertise alongside), not to fixate the sentinel.
 bool choose_modifier(const std::vector<std::uint64_t>& offered,
                      const std::vector<std::uint64_t>& prefs, std::uint64_t& out) {
     for (std::uint64_t p : prefs) {
@@ -249,11 +255,6 @@ bool choose_modifier(const std::vector<std::uint64_t>& offered,
             out = p;
             return true;
         }
-    }
-    if (std::find(prefs.begin(), prefs.end(), kModifierInvalid) != prefs.end() &&
-        std::find(offered.begin(), offered.end(), kModifierInvalid) != offered.end()) {
-        out = kModifierInvalid;
-        return true;
     }
     return false;
 }
@@ -318,9 +319,14 @@ void on_param_changed(void* data, std::uint32_t id, const spa_pod* param) {
             std::string ours;
             for (std::uint64_t m : r->cfg->modifiers)
                 ours += (ours.empty() ? "" : " ") + modifier_str(m);
+            const bool only_invalid = offered.size() == 1 && offered.front() == kModifierInvalid;
             r->error = std::format(
-                "no common DRM format modifier for {}: source offers [{}], we can import [{}]",
-                fourcc_str(r->fmt->drm_format), off, ours);
+                "no common explicit DRM format modifier for {}: source offers [{}], we can import "
+                "[{}]{}",
+                fourcc_str(r->fmt->drm_format), off, ours,
+                only_invalid ? " - the source offers only DRM_FORMAT_MOD_INVALID, i.e. no "
+                               "explicit-modifier path at all; retry without a modifier property"
+                             : "");
             r->stop();
             return;
         }
