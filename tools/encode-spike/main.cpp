@@ -1,0 +1,410 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The Phase-0 go/no-go gate: capture -> colour convert -> encode -> mux, with synced audio,
+// producing a playable file on this machine.
+//
+// This is the bottom rung of ADR-0006's ladder on purpose. It reads frames back to host memory and
+// converts on the CPU, which is the slow path - and measuring exactly how slow is the point, since
+// that cost is what the Vulkan tier exists to remove. A gate that only passes on the fast path
+// proves nothing about what happens when the fast path is unavailable.
+
+#include "audio.hpp"
+#include "encoder.hpp"
+
+#include <vk_import.hpp>
+#include <wlcap.hpp>
+
+#include <lcore/log.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+namespace {
+
+void usage() {
+    std::printf(R"(encode-spike - the Phase-0 gate: capture -> convert -> encode -> mux
+
+usage:
+  --out FILE           output file (default /tmp/libertas-gate.mp4)
+  --output NAME        which output to capture (default: the first)
+  --frames N           capture and encode N frames (default 300)
+  --fps N              declared output rate (default 60)
+  --bitrate KBPS       video bitrate in kbps (default 12000)
+  --tier NAME          pin an encoder tier: h264_nvenc | libx264
+  --no-audio           video only - useful to isolate, but NOT the gate
+  --audio-source       capture a microphone rather than the desktop's output
+  --drm-node MAJ:MIN   select the Vulkan device by DRM node, never by index
+  --slots N            capture buffer ring size (default 4)
+)");
+}
+
+void report(const char* label, std::vector<double> v) {
+    if (v.empty())
+        return;
+    std::sort(v.begin(), v.end());
+    double sum = 0;
+    for (double x : v)
+        sum += x;
+    const double mean = sum / static_cast<double>(v.size());
+    std::printf("  %-16s mean %7.3f ms   p50 %7.3f   p99 %7.3f   max %7.3f\n", label, mean,
+                v[v.size() / 2], v[(v.size() * 99) / 100], v.back());
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    lc::init_from_env();
+
+    std::string out_path = "/tmp/libertas-gate.mp4";
+    std::string output_name;
+    std::string drm_node;
+    std::string tier;
+    std::uint32_t frames = 300;
+    std::uint32_t slots = 4;
+    std::int32_t fps = 60;
+    std::int64_t bitrate_kbps = 12000;
+    bool want_audio = true;
+    bool capture_sink = true;
+
+    const std::vector<std::string_view> args(argv + 1, argv + argc);
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view a = args[i];
+        if (a == "--help" || a == "-h") {
+            usage();
+            return 0;
+        } else if (a == "--out" && i + 1 < args.size()) {
+            out_path = std::string(args[++i]);
+        } else if (a == "--output" && i + 1 < args.size()) {
+            output_name = std::string(args[++i]);
+        } else if (a == "--drm-node" && i + 1 < args.size()) {
+            drm_node = std::string(args[++i]);
+        } else if (a == "--tier" && i + 1 < args.size()) {
+            tier = std::string(args[++i]);
+        } else if (a == "--frames" && i + 1 < args.size()) {
+            frames = static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
+        } else if (a == "--slots" && i + 1 < args.size()) {
+            slots = static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
+        } else if (a == "--fps" && i + 1 < args.size()) {
+            fps = static_cast<std::int32_t>(std::strtol(std::string(args[++i]).c_str(), nullptr, 10));
+        } else if (a == "--bitrate" && i + 1 < args.size()) {
+            bitrate_kbps = std::strtoll(std::string(args[++i]).c_str(), nullptr, 10);
+        } else if (a == "--no-audio") {
+            want_audio = false;
+        } else if (a == "--audio-source") {
+            capture_sink = false;
+        } else {
+            lc::error("unknown argument: {}", a);
+            usage();
+            return 1;
+        }
+    }
+
+    std::string err;
+
+    // --- capture (ADR-0011: ext-image-copy-capture-v1, no portal, no picker) ---
+    libertas::spike::WlCapPtr cap = libertas::spike::wlcap_open(err);
+    if (!cap) {
+        lc::error("ext-image-copy-capture unavailable: {}", err);
+        return 2;
+    }
+    libertas::spike::WlCapCaps caps;
+    if (!libertas::spike::wlcap_begin_session(*cap, output_name, false, caps, err)) {
+        lc::error("capture session failed: {}", err);
+        return 2;
+    }
+
+    libertas::spike::VkCtxPtr vk = libertas::spike::vk_init(drm_node, err);
+    if (!vk) {
+        lc::error("vulkan init failed: {}", err);
+        return 2;
+    }
+    lc::info("vulkan device: {}", libertas::spike::vk_device_name(*vk));
+    lc::info("capture: {}x{} from {}", caps.width, caps.height,
+             output_name.empty() ? "the first output" : output_name.c_str());
+
+    // Allocate the ring from the intersection of what the compositor offers and what our device
+    // can use. Because we allocate, this intersection IS the negotiation (ADR-0011).
+    std::vector<libertas::spike::VkExportedImage> ring;
+    std::uint32_t chosen_format = 0;
+    for (const auto& f : caps.formats) {
+        const std::vector<std::uint64_t> ours = libertas::spike::vk_supported_modifiers(*vk, f.drm_format);
+        std::vector<std::uint64_t> common;
+        for (std::uint64_t m : f.modifiers)
+            if (std::find(ours.begin(), ours.end(), m) != ours.end())
+                common.push_back(m);
+        if (common.empty())
+            continue;
+
+        ring.assign(slots, {});
+        bool ok = true;
+        for (std::uint32_t s = 0; s < slots; ++s) {
+            if (!libertas::spike::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
+                                                       common, false, ring[s], err) ||
+                !libertas::spike::wlcap_add_slot(*cap, ring[s], f.drm_format, err)) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            chosen_format = f.drm_format;
+            break;
+        }
+        for (auto& r : ring)
+            libertas::spike::vk_destroy_exportable(*vk, r);
+        ring.clear();
+    }
+    if (chosen_format == 0) {
+        lc::error("no format/modifier the compositor and this GPU both accept");
+        return 2;
+    }
+
+    // --- audio ---
+    libertas::spike::AudioPtr audio;
+    if (want_audio) {
+        libertas::spike::AudioConfig acfg;
+        acfg.capture_sink = capture_sink;
+        audio = libertas::spike::audio_open(acfg, err);
+        if (!audio) {
+            lc::error("audio capture failed: {}", err);
+            return 2;
+        }
+    }
+
+    // --- encoder ---
+    libertas::spike::EncoderConfig ecfg;
+    ecfg.path = out_path;
+    ecfg.width = caps.width;
+    ecfg.height = caps.height;
+    ecfg.fps_num = fps;
+    ecfg.bitrate = bitrate_kbps * 1000;
+    ecfg.force_tier = tier;
+    ecfg.audio_channels = want_audio ? 2 : 0;
+    libertas::spike::EncoderPtr enc = libertas::spike::encoder_open(ecfg, err);
+    if (!enc) {
+        lc::error("encoder open failed: {}", err);
+        return 2;
+    }
+
+    // ---- the encoder's clock ----
+    //
+    // ADR-0013: capture is damage-driven, so frames arrive when the screen changes and at no
+    // other time. A loop that encodes one frame per captured frame therefore produces a file whose
+    // rate is set by how busy the desktop happened to be - and on a still desktop it simply stops.
+    // That was the first version of this loop and it hung, which is the ADR being right.
+    //
+    // So capture runs free on its own thread, publishing the newest frame it has, and the encoder
+    // ticks at the configured output rate, taking whatever is current. When nothing changed it
+    // re-encodes the last frame, which is exactly what a streaming encoder must do: the viewer is
+    // owed a constant frame rate whether or not the screen moved.
+
+    struct Latest {
+        std::mutex mu;
+        std::vector<std::uint8_t> pixels;
+        std::uint64_t presented_ns = 0;
+        std::uint64_t seq = 0;
+        bool stop = false;
+        std::string err;
+    } latest;
+
+    std::vector<double> capture_ms;
+    std::vector<double> readback_ms;
+    std::mutex stats_mu;
+
+    std::thread capture_thread([&] {
+        std::vector<std::uint8_t> local;
+        for (std::uint64_t i = 0;; ++i) {
+            {
+                std::lock_guard<std::mutex> lk(latest.mu);
+                if (latest.stop)
+                    return;
+            }
+            const std::size_t slot = static_cast<std::size_t>(i % ring.size());
+            std::uint64_t presented_ns = 0;
+            std::string e;
+
+            auto t = std::chrono::steady_clock::now();
+            if (!libertas::spike::wlcap_capture_slot(*cap, slot, caps.width, caps.height,
+                                                     &presented_ns, e)) {
+                std::lock_guard<std::mutex> lk(latest.mu);
+                latest.err = e;
+                return;
+            }
+            const double cms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+
+            t = std::chrono::steady_clock::now();
+            if (!libertas::spike::vk_readback_exported(*vk, ring[slot], true, local, e)) {
+                std::lock_guard<std::mutex> lk(latest.mu);
+                latest.err = e;
+                return;
+            }
+            const double rms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+
+            {
+                std::lock_guard<std::mutex> lk(stats_mu);
+                capture_ms.push_back(cms);
+                readback_ms.push_back(rms);
+            }
+            {
+                std::lock_guard<std::mutex> lk(latest.mu);
+                latest.pixels = local;
+                latest.presented_ns = presented_ns;
+                ++latest.seq;
+            }
+        }
+    });
+
+    // Wait for the first real frame; without one there is nothing to duplicate from.
+    std::vector<std::uint8_t> pixels;
+    std::uint64_t last_seq = 0;
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lk(latest.mu);
+                if (latest.seq > 0) {
+                    pixels = latest.pixels;
+                    last_seq = latest.seq;
+                    break;
+                }
+                if (!latest.err.empty()) {
+                    lc::error("capture thread failed: {}", latest.err);
+                    { std::lock_guard<std::mutex> l2(latest.mu); latest.stop = true; }
+                    capture_thread.join();
+                    return 3;
+                }
+            }
+            if (std::chrono::steady_clock::now() > deadline) {
+                lc::error("no frame in 10 s - is the output producing any damage at all?");
+                { std::lock_guard<std::mutex> lk(latest.mu); latest.stop = true; }
+                capture_thread.detach();
+                return 3;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+
+    // Discard everything audio captured up to this instant. The two streams must share one
+    // origin, and the origin is the first encoder tick - not encoder_open, because the wait for
+    // the first captured frame sits between the two and audio keeps running through it. Draining
+    // earlier leaves exactly that gap of pre-roll in the file, labelled as concurrent with t=0,
+    // which plays as a fixed A/V offset that looks like drift.
+    if (audio) {
+        std::vector<float> junk;
+        std::uint32_t jn = 0;
+        libertas::spike::audio_drain(*audio, junk, jn);
+    }
+
+    std::uint64_t audio_frames_fed = 0;
+    std::uint32_t duplicated = 0;
+    const auto run_begin = std::chrono::steady_clock::now();
+    const std::int64_t tick_ns = 1'000'000'000LL * ecfg.fps_den / ecfg.fps_num;
+
+    for (std::uint32_t i = 0; i < frames; ++i) {
+        const auto deadline = run_begin + std::chrono::nanoseconds(tick_ns * i);
+        std::this_thread::sleep_until(deadline);
+
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> lk(latest.mu);
+            if (!latest.err.empty()) {
+                lc::warn("capture ended early: {}", latest.err);
+                break;
+            }
+            if (latest.seq != last_seq) {
+                pixels = latest.pixels;
+                last_seq = latest.seq;
+                fresh = true;
+            }
+        }
+        if (!fresh)
+            ++duplicated;
+
+        // The pts is the ENCODER's clock, not the compositor's. The output timeline is ours and
+        // is constant-rate; the compositor's presentation time only tells us whether the content
+        // is new.
+        const std::int64_t pts_ns = tick_ns * i;
+
+        if (!libertas::spike::encoder_video(*enc, pixels.data(),
+                                            static_cast<std::size_t>(caps.width) * 4, pts_ns, err)) {
+            lc::error("video encode failed at frame {}: {}", i, err);
+            break;
+        }
+
+        if (audio) {
+            std::vector<float> samples;
+            std::uint32_t n = 0;
+            libertas::spike::audio_drain(*audio, samples, n);
+            if (n > 0) {
+                if (!libertas::spike::encoder_audio(*enc, samples.data(), n, pts_ns, err)) {
+                    lc::error("audio encode failed: {}", err);
+                    break;
+                }
+                audio_frames_fed += n;
+            }
+        }
+    }
+
+    { std::lock_guard<std::mutex> lk(latest.mu); latest.stop = true; }
+    // The capture thread may be parked inside a blocking roundtrip waiting for damage that will
+    // never come, so it is detached rather than joined. A real worker gets a wakeup pipe; a spike
+    // that is about to exit does not need one.
+    capture_thread.detach();
+
+    // Trailing audio, so the tail is not cut short of the video.
+    if (audio) {
+        std::vector<float> samples;
+        std::uint32_t n = 0;
+        libertas::spike::audio_drain(*audio, samples, n);
+        if (n > 0 && libertas::spike::encoder_audio(*enc, samples.data(), n, 0, err))
+            audio_frames_fed += n;
+    }
+
+    if (!libertas::spike::encoder_finish(*enc, err)) {
+        lc::error("finish failed: {}", err);
+        return 3;
+    }
+    const double wall_s =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - run_begin).count();
+
+    const auto& st = libertas::spike::encoder_stats(*enc);
+    std::printf("\n=== Phase-0 gate: %s ===\n", out_path.c_str());
+    std::printf("  video         : %s, %u frames, %.2f MiB\n", st.video_encoder.c_str(),
+                static_cast<unsigned>(st.video_frames),
+                static_cast<double>(st.video_bytes) / (1024.0 * 1024.0));
+    if (audio) {
+        std::printf("  audio         : %s (%s), %u packets, %.2f MiB, %llu sample-frames fed\n",
+                    st.audio_encoder.c_str(), libertas::spike::audio_format_str(*audio).c_str(),
+                    static_cast<unsigned>(st.audio_frames),
+                    static_cast<double>(st.audio_bytes) / (1024.0 * 1024.0),
+                    static_cast<unsigned long long>(audio_frames_fed));
+        const double audio_s = static_cast<double>(audio_frames_fed) / 48000.0;
+        std::printf("  audio span    : %.3f s of audio for %.3f s of wall time (%+.1f ms)\n",
+                    audio_s, wall_s, (audio_s - wall_s) * 1000.0);
+    }
+    std::printf("  duplicated    : %u of %u output frames had no new capture (%.1f%%) - correct "
+                "behaviour on a still desktop, not a fault\n",
+                duplicated, static_cast<unsigned>(st.video_frames),
+                st.video_frames > 0 ? 100.0 * duplicated / static_cast<double>(st.video_frames) : 0.0);
+    std::printf("  wall          : %.2f s for %u frames (%.2f fps)\n", wall_s,
+                static_cast<unsigned>(st.video_frames),
+                wall_s > 0 ? static_cast<double>(st.video_frames) / wall_s : 0.0);
+    std::printf("\n  per-stage cost (this is the sw path; the Vulkan tier removes readback+convert)\n");
+    {
+        std::lock_guard<std::mutex> lk(stats_mu);
+        std::printf("  captures delivered by the compositor: %zu\n", capture_ms.size());
+        report("capture", capture_ms);
+        report("readback", readback_ms);
+    }
+    report("encode+convert", st.video_encode_ms);
+    return 0;
+}
