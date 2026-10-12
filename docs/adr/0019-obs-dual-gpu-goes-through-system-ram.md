@@ -139,6 +139,38 @@ cheaper to build and it benefits every machine that can never reach the Vulkan t
 ADR-0018 called the GPU colour conversion "the largest single software cost"; this is the evidence
 for the order it should be done in.
 
+### Built and measured
+
+Done, in commit `87a1735`. Measured on DP-1 under sustained damage (`vkcube` on a 165 Hz output,
+**1623 and 1602 captures** - not the handful of samples this document has twice had to apologise
+for), both runs 600 frames at 60 fps:
+
+```
+                     CPU path (n=1602)   GPU path (n=1623)
+readback / convert        1.704 ms            0.771 ms
+colour convert (CPU)      4.779 ms              -
+NV12 plane copy             -                 0.380 ms
+encode                    0.514 ms            0.429 ms
+                          --------            --------
+total per frame           6.997 ms            1.580 ms
+PCIe per frame           14.06 MiB            5.27 MiB
+```
+
+**4.4x faster and 2.67x less bus traffic**, taking the pipeline from 42% of a 60 fps frame budget
+to 9.5%. The prediction above was ~1.2 ms; the extra 0.38 ms is the copy into FFmpeg's own frame
+buffer, which the prediction did not account for and which a future zero-copy submission removes.
+
+Correctness was established before the timings were believed. Against the swscale path on an
+identical still frame: `YAVG 66.2078` vs `66.217`, `UAVG 132.215` vs `132.218`, `VAVG 125.964` vs
+`125.968` - agreement to within rounding - and the decoded frame inspected visually. Under the
+busy run the chroma still agrees to 0.002 while luma differs by 0.3, which is the cube being at a
+different angle, not the conversion.
+
+One honest blemish: a single `convert+readback` sample of **61.118 ms** against a p99 of 1.386.
+One outlier in 1622, cause not established. It is recorded rather than trimmed, because a rare
+multi-frame stall is exactly the kind of thing this project exists to not ship, and it needs an
+explanation before Phase 1.5 rather than a smaller y-axis.
+
 ## Third observation: media sources decode on the CPU
 
 The per-thread breakdown of the live OBS process (191% CPU total) shows the cost is not in one
