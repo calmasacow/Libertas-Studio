@@ -23,6 +23,8 @@
 
 #include <drm_fourcc.h>
 
+#include <ctime>
+
 namespace libertas::spike {
 
 std::string fourcc_str(std::uint32_t f) {
@@ -365,6 +367,9 @@ struct Dumper {
     std::uint32_t want_node = 0;
     int sync_seq = 0;
     std::uint32_t params_seen = 0;
+    bool quiet = false;
+    bool node_found = false;   ///< did the registry ever announce want_node?
+    std::uint32_t nodes_seen = 0;
 };
 
 void on_node_param(void* data, int, std::uint32_t id, std::uint32_t index, std::uint32_t,
@@ -373,6 +378,8 @@ void on_node_param(void* data, int, std::uint32_t id, std::uint32_t index, std::
     if (id != SPA_PARAM_EnumFormat || param == nullptr)
         return;
     ++d->params_seen;
+    if (d->quiet)
+        return;
     std::printf("  --- EnumFormat[%u] ---\n", index);
     std::fflush(stdout);
     spa_debug_format(4, nullptr, param);
@@ -387,8 +394,11 @@ constexpr pw_node_events kNodeEvents = {
 void on_registry_global(void* data, std::uint32_t id, std::uint32_t, const char* type,
                         std::uint32_t version, const spa_dict*) {
     auto* d = static_cast<Dumper*>(data);
+    if (type != nullptr && std::strcmp(type, PW_TYPE_INTERFACE_Node) == 0)
+        ++d->nodes_seen;
     if (id != d->want_node || type == nullptr || std::strcmp(type, PW_TYPE_INTERFACE_Node) != 0)
         return;
+    d->node_found = true;
 
     d->node = static_cast<pw_node*>(
         pw_registry_bind(d->registry, id, PW_TYPE_INTERFACE_Node, version, 0));
@@ -425,6 +435,67 @@ constexpr pw_core_events kCoreEvents = {
 };
 
 } // namespace
+
+namespace {
+
+/// One bind+enum_params+sync round against `node_id`. Returns how many EnumFormat params arrived.
+struct ProbeResult {
+    std::uint32_t params = 0;
+    bool node_found = false;
+    std::uint32_t nodes_seen = 0;
+};
+
+ProbeResult probe_node_params(PwSession& session, std::uint32_t node_id, bool verbose) {
+    Dumper d;
+    d.want_node = node_id;
+    d.loop = session.loop;
+    d.core = session.core;
+    d.quiet = !verbose;
+
+    pw_core_add_listener(d.core, &d.core_listener, &kCoreEvents, &d);
+    d.registry = pw_core_get_registry(d.core, PW_VERSION_REGISTRY, 0);
+    pw_registry_add_listener(d.registry, &d.registry_listener, &kRegistryEvents, &d);
+    d.sync_seq = pw_core_sync(d.core, PW_ID_CORE, 0);
+
+    pw_main_loop_run(d.loop);
+
+    spa_hook_remove(&d.registry_listener);
+    spa_hook_remove(&d.core_listener);
+    if (d.node != nullptr)
+        spa_hook_remove(&d.node_listener);
+    return ProbeResult{d.params_seen, d.node_found, d.nodes_seen};
+}
+
+} // namespace
+
+bool pw_wait_node_ready(PwSession& session, std::uint32_t node_id, int timeout_ms) {
+    constexpr int kIntervalMs = 100;
+    int waited = 0;
+    ProbeResult last;
+    for (;;) {
+        last = probe_node_params(session, node_id, false);
+        if (last.params > 0) {
+            if (waited > 0)
+                lc::info("node {} became ready after {} ms", node_id, waited);
+            return true;
+        }
+        if (waited >= timeout_ms) {
+            // Distinguishing these two is the whole point: a node that never appears in the
+            // registry is a dead session, not a slow one.
+            if (!last.node_found)
+                lc::warn("node {} NEVER APPEARED in the registry after {} ms ({} other nodes "
+                         "visible) - the portal handed back a node id that does not exist",
+                         node_id, timeout_ms, last.nodes_seen);
+            else
+                lc::warn("node {} exists but advertises no EnumFormat params after {} ms", node_id,
+                         timeout_ms);
+            return false;
+        }
+        const timespec ts{0, static_cast<long>(kIntervalMs) * 1'000'000L};
+        ::nanosleep(&ts, nullptr);
+        waited += kIntervalMs;
+    }
+}
 
 bool pw_dump_formats(PwSession& session, std::uint32_t node_id) {
     Dumper d;
@@ -631,6 +702,8 @@ bool run_stream(const StreamConfig& cfg, NegotiatedFormat& out_format, std::stri
     PwSessionPtr s = pw_session_open(cfg.pipewire_fd, error);
     if (!s)
         return false;
+    // The node may not have published its formats yet (ADR-0009).
+    pw_wait_node_ready(*s, cfg.node_id);
     return pw_try_variant(*s, cfg, out_format, error);
 }
 

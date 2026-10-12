@@ -73,8 +73,8 @@ found afterwards, and a third remains open:
    success from roughly 1-in-3 to 3-in-4. A `SessionCloser` RAII guard now runs on every exit path.
    **A real implementation must close its sessions**; leaking them degrades the compositor for every
    subsequent client, not just itself.
-3. **The actual root cause** - a node-readiness race. See the section below; this supersedes the
-   speculation that previously sat here.
+3. **The actual root cause** - a restored session returns a node id that does not exist. See the
+   section below.
 
 ## A harness bug to avoid repeating
 
@@ -128,41 +128,55 @@ exactly the "accept a format then fail at import" trap the design set out to avo
 modifier intersection must be computed from the Vulkan list rather than assumed. **It needs
 confirming on a pinned output before being treated as fact.**
 
-## ROOT CAUSE of the intermittency: the node is not ready when Start returns
+## ROOT CAUSE: a restored session returns a phantom node id
 
-Found with the live-session format dump plus a `param_changed`-never-fired marker:
+Proven by instrumenting the probe to distinguish "node exists but has no formats" from "node never
+appeared in the registry at all":
 
 ```
-=== sweep: 6 variants against ONE session (node 377, DP-1) ===
+info  CAPTURE SOURCE: DP-3 (monitor) 2560x1440 node 39
+warn  node 39 NEVER APPEARED in the registry after 5000 ms (52 other nodes visible)
+      - the portal handed back a node id that does not exist
   INVALID + LINEAR (known good) : FAIL (no more input formats
                                   [param_changed never fired: server rejected every param])
-=== formats offered by node 377 (live session) ===
-  (0 EnumFormat params)
 ```
 
-**The PipeWire node advertises zero EnumFormat params.** The same kind of node, dumped at a different
-moment, offered two. So `org.freedesktop.portal.ScreenCast.Start` returns a node id *before* that
-node has populated its format params, and connecting immediately means the server has nothing to
-intersect against - which surfaces as `no more input formats` and looks exactly like a modifier
-incompatibility.
+`org.freedesktop.portal.ScreenCast` accepts a `restore_token`, returns a session handle and a node
+id, and reports success — but **that node is never registered in PipeWire.** Note the id (39) is far
+below the ids of live nodes, i.e. plainly stale. Every subsequent step then fails in a way that
+mimics a format problem: no formats to intersect, so `param_changed` never fires and the stream
+errors with `no more input formats`.
 
-This explains every confusing observation:
+### Two retractions, in order
 
-- Runs that "worked" were ones where a human clicking the picker introduced seconds of delay; runs
-  that failed were fast-path (persisted grant) and connected too early.
-- No modifier list ever mattered. The LINEAR-vs-NVIDIA and INVALID-presence theories were both
-  noise.
-- Restarting the portals changed nothing, because the race is per-session.
-- The monitor choice mattered only because picking different monitors changed the click timing.
+1. An early draft blamed stale restore tokens. **That was correct**, but it was asserted without a
+   mechanism and on confounded evidence (see below), so it did not deserve to be believed.
+2. A later draft *retracted* that and blamed a node-readiness race, on the grounds that a 5000 ms
+   wait did not help. **That retraction was wrong.** The wait did not help because the node did not
+   exist, not because it was slow. The readiness poll was measuring the wrong thing until it could
+   report `node_found`.
 
-**Required fix, and it belongs in the real capture worker:** after `Start`, do not connect
-immediately. Bind the node through the registry and wait until it advertises at least one
-`SPA_PARAM_EnumFormat` - with a timeout and retry - before calling `pw_stream_connect`. The
-registry/param machinery for this already exists in `pw_dump_formats`.
+The confounders that made this take so long, all of them methodological:
 
-The earlier "accept-then-fail-at-import" lead (a session settling on `NVIDIA(0x300000000e08014)`,
-absent from the device's importable list) is still unverified and remains worth checking once
-negotiation is deterministic.
+- **Four monitors.** The picker selects a different capture source per session, so cross-run
+  comparisons compared different sources. Fixed by requesting monitors only and logging
+  `mapping_id` on every run.
+- **Leaked sessions.** `Session.Close()` was never called, and `timeout`'s SIGTERM skipped the
+  destructor. Both fixed; the signal handler is now mandatory, not a nicety.
+- **An invalid sweep harness.** Per-attempt `pw_init`/`pw_deinit` plus a dup'd single-use fd. Fixed
+  by one long-lived session with streams created inside it.
+- **No way to tell the failure modes apart.** Everything surfaced as `no more input formats`.
+
+### Required behaviour for the real capture worker
+
+1. **Validate a restored session before trusting it.** After `Start`, bind the node through the
+   registry and confirm it exists *and* advertises at least one `SPA_PARAM_EnumFormat`. The
+   `pw_wait_node_ready` helper does this and reports which of the two failed.
+2. **On failure, discard the token and fall back to a fresh session with the picker.** Never surface
+   a capture error to the user for what is a stale-token condition.
+3. Persist restore tokens only after a session has successfully produced frames.
+4. Keep the `node_found` / `params_seen` distinction in diagnostics permanently. Without it this bug
+   is indistinguishable from a modifier incompatibility, which is where several days could go.
 
 ## Still open
 

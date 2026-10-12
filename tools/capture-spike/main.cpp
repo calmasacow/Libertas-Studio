@@ -251,6 +251,9 @@ int main(int argc, char** argv) {
             return 3;
         }
 
+        if (!libertas::spike::pw_wait_node_ready(*pws, session.streams.front().node_id))
+            lc::warn("proceeding anyway; negotiation is expected to fail");
+
         bool dumped_on_failure = false;
         for (const Variant& v : variants) {
             libertas::spike::StreamConfig vc;

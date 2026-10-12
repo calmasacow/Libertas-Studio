@@ -80,6 +80,15 @@ bool pw_try_variant(PwSession& session, const StreamConfig& cfg, NegotiatedForma
 /// Returns false and fills `error` on failure. `out_format` reflects what was actually agreed.
 bool run_stream(const StreamConfig& cfg, NegotiatedFormat& out_format, std::string& error);
 
+/// Waits until `node_id` advertises at least one SPA_PARAM_EnumFormat.
+///
+/// portal ScreenCast.Start returns a node id BEFORE the node has populated its format params.
+/// Connecting immediately leaves the server nothing to intersect against, which surfaces as
+/// "no more input formats" and looks exactly like a modifier incompatibility. Every capture
+/// consumer must do this wait; see docs/adr/0009.
+/// Returns false on timeout.
+bool pw_wait_node_ready(PwSession& session, std::uint32_t node_id, int timeout_ms = 5000);
+
 /// Same as dump_node_formats but over an already-open session, so it can be called at the moment
 /// of a negotiation failure. The portal fd is single-use, so this is the only way to see what the
 /// source was offering during a live session.
