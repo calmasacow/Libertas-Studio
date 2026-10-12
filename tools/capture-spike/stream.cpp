@@ -11,6 +11,7 @@
 
 #include <lcore/log.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -112,6 +113,7 @@ struct Attempt {
     bool format_logged = false;
     bool fixated = false;
     bool timed_out = false;
+    int watchdog_ms = 0; ///< the deadline is per-step, not per-run; see rearm_watchdog()
     std::array<std::uint8_t, 2048> fixate_buf{};
 
     void stop(); // defined after PwSession is complete
@@ -207,6 +209,55 @@ void on_state_changed(void* data, pw_stream_state old, pw_stream_state state, co
     }
 }
 
+/// Every modifier the server left in a (possibly unfixated) modifier property.
+///
+/// This cannot be read with `spa_format_video_raw_parse`: when the property is still an unfixated
+/// CHOICE_Enum - which is exactly the state the two-round dance leaves it in - that helper cannot
+/// reduce the list to one value and silently leaves `modifier` at 0. Zero is a valid modifier
+/// (DRM_FORMAT_MOD_LINEAR), so the failure is indistinguishable from the server having chosen
+/// LINEAR, and the next step fixates a modifier the source never offered.
+std::vector<std::uint64_t> extract_modifiers(const spa_pod_prop* prop) {
+    std::vector<std::uint64_t> out;
+    if (prop == nullptr)
+        return out;
+    std::uint32_t n_vals = 0;
+    std::uint32_t choice = 0;
+    const spa_pod* vals = spa_pod_get_values(&prop->value, &n_vals, &choice);
+    if (vals == nullptr || vals->type != SPA_TYPE_Long)
+        return out;
+    const auto* body = static_cast<const std::uint64_t*>(SPA_POD_BODY_CONST(vals));
+    for (std::uint32_t i = 0; i < n_vals; ++i) {
+        // A CHOICE_Enum repeats its preferred value at index 0, so de-duplicate.
+        if (std::find(out.begin(), out.end(), body[i]) == out.end())
+            out.push_back(body[i]);
+    }
+    return out;
+}
+
+/// Picks the modifier to fixate: the first of *our* preferences that the source actually offers.
+///
+/// Our list is ordered by preference and contains only modifiers this device can import, so
+/// honouring our order (rather than the server's) is what makes negotiation mean something.
+/// DRM_FORMAT_MOD_INVALID is deliberately last: it means "implicit, producer's choice", which
+/// gives up the guarantee that the buffer we get is one we can import.
+bool choose_modifier(const std::vector<std::uint64_t>& offered,
+                     const std::vector<std::uint64_t>& prefs, std::uint64_t& out) {
+    for (std::uint64_t p : prefs) {
+        if (p == kModifierInvalid)
+            continue;
+        if (std::find(offered.begin(), offered.end(), p) != offered.end()) {
+            out = p;
+            return true;
+        }
+    }
+    if (std::find(prefs.begin(), prefs.end(), kModifierInvalid) != prefs.end() &&
+        std::find(offered.begin(), offered.end(), kModifierInvalid) != offered.end()) {
+        out = kModifierInvalid;
+        return true;
+    }
+    return false;
+}
+
 void on_param_changed(void* data, std::uint32_t id, const spa_pod* param) {
     auto* r = static_cast<Attempt*>(data);
     if (param == nullptr || id != SPA_PARAM_Format)
@@ -226,31 +277,54 @@ void on_param_changed(void* data, std::uint32_t id, const spa_pod* param) {
     const spa_pod_prop* mod_prop =
         spa_pod_find_prop(param, nullptr, SPA_FORMAT_VIDEO_modifier);
     const bool have_mod = (mod_prop != nullptr);
+    const bool dont_fixate =
+        have_mod && (mod_prop->flags & SPA_POD_PROP_FLAG_DONT_FIXATE) != 0;
+    const std::vector<std::uint64_t> offered = extract_modifiers(mod_prop);
 
     r->fmt->width = info.info.raw.size.width;
     r->fmt->height = info.info.raw.size.height;
     r->fmt->spa_format = info.info.raw.format;
     r->fmt->drm_format = spa_to_drm(info.info.raw.format);
-    r->fmt->modifier = have_mod ? info.info.raw.modifier : kModifierInvalid;
+    // Read the modifier out of the property ourselves; see extract_modifiers().
+    r->fmt->modifier = !offered.empty() ? offered.front()
+                                        : (have_mod ? info.info.raw.modifier : kModifierInvalid);
     r->fmt->have_modifier = have_mod;
     r->fmt->fps_num = static_cast<std::int32_t>(info.info.raw.framerate.num);
     r->fmt->fps_den = static_cast<std::int32_t>(info.info.raw.framerate.denom);
 
     if (!r->format_logged) {
         r->format_logged = true;
-        lc::info("negotiated {}x{} {} (drm {}) modifier {} fps {}/{}", r->fmt->width,
+        lc::info("server offers {}x{} {} (drm {}) fps {}/{} with {} modifier(s){}", r->fmt->width,
                  r->fmt->height, spa_format_name(r->fmt->spa_format),
-                 fourcc_str(r->fmt->drm_format),
-                 have_mod ? modifier_str(r->fmt->modifier) : std::string("none (shm path)"),
-                 r->fmt->fps_num, r->fmt->fps_den);
+                 fourcc_str(r->fmt->drm_format), r->fmt->fps_num, r->fmt->fps_den, offered.size(),
+                 dont_fixate ? ", unfixated" : "");
+        for (std::uint64_t m : offered)
+            lc::info("  offered: {}", modifier_str(m));
     }
 
     // The dmabuf negotiation dance: if the server left the modifier unfixated, we must answer with
     // exactly one modifier before it can allocate buffers. Skipping this is what produces
     // "no more input formats".
-    if (have_mod && !r->fixated &&
-        (mod_prop->flags & SPA_POD_PROP_FLAG_DONT_FIXATE) != 0) {
+    if (have_mod && !r->fixated && dont_fixate) {
         r->fixated = true;
+        std::uint64_t chosen = 0;
+        if (!choose_modifier(offered, r->cfg->modifiers, chosen)) {
+            // A real, reportable mismatch rather than a mystery: the source and this device share
+            // no modifier for this format. Say so, with both lists, instead of letting it surface
+            // as "no more input formats" three callbacks later.
+            std::string off;
+            for (std::uint64_t m : offered)
+                off += (off.empty() ? "" : " ") + modifier_str(m);
+            std::string ours;
+            for (std::uint64_t m : r->cfg->modifiers)
+                ours += (ours.empty() ? "" : " ") + modifier_str(m);
+            r->error = std::format(
+                "no common DRM format modifier for {}: source offers [{}], we can import [{}]",
+                fourcc_str(r->fmt->drm_format), off, ours);
+            r->stop();
+            return;
+        }
+        r->fmt->modifier = chosen;
         const spa_rectangle size = {r->fmt->width, r->fmt->height};
         const spa_fraction fps = {static_cast<std::uint32_t>(r->fmt->fps_num),
                                   static_cast<std::uint32_t>(r->fmt->fps_den == 0
@@ -289,6 +363,14 @@ void on_param_changed(void* data, std::uint32_t id, const spa_pod* param) {
     }
 }
 
+/// Pushes the attempt deadline out by `watchdog_ms`.
+///
+/// The deadline is a *no-progress* watchdog, not a total time budget. One number cannot serve both
+/// jobs: a negotiation failure must be reported in seconds, while stage 3 does a full GPU import
+/// and readback per frame and is legitimately far slower than the capture rate. Re-arming on every
+/// frame gives "fail fast when nothing is happening, wait as long as it takes when it is".
+void rearm_watchdog(Attempt& a);
+
 void on_process(void* data) {
     auto* r = static_cast<Attempt*>(data);
 
@@ -318,6 +400,7 @@ void on_process(void* data) {
     }
 
     ++r->frames;
+    rearm_watchdog(*r);
     if (r->cfg->on_frame)
         r->cfg->on_frame(frame);
 
@@ -468,7 +551,16 @@ ProbeResult probe_node_params(PwSession& session, std::uint32_t node_id, bool ve
 
 } // namespace
 
-bool pw_wait_node_ready(PwSession& session, std::uint32_t node_id, int timeout_ms) {
+const char* node_readiness_str(NodeReadiness r) {
+    switch (r) {
+    case NodeReadiness::Ready: return "ready";
+    case NodeReadiness::NodeMissing: return "node id does not exist";
+    case NodeReadiness::NoFormats: return "node exists but offers no formats";
+    }
+    return "unknown";
+}
+
+NodeReadiness pw_probe_node(PwSession& session, std::uint32_t node_id, int timeout_ms) {
     constexpr int kIntervalMs = 100;
     int waited = 0;
     ProbeResult last;
@@ -477,24 +569,29 @@ bool pw_wait_node_ready(PwSession& session, std::uint32_t node_id, int timeout_m
         if (last.params > 0) {
             if (waited > 0)
                 lc::info("node {} became ready after {} ms", node_id, waited);
-            return true;
+            return NodeReadiness::Ready;
         }
         if (waited >= timeout_ms) {
             // Distinguishing these two is the whole point: a node that never appears in the
             // registry is a dead session, not a slow one.
-            if (!last.node_found)
+            if (!last.node_found) {
                 lc::warn("node {} NEVER APPEARED in the registry after {} ms ({} other nodes "
                          "visible) - the portal handed back a node id that does not exist",
                          node_id, timeout_ms, last.nodes_seen);
-            else
-                lc::warn("node {} exists but advertises no EnumFormat params after {} ms", node_id,
-                         timeout_ms);
-            return false;
+                return NodeReadiness::NodeMissing;
+            }
+            lc::warn("node {} exists but advertises no EnumFormat params after {} ms", node_id,
+                     timeout_ms);
+            return NodeReadiness::NoFormats;
         }
         const timespec ts{0, static_cast<long>(kIntervalMs) * 1'000'000L};
         ::nanosleep(&ts, nullptr);
         waited += kIntervalMs;
     }
+}
+
+bool pw_wait_node_ready(PwSession& session, std::uint32_t node_id, int timeout_ms) {
+    return pw_probe_node(session, node_id, timeout_ms) == NodeReadiness::Ready;
 }
 
 bool pw_dump_formats(PwSession& session, std::uint32_t node_id) {
@@ -519,39 +616,6 @@ bool pw_dump_formats(PwSession& session, std::uint32_t node_id) {
     return d.params_seen > 0;
 }
 
-bool dump_node_formats(int pipewire_fd, std::uint32_t node_id, std::string& error) {
-    Dumper d;
-    d.want_node = node_id;
-
-    pw_init(nullptr, nullptr);
-    d.loop = pw_main_loop_new(nullptr);
-    pw_context* ctx = pw_context_new(pw_main_loop_get_loop(d.loop), nullptr, 0);
-    if (ctx == nullptr) {
-        error = "pw_context_new failed";
-        return false;
-    }
-    d.core = pw_context_connect_fd(ctx, pipewire_fd, nullptr, 0);
-    if (d.core == nullptr) {
-        error = std::format("pw_context_connect_fd failed: {}", std::strerror(errno));
-        return false;
-    }
-    pw_core_add_listener(d.core, &d.core_listener, &kCoreEvents, &d);
-    d.registry = pw_core_get_registry(d.core, PW_VERSION_REGISTRY, 0);
-    pw_registry_add_listener(d.registry, &d.registry_listener, &kRegistryEvents, &d);
-
-    // Safety net: if the node never appears, the first sync still fires and we quit.
-    d.sync_seq = pw_core_sync(d.core, PW_ID_CORE, 0);
-
-    std::printf("\n=== formats offered by node %u ===\n", node_id);
-    pw_main_loop_run(d.loop);
-    std::printf("  (%u EnumFormat params)\n\n", d.params_seen);
-
-    pw_core_disconnect(d.core);
-    pw_context_destroy(ctx);
-    pw_main_loop_destroy(d.loop);
-    pw_deinit();
-    return d.params_seen > 0;
-}
 
 namespace {
 
@@ -579,7 +643,10 @@ void build_params(spa_pod_builder* b, const StreamConfig& cfg, std::vector<const
 void on_attempt_timeout(void* data, std::uint64_t) {
     auto* a = static_cast<Attempt*>(data);
     a->timed_out = true;
-    if (a->error.empty())
+    // Only a timeout with nothing to show for it is a failure. If frames were already flowing we
+    // simply stop early with fewer than max_frames, which must not be reported as a broken stream
+    // - stage 3 does per-frame GPU readback and can legitimately be slower than the budget.
+    if (a->error.empty() && a->frames == 0)
         a->error = "timed out waiting for format negotiation";
     a->stop();
 }
@@ -590,6 +657,17 @@ namespace {
 void Attempt::stop() {
     if (session != nullptr && session->loop != nullptr)
         pw_main_loop_quit(session->loop);
+}
+
+void rearm_watchdog(Attempt& a) {
+    if (a.session == nullptr || a.session->loop == nullptr || a.session->timer == nullptr ||
+        a.watchdog_ms <= 0)
+        return;
+    timespec ts{};
+    ts.tv_sec = a.watchdog_ms / 1000;
+    ts.tv_nsec = static_cast<long>(a.watchdog_ms % 1000) * 1'000'000L;
+    pw_loop_update_timer(pw_main_loop_get_loop(a.session->loop), a.session->timer, &ts, nullptr,
+                         false);
 }
 } // namespace
 
@@ -672,10 +750,8 @@ bool pw_try_variant(PwSession& session, const StreamConfig& cfg, NegotiatedForma
         pw_loop_destroy_source(loop, session.timer);
     session.timer = pw_loop_add_timer(loop, on_attempt_timeout, &a);
 
-    timespec ts{};
-    ts.tv_sec = timeout_ms / 1000;
-    ts.tv_nsec = static_cast<long>(timeout_ms % 1000) * 1'000'000L;
-    pw_loop_update_timer(loop, session.timer, &ts, nullptr, false);
+    a.watchdog_ms = timeout_ms;
+    rearm_watchdog(a);
 
     pw_main_loop_run(session.loop);
 
@@ -696,15 +772,6 @@ bool pw_try_variant(PwSession& session, const StreamConfig& cfg, NegotiatedForma
         return false;
     }
     return true;
-}
-
-bool run_stream(const StreamConfig& cfg, NegotiatedFormat& out_format, std::string& error) {
-    PwSessionPtr s = pw_session_open(cfg.pipewire_fd, error);
-    if (!s)
-        return false;
-    // The node may not have published its formats yet (ADR-0009).
-    pw_wait_node_ready(*s, cfg.node_id);
-    return pw_try_variant(*s, cfg, out_format, error);
 }
 
 } // namespace libertas::spike

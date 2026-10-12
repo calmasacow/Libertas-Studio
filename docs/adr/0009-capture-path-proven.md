@@ -4,7 +4,9 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # ADR 0009 — Capture path: portal -> PipeWire -> dmabuf works; Vulkan import unproven
 
-- **Status:** accepted for stages 1-2; **stage 3 (Vulkan import) is written but NOT yet proven**
+- **Status:** accepted for stages 1-2; **stage 3 (Vulkan import) is written but NOT yet proven**.
+  **The root-cause section below is superseded by ADR-0010**: the phantom node is real but was not
+  the primary cause of `no more input formats`. That was a modifier-parsing bug of ours.
 - **Date:** 2026-10-11
 
 ## Context

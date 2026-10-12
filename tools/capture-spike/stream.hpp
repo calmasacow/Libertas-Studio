@@ -58,7 +58,6 @@ using PwSessionPtr = std::unique_ptr<PwSession, PwSessionDeleter>;
 PwSessionPtr pw_session_open(int pipewire_fd, std::string& error);
 
 struct StreamConfig {
-    int pipewire_fd = -1;       ///< single-shot run_stream only; ignored by pw_try_variant
     std::uint32_t node_id = 0;
     /// Modifiers to advertise, most preferred first. Empty => shm only.
     std::vector<std::uint64_t> modifiers;
@@ -71,32 +70,45 @@ struct StreamConfig {
     std::function<void(const CapturedFrame&)> on_frame;
 };
 
-/// Runs one negotiation attempt inside an existing session. `timeout_ms` bounds how long to wait
-/// for a format before giving up, so a variant that cannot negotiate does not hang the sweep.
+/// Runs one negotiation attempt inside an existing session.
+///
+/// `timeout_ms` is a **no-progress watchdog**, re-armed on every frame - not a total time budget.
+/// So a variant that cannot negotiate gives up quickly instead of hanging a sweep, while a slow
+/// per-frame consumer (stage 3 imports and reads back on the GPU) is never cut off mid-run.
+/// A timeout *after* frames have flowed is reported as success with a short frame count.
 bool pw_try_variant(PwSession& session, const StreamConfig& cfg, NegotiatedFormat& out_format,
                     std::string& error, int timeout_ms = 4000);
 
-/// Connects to the node, negotiates a format, pumps frames until max_frames or error.
-/// Returns false and fills `error` on failure. `out_format` reflects what was actually agreed.
-bool run_stream(const StreamConfig& cfg, NegotiatedFormat& out_format, std::string& error);
 
-/// Waits until `node_id` advertises at least one SPA_PARAM_EnumFormat.
+/// Why a node is not usable. Keeping these apart is load-bearing, not cosmetic: a node that never
+/// appears in the registry is a dead session (a phantom id from a stale restore token), whereas a
+/// node that exists but offers no formats is a genuine source problem. Both surface downstream as
+/// "no more input formats", which is why they were conflated for so long. See docs/adr/0009.
+enum class NodeReadiness {
+    Ready,       ///< node exists and advertises >= 1 SPA_PARAM_EnumFormat
+    NodeMissing, ///< node id was never registered: the session is a phantom, discard it
+    NoFormats,   ///< node exists but published no formats within the timeout
+};
+
+/// Polls `node_id` until it advertises at least one SPA_PARAM_EnumFormat, and reports *why* if it
+/// never does.
 ///
-/// portal ScreenCast.Start returns a node id BEFORE the node has populated its format params.
-/// Connecting immediately leaves the server nothing to intersect against, which surfaces as
-/// "no more input formats" and looks exactly like a modifier incompatibility. Every capture
-/// consumer must do this wait; see docs/adr/0009.
-/// Returns false on timeout.
+/// portal ScreenCast.Start returns a node id before the node has populated its format params, and
+/// for a restored session it may return a node id that is never registered at all. Every capture
+/// consumer must validate here, before trusting the session.
+NodeReadiness pw_probe_node(PwSession& session, std::uint32_t node_id, int timeout_ms = 5000);
+
+/// `pw_probe_node(...) == NodeReadiness::Ready`.
 bool pw_wait_node_ready(PwSession& session, std::uint32_t node_id, int timeout_ms = 5000);
 
-/// Same as dump_node_formats but over an already-open session, so it can be called at the moment
-/// of a negotiation failure. The portal fd is single-use, so this is the only way to see what the
-/// source was offering during a live session.
-bool pw_dump_formats(PwSession& session, std::uint32_t node_id);
+/// Human-readable NodeReadiness, for logs.
+const char* node_readiness_str(NodeReadiness r);
 
-/// Asks the source node what EnumFormat params it offers and prints them. Diagnostic: this is how
-/// to learn which DRM format modifiers a compositor will actually give us, rather than guessing.
-bool dump_node_formats(int pipewire_fd, std::uint32_t node_id, std::string& error);
+/// Prints the EnumFormat params a node offers, over an already-open session so it can be called at
+/// the moment of a negotiation failure. This is how to learn which DRM format modifiers a
+/// compositor will really hand us, rather than guessing. There is deliberately no variant that
+/// opens its own connection: the portal fd is single-use, so one session must serve everything.
+bool pw_dump_formats(PwSession& session, std::uint32_t node_id);
 
 /// Human-readable fourcc, e.g. "AR24".
 std::string fourcc_str(std::uint32_t fourcc);

@@ -13,8 +13,12 @@
 
 #include <lcore/log.hpp>
 
+#include <algorithm>
 #include <csignal>
 #include <cstdio>
+#include <format>
+#include <functional>
+#include <utility>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -22,6 +26,7 @@
 #include <vector>
 #include <cstdio>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -33,6 +38,8 @@ usage:
   capture-spike [--stage N] [--window] [--no-cursor] [--restore-token TOK]
 
   --stage N            stop after stage N (1=portal, 2=stream, 3=vulkan import)
+  --no-restore         ignore the cached restore token and always show the picker
+  --forget             delete the cached restore token and exit
   --sweep              try every modifier variant inside ONE portal session (one picker click)
   --drm-node MAJ:MIN   select the Vulkan device by DRM node (never by index)
   --mirror             advertise one fully-fixed format matching the source (bisect helper)
@@ -43,7 +50,9 @@ usage:
   --no-cursor          request a hidden cursor instead of embedded
   --restore-token TOK  reuse a previous session and skip the picker
 
-A share picker will appear unless a valid --restore-token is given.)");
+A restore token is cached automatically once frames have actually flowed, so the picker appears
+only on the first run (or after a token goes stale). A session whose node turns out not to exist
+is discarded and retried with a fresh picker - see docs/adr/0009.)");
 }
 
 const char* source_type_name(std::uint32_t t) {
@@ -79,10 +88,158 @@ struct SessionCloser {
     }
 };
 
+// ------------------------------------------------------------------ restore-token cache
+//
+// The spike caches its own token so repeat runs do not need a picker click, and so the
+// stale-token path is exercised by ordinary use rather than only by a hand-passed argument.
+// Per ADR-0009 the token is written ONLY after frames have actually flowed: a token that merely
+// produced a session handle has not been shown to work.
+
+std::string token_cache_path() {
+    const char* xdg = std::getenv("XDG_CACHE_HOME");
+    std::string dir;
+    if (xdg != nullptr && xdg[0] != '\0') {
+        dir = xdg;
+    } else if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
+        dir = std::string(home) + "/.cache";
+    } else {
+        return {};
+    }
+    dir += "/libertas";
+    ::mkdir(dir.c_str(), 0700);
+    return dir + "/capture-spike.token";
+}
+
+std::string load_cached_token() {
+    const std::string path = token_cache_path();
+    if (path.empty())
+        return {};
+    std::FILE* fp = std::fopen(path.c_str(), "rb");
+    if (fp == nullptr)
+        return {};
+    std::string tok;
+    char buf[512];
+    while (const std::size_t n = std::fread(buf, 1, sizeof buf, fp))
+        tok.append(buf, n);
+    std::fclose(fp);
+    while (!tok.empty() && (tok.back() == '\n' || tok.back() == '\r'))
+        tok.pop_back();
+    return tok;
+}
+
+void save_cached_token(const std::string& tok) {
+    const std::string path = token_cache_path();
+    if (path.empty() || tok.empty())
+        return;
+    if (std::FILE* fp = std::fopen(path.c_str(), "wb"); fp != nullptr) {
+        std::fwrite(tok.data(), 1, tok.size(), fp);
+        std::fputc('\n', fp);
+        std::fclose(fp);
+        ::chmod(path.c_str(), 0600);
+    }
+}
+
+void forget_cached_token() {
+    const std::string path = token_cache_path();
+    if (!path.empty())
+        ::unlink(path.c_str());
+}
+
+// ------------------------------------------------------------------ validated acquisition
+
+/// A capture session that has been proven to have a live, format-advertising node behind it.
+struct Acquired {
+    libertas::spike::PortalSession session;
+    libertas::spike::PwSessionPtr pw;
+    bool restored = false; ///< true if a restore token was used and accepted
+};
+
+/// Negotiates a ScreenCast session and *validates* it before handing it back, which is the
+/// behaviour ADR-0009 requires of the real capture worker:
+///
+///   1. ScreenCast.Start can report success while returning a node id that PipeWire never
+///      registers. That happens with a stale restore token and is indistinguishable downstream
+///      from a modifier incompatibility, so it must be caught here.
+///   2. A restored session that fails validation is discarded - token dropped, portal session
+///      closed - and retried as a fresh picker session, rather than surfaced as a capture error.
+///   3. A *fresh* session that fails validation is a real fault and is reported as one. Retrying
+///      it would just reprompt the user forever.
+bool acquire_capture_session(libertas::spike::PortalRequest req, Acquired& out,
+                             const std::function<bool(Acquired&, std::string&)>& verify,
+                             std::string& error) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const bool restoring = !req.restore_token.empty();
+        if (restoring)
+            lc::info("portal: restoring previous session (no picker expected)");
+        else
+            lc::info("portal: requesting a fresh session (a picker will appear)");
+
+        libertas::spike::PortalSession session;
+        if (!libertas::spike::negotiate_screencast(req, session, error))
+            return false; // includes user cancellation; never retry over the user
+
+        if (session.streams.empty()) {
+            error = "portal returned a session with no streams";
+            libertas::spike::close_screencast_session(session.session_handle);
+            return false;
+        }
+
+        // From here on the session must be closed on every failure path.
+        const std::uint32_t node_id = session.streams.front().node_id;
+        std::string serr;
+        libertas::spike::PwSessionPtr pw =
+            libertas::spike::pw_session_open(session.pipewire_fd, serr);
+        session.pipewire_fd = -1; // ownership moved into the PipeWire session
+        if (!pw) {
+            error = std::format("pw_session_open failed: {}", serr);
+            libertas::spike::close_screencast_session(session.session_handle);
+            return false;
+        }
+
+        const libertas::spike::NodeReadiness r = libertas::spike::pw_probe_node(*pw, node_id);
+        std::string why;
+        if (r == libertas::spike::NodeReadiness::Ready) {
+            out.session = std::move(session);
+            out.pw = std::move(pw);
+            out.restored = restoring;
+            // Readiness is necessary but NOT sufficient: a restored session can hand back a node
+            // that is still in the registry, still answers a format query, and is dead by the
+            // time we connect. The only proof a session works is frames flowing through it, so
+            // the caller's real attempt is the last validation step.
+            if (!verify || verify(out, why))
+                return true;
+            lc::warn("session rejected: node {} passed readiness but failed in use ({})", node_id,
+                     why);
+            session = std::move(out.session);
+            pw = std::move(out.pw);
+        } else {
+            why = libertas::spike::node_readiness_str(r);
+            lc::warn("session rejected: node {} is unusable ({})", node_id, why);
+        }
+
+        pw.reset();
+        libertas::spike::close_screencast_session(session.session_handle);
+
+        if (!restoring) {
+            error = std::format("a freshly picked source is unusable: node {}: {}", node_id, why);
+            return false;
+        }
+
+        lc::warn("discarding the restore token and falling back to a fresh picker session");
+        forget_cached_token();
+        req.restore_token.clear();
+    }
+    error = "could not acquire a usable capture session";
+    return false;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     lc::init_from_env();
+    // Logs go to stderr and results to stdout; without this the two interleave out of order and
+    // the output reads as though the error preceded its own diagnostics.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
 
     int stage = 3; // raised as later stages land
     bool shm_only = false;
@@ -90,6 +247,8 @@ int main(int argc, char** argv) {
     bool dump_formats = false;
     bool mirror = false;
     bool sweep = false;
+    bool no_restore = false;
+    bool explicit_token = false;
     std::string prefer_drm_node;
     libertas::spike::PortalRequest req;
     // Monitors only unless --window is given: mixing monitor and window sources made earlier
@@ -136,67 +295,23 @@ int main(int argc, char** argv) {
             shm_only = true;
         } else if (a == "--restore-token" && i + 1 < args.size()) {
             req.restore_token = std::string(args[++i]);
+            explicit_token = true;
+        } else if (a == "--no-restore") {
+            no_restore = true;
+        } else if (a == "--forget") {
+            forget_cached_token();
+            lc::info("cached restore token removed ({})", token_cache_path());
+            return 0;
         } else {
             lc::error("unknown argument '{}' (try --help)", a);
             return 1;
         }
     }
 
-    // ---------------------------------------------------------------- stage 1: portal
-    lc::info("stage 1: negotiating portal ScreenCast session");
-    libertas::spike::PortalSession session;
-    std::string error;
-    if (!libertas::spike::negotiate_screencast(req, session, error)) {
-        lc::error("portal negotiation failed: {}", error);
-        return 2;
-    }
-
-    const SessionCloser closer{&session.session_handle};
-    g_session_handle = session.session_handle;
-    std::signal(SIGTERM, on_fatal_signal);
-    std::signal(SIGINT, on_fatal_signal);
-    std::signal(SIGHUP, on_fatal_signal);
-
-    std::printf("\n=== portal session ===\n");
-    std::printf("  pipewire fd   : %d\n", session.pipewire_fd);
-    std::printf("  streams       : %zu\n", session.streams.size());
-    if (!session.streams.empty())
-        lc::info("CAPTURE SOURCE: {} ({}) {}x{} node {}",
-                 session.streams.front().mapping_id.empty()
-                     ? std::string("(no mapping_id)")
-                     : session.streams.front().mapping_id,
-                 source_type_name(session.streams.front().source_type),
-                 session.streams.front().width, session.streams.front().height,
-                 session.streams.front().node_id);
-    for (const auto& s : session.streams) {
-        std::printf("    node %u  %dx%d  at (%d,%d)  type=%s%s%s\n", s.node_id, s.width, s.height,
-                    s.pos_x, s.pos_y, source_type_name(s.source_type),
-                    s.mapping_id.empty() ? "" : "  mapping_id=", s.mapping_id.c_str());
-    }
-    if (!session.restore_token.empty())
-        std::printf("  restore token : %s\n     (reuse with --restore-token to skip the picker)\n",
-                    session.restore_token.c_str());
-    else
-        std::printf("  restore token : (none returned)\n");
-    std::printf("\n");
-
-    if (stage <= 1) {
-        lc::info("stage 1 complete");
-        if (session.pipewire_fd >= 0)
-            ::close(session.pipewire_fd);
-        return 0;
-    }
-
-    if (dump_formats) {
-        std::string derr;
-        if (!libertas::spike::dump_node_formats(session.pipewire_fd,
-                                                session.streams.front().node_id, derr))
-            lc::warn("format dump produced nothing: {}", derr.empty() ? "no params" : derr);
-        return 0;
-    }
-
-    // Stage 3 brings up Vulkan first, so negotiation can advertise the modifiers the device
-    // actually supports instead of a guess. This is what we should have done from the start.
+    // -------------------------------------------------------- stage 0: Vulkan, before any click
+    // Bring Vulkan up first so negotiation can advertise the modifiers this device can really
+    // import, and - just as important - so a Vulkan failure happens *before* the user is asked to
+    // click a picker rather than after.
     libertas::spike::VkCtxPtr vk;
     std::vector<std::uint64_t> vk_mods;
     if (stage >= 3 || sweep) {
@@ -216,94 +331,18 @@ int main(int argc, char** argv) {
         std::printf("\n");
     }
 
-    if (sweep) {
-        struct Variant {
-            const char* label;
-            std::vector<std::uint64_t> mods;
-        };
-        // Known-good first: a failed negotiation may poison the session for later streams on the
-        // same core, so ordering is part of the experiment.
-        std::vector<Variant> variants{
-            {"INVALID + LINEAR (known good)", {libertas::spike::kModifierInvalid,
-                                               libertas::spike::kModifierLinear}},
-        };
-        if (!vk_mods.empty()) {
-            std::vector<std::uint64_t> with_invalid = vk_mods;
-            with_invalid.insert(with_invalid.begin(), libertas::spike::kModifierInvalid);
-            variants.push_back({"INVALID + Vulkan list", with_invalid});
-            variants.push_back({"Vulkan-supported list", vk_mods});
-        }
-        variants.push_back({"INVALID", {libertas::spike::kModifierInvalid}});
-        variants.push_back({"LINEAR", {libertas::spike::kModifierLinear}});
-        variants.push_back({"shm only (no modifier prop)", {}});
-
-        std::printf("=== sweep: %zu variants against ONE session (node %u, %s) ===\n\n",
-                    variants.size(), session.streams.front().node_id,
-                    session.streams.front().mapping_id.c_str());
-
-        // One PipeWire connection for the whole sweep: pw_init/pw_deinit are not reliably
-        // re-entrant and the portal fd is single-use, so dup()-ing per attempt does not work.
-        std::string serr0;
-        libertas::spike::PwSessionPtr pws =
-            libertas::spike::pw_session_open(session.pipewire_fd, serr0);
-        if (!pws) {
-            lc::error("pw_session_open failed: {}", serr0);
-            return 3;
-        }
-
-        if (!libertas::spike::pw_wait_node_ready(*pws, session.streams.front().node_id))
-            lc::warn("proceeding anyway; negotiation is expected to fail");
-
-        bool dumped_on_failure = false;
-        for (const Variant& v : variants) {
-            libertas::spike::StreamConfig vc;
-            vc.node_id = session.streams.front().node_id;
-            vc.max_frames = 5;
-            vc.modifiers = v.mods;
-
-            std::uint32_t dma = 0;
-            std::uint32_t shm = 0;
-            vc.on_frame = [&dma, &shm](const libertas::spike::CapturedFrame& f) {
-                if (f.is_dmabuf) ++dma; else ++shm;
-            };
-
-            libertas::spike::NegotiatedFormat vf;
-            std::string verr2;
-            const bool ok = libertas::spike::pw_try_variant(*pws, vc, vf, verr2);
-
-            std::printf("  %-26s : ", v.label);
-            if (!ok) {
-                std::printf("FAIL  (%s)\n", verr2.c_str());
-                if (!dumped_on_failure) {
-                    dumped_on_failure = true;
-                    std::fflush(stdout);
-                    libertas::spike::pw_dump_formats(*pws, vc.node_id);
-                }
-            } else {
-                std::printf("OK  %ux%u %s mod=%-34s %u dmabuf %u shm\n", vf.width, vf.height,
-                            libertas::spike::fourcc_str(vf.drm_format).c_str(),
-                            vf.have_modifier
-                                ? libertas::spike::modifier_str(vf.modifier).c_str()
-                                : "none",
-                            dma, shm);
-            }
-            std::fflush(stdout);
-        }
-        std::printf("\n");
-        return 0;
+    // ---------------------------------------------------------------- stage 1: portal
+    lc::info("stage 1: negotiating portal ScreenCast session");
+    if (req.restore_token.empty() && !no_restore) {
+        req.restore_token = load_cached_token();
+        if (!req.restore_token.empty())
+            lc::info("using cached restore token from {}", token_cache_path());
+    } else if (no_restore && !explicit_token) {
+        req.restore_token.clear();
     }
-
-    // ---------------------------------------------------------------- stage 2: PipeWire stream
-    lc::info("stage 2: connecting PipeWire stream to node {}", session.streams.front().node_id);
 
     libertas::spike::StreamConfig sc;
-    sc.pipewire_fd = session.pipewire_fd; // ownership moves to the stream
-    sc.node_id = session.streams.front().node_id;
     sc.max_frames = 30;
-    if (mirror) {
-        sc.mirror_width = static_cast<std::uint32_t>(session.streams.front().width);
-        sc.mirror_height = static_cast<std::uint32_t>(session.streams.front().height);
-    }
     // Stage 2 advertises a broad list to learn what the compositor actually offers. Stage 3
     // replaces this with the set Vulkan reports as importable for the chosen format.
     if (!shm_only) {
@@ -327,7 +366,8 @@ int main(int argc, char** argv) {
         std::vector<std::uint8_t> first_image;
         std::uint32_t img_w = 0;
         std::uint32_t img_h = 0;
-    } stats;
+    };
+    Stats stats;
 
     sc.on_frame = [&stats](const libertas::spike::CapturedFrame& f) {
         if (f.is_dmabuf) ++stats.dmabuf; else ++stats.shm;
@@ -382,13 +422,200 @@ int main(int argc, char** argv) {
         };
     }
 
+    // The real capture attempt, used as the final validation step of acquisition: a session that
+    // cannot deliver frames is not a session, whatever its node said when asked.
     libertas::spike::NegotiatedFormat fmt;
-    std::string serr;
-    if (!libertas::spike::run_stream(sc, fmt, serr)) {
+    const auto stream_once = [&](Acquired& a, std::string& serr) {
+        stats = Stats{};
+        sc.node_id = a.session.streams.front().node_id;
+        if (mirror) {
+            sc.mirror_width = static_cast<std::uint32_t>(a.session.streams.front().width);
+            sc.mirror_height = static_cast<std::uint32_t>(a.session.streams.front().height);
+        }
+        lc::info("stage 2: connecting PipeWire stream to node {}", sc.node_id);
+
+        // ADR-0007's fallback ladder, as an actual loop rather than a promise.
+        //
+        // A compositor can advertise a modifier it cannot then allocate with: negotiation
+        // succeeds, the stream reaches `streaming`, and buffer allocation fails. Measured on this
+        // box - Hyprland offers NVIDIA(0x...606010-015) for DP-1 but its own fixed preference is
+        // 0x...606014, and fixating 0x...606015 reaches streaming and dies with no frames.
+        //
+        // So a failure is not final while candidates remain: drop the modifier that was actually
+        // fixated and retry on the same session. The ladder ends at LINEAR and then at shm, which
+        // is the degradation order the design calls for - a stream that degrades beats one that
+        // dies. Each rung is logged, because silently taking a slower path is how performance
+        // problems become unexplainable.
+        std::vector<std::uint64_t> candidates = sc.modifiers;
+        for (int rung = 0;; ++rung) {
+            sc.modifiers = candidates;
+            // 8s is a no-progress watchdog, not a total budget: it is re-armed on every frame, so
+            // a negotiation failure is still reported in seconds while stage 3's per-frame GPU
+            // readback gets as long as it needs.
+            if (libertas::spike::pw_try_variant(*a.pw, sc, fmt, serr, 8000)) {
+                if (rung > 0)
+                    lc::warn("succeeded on fallback rung {} with modifier {}", rung,
+                             fmt.have_modifier ? libertas::spike::modifier_str(fmt.modifier)
+                                               : std::string("none (shm)"));
+                return true;
+            }
+            // Only a modifier that was actually fixated can be blamed; anything else means the
+            // failure was not modifier-specific and retrying would just repeat it.
+            if (!fmt.have_modifier || candidates.empty())
+                break;
+            const std::uint64_t failed = fmt.modifier;
+            const auto it = std::find(candidates.begin(), candidates.end(), failed);
+            if (it == candidates.end())
+                break;
+            candidates.erase(it);
+            lc::warn("modifier {} negotiated but could not deliver frames ({}); "
+                     "dropping it and retrying with {} candidate(s)",
+                     libertas::spike::modifier_str(failed), serr, candidates.size());
+            if (candidates.empty())
+                break;
+            stats = Stats{};
+        }
         lc::error("stream failed: {}", serr);
-        return 3;
+        // Always show what the source was actually offering. Without this the failure is just a
+        // string, and the one question that matters - did our advertised modifiers intersect
+        // theirs at all? - needs a whole extra session to answer.
+        std::printf("\n=== we advertised %zu modifier(s) ===\n", sc.modifiers.size());
+        for (std::uint64_t m : sc.modifiers)
+            std::printf("  %s\n", libertas::spike::modifier_str(m).c_str());
+        libertas::spike::pw_dump_formats(*a.pw, sc.node_id);
+        return false;
+    };
+
+    Acquired acq;
+    std::string error;
+    // stage 1, --dump-formats and --sweep deliberately pass no verifier: they are diagnostics that
+    // must report what they find rather than retry around it.
+    const bool stream_verifies = stage >= 2 && !sweep && !dump_formats;
+    std::function<bool(Acquired&, std::string&)> verifier;
+    if (stream_verifies)
+        verifier = stream_once;
+    if (!acquire_capture_session(req, acq, verifier, error)) {
+        lc::error("portal negotiation failed: {}", error);
+        return 2;
+    }
+    libertas::spike::PortalSession& session = acq.session;
+
+    const SessionCloser closer{&session.session_handle};
+    g_session_handle = session.session_handle;
+    std::signal(SIGTERM, on_fatal_signal);
+    std::signal(SIGINT, on_fatal_signal);
+    std::signal(SIGHUP, on_fatal_signal);
+
+    std::printf("\n=== portal session ===\n");
+    std::printf("  source        : %s\n", acq.restored ? "restored session (no picker)"
+                                                        : "freshly picked");
+    std::printf("  streams       : %zu\n", session.streams.size());
+    if (!session.streams.empty())
+        lc::info("CAPTURE SOURCE: {} ({}) {}x{} node {}",
+                 session.streams.front().mapping_id.empty()
+                     ? std::string("(no mapping_id)")
+                     : session.streams.front().mapping_id,
+                 source_type_name(session.streams.front().source_type),
+                 session.streams.front().width, session.streams.front().height,
+                 session.streams.front().node_id);
+    for (const auto& s : session.streams) {
+        std::printf("    node %u  %dx%d  at (%d,%d)  type=%s%s%s\n", s.node_id, s.width, s.height,
+                    s.pos_x, s.pos_y, source_type_name(s.source_type),
+                    s.mapping_id.empty() ? "" : "  mapping_id=", s.mapping_id.c_str());
+    }
+    std::printf("  node          : VALIDATED (exists and advertises formats)\n");
+    if (!session.restore_token.empty())
+        std::printf("  restore token : %s\n", session.restore_token.c_str());
+    std::printf("\n");
+
+    // Cache the token now that the session is *validated*, rather than waiting for frames.
+    // ADR-0009 originally said "only after frames have flowed", to avoid persisting a phantom
+    // session. Validation already rules that out, and it separates the two concerns properly: the
+    // token records that the user authorised this source, whereas frames flowing tests our own
+    // pipeline. A modifier mismatch is our bug, and must not cost the user another picker click.
+    if (!session.restore_token.empty() && !no_restore)
+        save_cached_token(session.restore_token);
+
+    if (stage <= 1) {
+        lc::info("stage 1 complete");
+        return 0;
     }
 
+    if (dump_formats) {
+        libertas::spike::pw_dump_formats(*acq.pw, session.streams.front().node_id);
+        return 0;
+    }
+
+    if (sweep) {
+        struct Variant {
+            const char* label;
+            std::vector<std::uint64_t> mods;
+        };
+        // Known-good first: a failed negotiation may poison the session for later streams on the
+        // same core, so ordering is part of the experiment.
+        std::vector<Variant> variants{
+            {"INVALID + LINEAR (known good)", {libertas::spike::kModifierInvalid,
+                                               libertas::spike::kModifierLinear}},
+        };
+        if (!vk_mods.empty()) {
+            std::vector<std::uint64_t> with_invalid = vk_mods;
+            with_invalid.insert(with_invalid.begin(), libertas::spike::kModifierInvalid);
+            variants.push_back({"INVALID + Vulkan list", with_invalid});
+            variants.push_back({"Vulkan-supported list", vk_mods});
+        }
+        variants.push_back({"INVALID", {libertas::spike::kModifierInvalid}});
+        variants.push_back({"LINEAR", {libertas::spike::kModifierLinear}});
+        variants.push_back({"shm only (no modifier prop)", {}});
+
+        std::printf("=== sweep: %zu variants against ONE session (node %u, %s) ===\n\n",
+                    variants.size(), session.streams.front().node_id,
+                    session.streams.front().mapping_id.c_str());
+
+        // One PipeWire connection for the whole sweep: pw_init/pw_deinit are not reliably
+        // re-entrant and the portal fd is single-use, so dup()-ing per attempt does not work.
+        // The connection was opened and its node validated during acquisition.
+        libertas::spike::PwSession* pws = acq.pw.get();
+
+        bool dumped_on_failure = false;
+        for (const Variant& v : variants) {
+            libertas::spike::StreamConfig vc;
+            vc.node_id = session.streams.front().node_id;
+            vc.max_frames = 5;
+            vc.modifiers = v.mods;
+
+            std::uint32_t dma = 0;
+            std::uint32_t shm = 0;
+            vc.on_frame = [&dma, &shm](const libertas::spike::CapturedFrame& f) {
+                if (f.is_dmabuf) ++dma; else ++shm;
+            };
+
+            libertas::spike::NegotiatedFormat vf;
+            std::string verr2;
+            const bool ok = libertas::spike::pw_try_variant(*pws, vc, vf, verr2);
+
+            std::printf("  %-26s : ", v.label);
+            if (!ok) {
+                std::printf("FAIL  (%s)\n", verr2.c_str());
+                if (!dumped_on_failure) {
+                    dumped_on_failure = true;
+                    std::fflush(stdout);
+                    libertas::spike::pw_dump_formats(*pws, vc.node_id);
+                }
+            } else {
+                std::printf("OK  %ux%u %s mod=%-34s %u dmabuf %u shm\n", vf.width, vf.height,
+                            libertas::spike::fourcc_str(vf.drm_format).c_str(),
+                            vf.have_modifier
+                                ? libertas::spike::modifier_str(vf.modifier).c_str()
+                                : "none",
+                            dma, shm);
+            }
+            std::fflush(stdout);
+        }
+        std::printf("\n");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------- stage 2: result
     std::printf("=== stage 2 result ===\n");
     std::printf("  frames        : %u dmabuf, %u shm\n", stats.dmabuf, stats.shm);
     std::printf("  negotiated    : %ux%u  drm=%s  modifier=%s\n", fmt.width, fmt.height,

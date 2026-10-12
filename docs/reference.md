@@ -69,3 +69,16 @@ Format facts established by exploration, so they need not be re-derived:
 `/usr/share/wayland-protocols/staging/` already ships `ext-image-copy-capture-v1.xml` and
 `ext-image-capture-source`. Only `hyprland-protocols` would need vendoring, and only if we ever add
 a Hyprland-specific capture path.
+
+## Development box monitor layout
+
+Confirmed against the Hyprland display arrangement UI. Recorded because the portal picker selects
+one output per session, and comparing runs that captured *different* monitors is not an experiment
+(ADR-0009). Every capture run must log `mapping_id`.
+
+| output | model | position | workspaces |
+|---|---|---|---|
+| `HDMI-A-3` | Samsung 3840x2160@60 | above, x=1805 | - |
+| `DP-3` | MSI MAG322CQR 2560x1440 | left, x=0 | 7, 8, 9 |
+| `DP-1` | Samsung Odyssey G5 2560x1440 | centre, x=2560 (focused) | 1, 2, 3 |
+| `DP-2` | Samsung Odyssey G5 2560x1440 | right, x=5120 | 4, 5, 6 |
