@@ -47,6 +47,7 @@ add_subdirectory(apps/libertas)
 
 if(LIBERTAS_BUILD_TOOLS)
     add_subdirectory(tools/encode-spike)
+    add_subdirectory(tools/capture-spike)
 endif()
 
 if(LIBERTAS_BUILD_TESTS)
