@@ -17,6 +17,14 @@ struct V4l2Config {
     std::uint32_t fps_den = 1;
     std::uint32_t frames = 120;
     bool export_dmabuf = false;   ///< use VIDIOC_EXPBUF to test the zero-copy path
+
+    /// Colour signalling. These are REQUESTS: V4L2 lets a client state what it wants, and the
+    /// driver is free to hand back something else, so what the device replies is what counts.
+    /// 0 leaves the field at whatever the driver defaults to.
+    std::uint32_t quantization = 0;  ///< V4L2_QUANTIZATION_FULL_RANGE / _LIM_RANGE
+    std::uint32_t colorspace = 0;    ///< V4L2_COLORSPACE_*
+    std::uint32_t ycbcr_enc = 0;     ///< V4L2_YCBCR_ENC_*
+    std::uint32_t xfer_func = 0;     ///< V4L2_XFER_FUNC_*
 };
 
 struct V4l2Result {
@@ -24,6 +32,11 @@ struct V4l2Result {
     std::uint32_t height = 0;
     std::uint32_t fourcc = 0;
     std::uint32_t captured = 0;
+    /// What the driver actually replied with, which need not be what was asked for.
+    std::uint32_t quantization = 0;
+    std::uint32_t colorspace = 0;
+    std::uint32_t ycbcr_enc = 0;
+    std::uint32_t xfer_func = 0;
     bool dmabuf_exported = false;
     /// Intervals from the DRIVER's buffer timestamps, which are when the frame arrived at the
     /// hardware - not when our process got round to reading it.
@@ -49,6 +62,10 @@ struct V4l2Result {
 bool v4l2_capture(const V4l2Config& cfg, V4l2Result& out, std::string& error);
 
 std::string v4l2_fourcc_str(std::uint32_t fourcc);
+std::string v4l2_quantization_str(std::uint32_t q);
+std::string v4l2_colorspace_str(std::uint32_t c);
+std::string v4l2_ycbcr_enc_str(std::uint32_t e);
+std::string v4l2_xfer_func_str(std::uint32_t x);
 std::uint32_t v4l2_fourcc_parse(const std::string& s);
 
 } // namespace libertas::spike

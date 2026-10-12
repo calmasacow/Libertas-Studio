@@ -54,6 +54,29 @@ Note also that V4L2 reports this stream as `Colorspace: sRGB` with `Transfer Fun
 two different transfer curves named in one format description. The card's own metadata cannot be
 trusted to drive colour conversion; the pipeline must be told what the source is.
 
+## Finding 2b: the device declares a conversion it does not perform
+
+Range is a *request* in V4L2: a client may ask for `V4L2_QUANTIZATION_FULL_RANGE`. Asking this
+device for it produces the worst possible outcome — not a refusal, but a false acceptance:
+
+```
+NV12, requested full range
+  colour        : sRGB / BT.709 / Rec.709 / quantization full
+  luma (plane 0): mean 82.59  min 16  max 229
+  range         : declared full, observed limited (luma inside [16,235])
+```
+
+The driver echoes `full` back in the format reply and then delivers limited-range pixels anyway.
+A client that compares the reply to the request sees agreement and concludes the conversion
+happened. This is the same shape as the modifier trap of ADR-0010: **accepted, then not honoured.**
+
+Only the pixels can catch it. The spike now cross-checks the declared range against observed luma
+extrema and warns when they disagree, which is a cheap and reliable test: limited range clamps
+luma into `[16,235]`, full range does not.
+
+Note also the metadata is internally inconsistent — `Colorspace: sRGB` with
+`Transfer Function: Rec.709` are two different transfer curves named in one description.
+
 ## Finding 3: three clocks, and a drop no counter can see
 
 Measured over 60 s / 7200 frames of NV12 @120:
@@ -94,6 +117,26 @@ Separately, startup black is **2-4 frames** of `Y=0` before real content, and th
 to run. The settle window is a measurement, not a constant — and no signal verdict may be taken on
 frame 0.
 
+## Finding 5: at 2160p there is no full-range 4:4:4 option at all
+
+The 1440p trade is a choice. At 4K it is not:
+
+| format | 3840x2160 max rate |
+|---|---|
+| `NV12` 4:2:0 limited | **60 / 59.94** |
+| `YUYV` 4:2:2 | 50 / 30 |
+| `P010` 4:2:0 10-bit | 30 / 29.97 |
+| `BGR3` 4:4:4 full range | **none offered** |
+| `MJPG` (lossy, compressed) | 144 / 120 |
+
+So 4K60 has exactly one uncompressed path, and it is 4:2:0 limited range. The MJPG rates are
+advertised only because compression hides the bandwidth; they are not a quality option.
+
+This is worth stating plainly because it inverts the usual intuition: **capturing at 1440p60
+yields better colour than capturing at 4K60**, since only the former has a full-range 4:4:4 path.
+Resolution is not the only axis of quality, and for desktop and text content chroma resolution
+often matters more than pixel count.
+
 ## Decision
 
 **Select the capture format from the configured output rate, not from the card's peak capability.**
@@ -120,11 +163,17 @@ Consequences for the implementation:
 1. The V4L2 source negotiates format against the *output* configuration, and the UI must surface
    the trade (`1440p120 4:2:0 limited` vs `1440p60 4:4:4 full`) rather than silently maximising
    frame rate.
-2. Range and matrix are **configuration, not detection.** The card's metadata is self-contradictory.
-3. Every source carries its own clock. Neither the card's nor the compositor's is the encoder's,
+2. **Range, matrix and transfer are user-settable configuration, not detection.** This is forced by
+   Finding 2b, not merely preferred: the device's metadata is self-contradictory *and* actively
+   false, so there is nothing to detect from. Libertas applies the range conversion itself, in its
+   own shader, from an explicit setting — with a sensible default and a visible override, the way
+   OBS's V4L2 source exposes Color Range and Color Space.
+3. Observed luma extrema are a useful *cross-check* on that setting, and the source should warn
+   when the pixels contradict the configuration rather than silently producing crushed blacks.
+4. Every source carries its own clock. Neither the card's nor the compositor's is the encoder's,
    and audio remains the master clock.
-4. A rate mismatch between source and card is silent and unobservable from V4L2. Where it matters,
+5. A rate mismatch between source and card is silent and unobservable from V4L2. Where it matters,
    match the output mode to the capture rate at the *source* — driving HDMI-A-1 at 60 Hz rather
    than 120.171 Hz removes the drift rather than compensating for it.
-5. Capture-card sources are fixed-rate and must not reuse the damage-driven assumptions of
+6. Capture-card sources are fixed-rate and must not reuse the damage-driven assumptions of
    ADR-0013.

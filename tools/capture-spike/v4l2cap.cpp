@@ -109,6 +109,48 @@ std::string v4l2_fourcc_str(std::uint32_t f) {
     return std::string(s);
 }
 
+std::string v4l2_quantization_str(std::uint32_t q) {
+    switch (q) {
+    case V4L2_QUANTIZATION_DEFAULT: return "default";
+    case V4L2_QUANTIZATION_FULL_RANGE: return "full";
+    case V4L2_QUANTIZATION_LIM_RANGE: return "limited";
+    default: return std::format("?{}", q);
+    }
+}
+
+std::string v4l2_colorspace_str(std::uint32_t c) {
+    switch (c) {
+    case V4L2_COLORSPACE_DEFAULT: return "default";
+    case V4L2_COLORSPACE_SRGB: return "sRGB";
+    case V4L2_COLORSPACE_REC709: return "Rec.709";
+    case V4L2_COLORSPACE_BT2020: return "BT.2020";
+    case V4L2_COLORSPACE_SMPTE170M: return "SMPTE170M";
+    case V4L2_COLORSPACE_RAW: return "raw";
+    default: return std::format("?{}", c);
+    }
+}
+
+std::string v4l2_ycbcr_enc_str(std::uint32_t e) {
+    switch (e) {
+    case V4L2_YCBCR_ENC_DEFAULT: return "default";
+    case V4L2_YCBCR_ENC_601: return "BT.601";
+    case V4L2_YCBCR_ENC_709: return "BT.709";
+    case V4L2_YCBCR_ENC_BT2020: return "BT.2020";
+    default: return std::format("?{}", e);
+    }
+}
+
+std::string v4l2_xfer_func_str(std::uint32_t x) {
+    switch (x) {
+    case V4L2_XFER_FUNC_DEFAULT: return "default";
+    case V4L2_XFER_FUNC_709: return "Rec.709";
+    case V4L2_XFER_FUNC_SRGB: return "sRGB";
+    case V4L2_XFER_FUNC_SMPTE2084: return "PQ";
+    case V4L2_XFER_FUNC_NONE: return "linear";
+    default: return std::format("?{}", x);
+    }
+}
+
 std::uint32_t v4l2_fourcc_parse(const std::string& s) {
     std::uint32_t f = 0;
     for (std::size_t i = 0; i < 4; ++i)
@@ -149,6 +191,15 @@ bool v4l2_capture(const V4l2Config& cfg, V4l2Result& out, std::string& error) {
         fmt.fmt.pix.height = cfg.height;
     if (cfg.fourcc != 0)
         fmt.fmt.pix.pixelformat = cfg.fourcc;
+    // Colour signalling is a request, not a command. UVC drivers commonly ignore it outright.
+    if (cfg.quantization != 0)
+        fmt.fmt.pix.quantization = cfg.quantization;
+    if (cfg.colorspace != 0)
+        fmt.fmt.pix.colorspace = cfg.colorspace;
+    if (cfg.ycbcr_enc != 0)
+        fmt.fmt.pix.ycbcr_enc = cfg.ycbcr_enc;
+    if (cfg.xfer_func != 0)
+        fmt.fmt.pix.xfer_func = cfg.xfer_func;
     if (xioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
         error = std::format("VIDIOC_S_FMT: {}", std::strerror(errno));
         return false;
@@ -158,6 +209,13 @@ bool v4l2_capture(const V4l2Config& cfg, V4l2Result& out, std::string& error) {
     out.width = fmt.fmt.pix.width;
     out.height = fmt.fmt.pix.height;
     out.fourcc = fmt.fmt.pix.pixelformat;
+    out.quantization = fmt.fmt.pix.quantization;
+    out.colorspace = fmt.fmt.pix.colorspace;
+    out.ycbcr_enc = fmt.fmt.pix.ycbcr_enc;
+    out.xfer_func = fmt.fmt.pix.xfer_func;
+    if (cfg.quantization != 0 && fmt.fmt.pix.quantization != cfg.quantization)
+        lc::warn("requested quantization {} but the driver replied {} - it is not negotiable here",
+                 cfg.quantization, fmt.fmt.pix.quantization);
 
     if (cfg.fps_num != 0) {
         v4l2_streamparm parm{};

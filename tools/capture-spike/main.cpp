@@ -13,6 +13,8 @@
 #include "wlcap.hpp"
 #include "v4l2cap.hpp"
 
+#include <linux/videodev2.h>
+
 #include <lcore/log.hpp>
 
 #include <algorithm>
@@ -52,6 +54,7 @@ usage:
   --v4l2 DEVICE        capture from a V4L2 device (capture card, webcam) and report its timing
   --v4l2-size WxH      request this capture size      --v4l2-format NV12   request this fourcc
   --v4l2-fps N         request this frame rate        --v4l2-dmabuf        test VIDIOC_EXPBUF
+  --v4l2-range full|limited   request a quantization range (drivers may ignore it)
   --forget             delete the cached restore token and exit
   --sweep              try every modifier variant inside ONE portal session (one picker click)
   --drm-node MAJ:MIN   select the Vulkan device by DRM node (never by index)
@@ -336,6 +339,11 @@ int run_v4l2(const libertas::spike::V4l2Config& cfg) {
     std::printf("\n=== %s ===\n", cfg.device.c_str());
     std::printf("  negotiated    : %ux%u %s\n", r.width, r.height,
                 libertas::spike::v4l2_fourcc_str(r.fourcc).c_str());
+    std::printf("  colour        : %s / %s / %s / quantization %s\n",
+                libertas::spike::v4l2_colorspace_str(r.colorspace).c_str(),
+                libertas::spike::v4l2_ycbcr_enc_str(r.ycbcr_enc).c_str(),
+                libertas::spike::v4l2_xfer_func_str(r.xfer_func).c_str(),
+                libertas::spike::v4l2_quantization_str(r.quantization).c_str());
     std::printf("  frames        : %u\n", r.captured);
     std::printf("  dmabuf export : %s\n", r.dmabuf_exported ? "yes (zero-copy possible)"
                                                              : "no (mmap copy required)");
@@ -393,6 +401,25 @@ int run_v4l2(const libertas::spike::V4l2Config& cfg) {
     std::printf("  luma (plane 0): mean %.2f  min %u  max %u   [first %zu frames skipped]\n", lmean,
                 lo, hi, static_cast<std::size_t>(settle));
     std::printf("  startup black : %u frame(s) of Y=0 before content\n", startup_black);
+
+    // Cross-check the DECLARED range against the pixels actually delivered. The 4K X accepts a
+    // request for full range, echoes V4L2_QUANTIZATION_FULL_RANGE back in the format reply, and
+    // then sends limited-range pixels anyway. Comparing the reply to the request cannot catch
+    // that - only the pixels can. Limited range clamps luma into [16,235]; full range does not.
+    const char* declared = r.quantization == V4L2_QUANTIZATION_FULL_RANGE   ? "full"
+                           : r.quantization == V4L2_QUANTIZATION_LIM_RANGE ? "limited"
+                                                                           : "default";
+    const bool observed_full = lo < 16 || hi > 235;
+    if (r.quantization == V4L2_QUANTIZATION_FULL_RANGE && !observed_full) {
+        lc::warn("device DECLARES full range but delivers luma clamped to [{},{}] - the "
+                 "declaration is false; range must come from configuration, not the device",
+                 lo, hi);
+    } else if (r.quantization == V4L2_QUANTIZATION_LIM_RANGE && observed_full) {
+        lc::warn("device declares limited range but delivers luma [{},{}] outside [16,235]", lo,
+                 hi);
+    }
+    std::printf("  range         : declared %s, observed %s\n", declared,
+                observed_full ? "full" : "limited (luma inside [16,235])");
 
     const bool signal = hi > 0;
     if (!signal) {
@@ -816,6 +843,10 @@ int main(int argc, char** argv) {
         } else if (a == "--v4l2-fps" && i + 1 < args.size()) {
             v4l2cfg.fps_num =
                 static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
+        } else if (a == "--v4l2-range" && i + 1 < args.size()) {
+            const std::string v(args[++i]);
+            v4l2cfg.quantization =
+                v == "full" ? V4L2_QUANTIZATION_FULL_RANGE : V4L2_QUANTIZATION_LIM_RANGE;
         } else if (a == "--v4l2-dmabuf") {
             v4l2cfg.export_dmabuf = true;
         } else if (a == "--slots" && i + 1 < args.size()) {
