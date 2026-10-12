@@ -34,6 +34,15 @@ struct V4l2Result {
     std::vector<double> luma;
     std::vector<std::uint8_t> luma_min;
     std::vector<std::uint8_t> luma_max;
+
+    /// The DRIVER's frame counter. Inter-arrival time cannot see a frame the driver dropped
+    /// before we ever dequeued it - the sequence number can, and it is the only instrument that
+    /// distinguishes "the card is slow" from "the card is not receiving every source frame."
+    std::uint32_t seq_first = 0;
+    std::uint32_t seq_last = 0;
+    std::uint32_t seq_breaks = 0;   ///< how many discontinuities
+    std::uint64_t seq_missing = 0;  ///< total frames the driver skipped
+    double span_ms = 0.0;           ///< driver-timestamp span, first frame to last
 };
 
 /// Captures from a V4L2 device and reports timing from the driver's own timestamps.

@@ -355,6 +355,19 @@ int run_v4l2(const libertas::spike::V4l2Config& cfg) {
     stats(r.driver_ms, "driver gap");
     stats(r.wall_ms, "wall gap");
 
+    // The rate the DRIVER actually ran at, over the whole run rather than frame to frame. A
+    // capture card has its own crystal; it is not the source's and it is not the encoder's, and
+    // the difference only becomes visible over a long span.
+    if (r.span_ms > 0 && r.captured > 1) {
+        const double produced = static_cast<double>(r.seq_last - r.seq_first);
+        std::printf("  measured rate : %.4f fps over %.2f s  (dequeued %.4f fps)\n",
+                    produced * 1000.0 / r.span_ms, r.span_ms / 1000.0,
+                    static_cast<double>(r.captured - 1) * 1000.0 / r.span_ms);
+    }
+    std::printf("  driver seq    : %u..%u, %u break(s), %llu frame(s) never delivered to us\n",
+                r.seq_first, r.seq_last, r.seq_breaks,
+                static_cast<unsigned long long>(r.seq_missing));
+
     // Signal detection, because this device has no ioctl for it.
     //
     // Measured on the 4K X: with no input it streams Y=0 everywhere (and neutral chroma 128). With

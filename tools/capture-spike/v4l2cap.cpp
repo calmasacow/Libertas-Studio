@@ -231,6 +231,8 @@ bool v4l2_capture(const V4l2Config& cfg, V4l2Result& out, std::string& error) {
     out.luma.reserve(cfg.frames);
 
     double prev_driver = 0;
+    double first_driver = 0;
+    std::uint32_t prev_seq = 0;
     auto prev_wall = std::chrono::steady_clock::now();
     bool first = true;
 
@@ -269,7 +271,20 @@ bool v4l2_capture(const V4l2Config& cfg, V4l2Result& out, std::string& error) {
             out.driver_ms.push_back(driver_ms - prev_driver);
             out.wall_ms.push_back(
                 std::chrono::duration<double, std::milli>(wall - prev_wall).count());
+            // A gap of more than 1 means the driver produced frames we never saw. That is a real
+            // drop, and it is invisible to every timing statistic computed from what we did see.
+            const std::uint32_t step_seq = buf.sequence - prev_seq;
+            if (step_seq != 1) {
+                ++out.seq_breaks;
+                out.seq_missing += step_seq > 1 ? step_seq - 1 : 0;
+            }
+        } else {
+            out.seq_first = buf.sequence;
+            first_driver = driver_ms;
         }
+        out.seq_last = buf.sequence;
+        out.span_ms = driver_ms - first_driver;
+        prev_seq = buf.sequence;
         first = false;
         prev_driver = driver_ms;
         prev_wall = wall;
