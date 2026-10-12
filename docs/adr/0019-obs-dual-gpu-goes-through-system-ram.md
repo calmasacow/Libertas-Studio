@@ -64,8 +64,22 @@ GPU utilisation by nothing** - because NVENC is dedicated silicon, not shader co
 encode genuinely is close to free when it is not made to travel through system RAM to get there.
 The 2x render-time penalty was never the cost of encoding; it was the cost of the detour.
 
+Nor does the second session contend for the encode engine in any way that shows up. NVENC's own
+reported latency, sampled while both sessions ran, was **7713 / 7260 / 8255 us** against
+**7971 us** when only the 1440p session existed. A first reading of 9563 us looked like
+contention and was a transient; three samples say there is none. The RTX 2070 has a single NVENC
+engine and is carrying 1440p60 and 1080p60 on it concurrently for free.
+
 This is the Phase-1.5 bar, now with both a failing and a passing example measured on the same
 machine on the same evening.
+
+**This is not an argument that NVENC beats QuickSync, nor that one GPU beats two.** The author's
+original reasoning - offload the secondary stream onto otherwise idle Intel silicon - is sound,
+and remains the configuration this project intends to make *correct* rather than to replace. What
+the A/B shows is that the incumbent cannot route a frame to the second GPU without a host round
+trip, so on OBS today the two-chip setup is the slower one. Fixing that is ADR-0007's whole
+purpose; when it works, spreading the load across two engines is better again, and matters more
+on a machine with less NVENC headroom than this one.
 
 ## Why this matters more than any other finding so far
 
