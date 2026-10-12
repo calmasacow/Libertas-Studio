@@ -287,7 +287,9 @@ int main(int argc, char** argv) {
                 lc::error("no frame in 10 s - is the output producing any damage at all?");
                 { std::lock_guard<std::mutex> lk(latest.mu); latest.stop = true; }
                 capture_thread.detach();
-                return 3;
+                enc.reset();
+                std::fflush(nullptr);
+                std::_Exit(3); // see the note at the end of main
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
@@ -391,20 +393,34 @@ int main(int argc, char** argv) {
         std::printf("  audio span    : %.3f s of audio for %.3f s of wall time (%+.1f ms)\n",
                     audio_s, wall_s, (audio_s - wall_s) * 1000.0);
     }
-    std::printf("  duplicated    : %u of %u output frames had no new capture (%.1f%%) - correct "
-                "behaviour on a still desktop, not a fault\n",
+    std::printf("  duplicated    : %u of %u output frames had no new capture (%.1f%%) - the screen did "
+                "not change; re-encoding the last frame is correct, not a fault\n",
                 duplicated, static_cast<unsigned>(st.video_frames),
                 st.video_frames > 0 ? 100.0 * duplicated / static_cast<double>(st.video_frames) : 0.0);
     std::printf("  wall          : %.2f s for %u frames (%.2f fps)\n", wall_s,
                 static_cast<unsigned>(st.video_frames),
                 wall_s > 0 ? static_cast<double>(st.video_frames) / wall_s : 0.0);
-    std::printf("\n  per-stage cost (this is the sw path; the Vulkan tier removes readback+convert)\n");
+    std::printf("\n  per-stage cost (sw path; the Vulkan tier removes readback and convert)\n");
     {
         std::lock_guard<std::mutex> lk(stats_mu);
         std::printf("  captures delivered by the compositor: %zu\n", capture_ms.size());
+        std::printf("  %s\n", libertas::spike::vk_readback_note(*vk).c_str());
         report("capture", capture_ms);
         report("readback", readback_ms);
     }
-    report("encode+convert", st.video_encode_ms);
-    return 0;
+    report("bgra->nv12", st.convert_ms);
+    report("encode", st.video_encode_ms);
+
+    // The capture thread is detached and may be parked inside a blocking roundtrip waiting for
+    // damage that will never come, so there is no point at which it is safe to destroy the
+    // Vulkan context, the capture connection, the image ring or `latest` - it is still reading
+    // all four. Returning normally ran those destructors underneath it and dumped core at exit.
+    //
+    // So the encoder is closed explicitly, because that is what flushes and closes the output
+    // file, and then the process exits without unwinding. The kernel reclaims the rest. A real
+    // worker gets a wakeup pipe and joins its thread properly; a spike that is one instruction
+    // from exiting does not need one, but it does need to not crash.
+    enc.reset();
+    std::fflush(nullptr);
+    std::_Exit(0);
 }

@@ -69,6 +69,11 @@ bool vk_readback_exported(VkCtx& ctx, const VkExportedImage& img, bool written_b
 
 void vk_destroy_exportable(VkCtx& ctx, VkExportedImage& img);
 
+/// Describes the memory the readback staged through. Reported rather than assumed: picking an
+/// uncached host-visible type instead of the cached one cost 46 ms a frame and looked like a PCIe
+/// limit (ADR-0018), so the choice is printed where a human will see it.
+std::string vk_readback_note(VkCtx& ctx);
+
 /// Blits `src` into `dst`, scaling if their sizes differ, and releases `dst` to the foreign queue
 /// family so another device may acquire it.
 ///

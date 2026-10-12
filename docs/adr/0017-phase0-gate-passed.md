@@ -4,6 +4,14 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # ADR 0017 — The Phase-0 gate passes, and the cost is all in the readback
 
+> **Corrected by [ADR-0018](0018-the-readback-was-my-bug.md).** The `readback 46.746 ms` figure
+> below is an artefact of two defects in our own readback path (uncached staging memory,
+> per-frame allocation) measured over a sample of two frames. The real cost is **1.870 ms**.
+> The conclusion drawn from it here - that the software path cannot sustain 1440p60 and caps near
+> 21 fps - is **withdrawn**: it sustains 60 fps with ~10 ms of headroom. The `encode+convert`
+> label is also wrong; the timer excluded the colour conversion. Read ADR-0018 before quoting any
+> per-stage number from this document.
+
 - **Status:** accepted, measured
 - **Date:** 2026-10-12
 - **Closes:** Phase 0's go/no-go condition

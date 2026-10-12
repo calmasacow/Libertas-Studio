@@ -305,10 +305,17 @@ bool encoder_video(Encoder& enc, const std::uint8_t* bgra, std::size_t stride, s
         error = "av_frame_make_writable (video) failed";
         return false;
     }
+    // Timed separately. An earlier version started the clock *after* sws_scale and still called
+    // the result "encode+convert", so the colour conversion - the more expensive of the two - was
+    // not in the number at all. A stage that is not measured must not appear in the label.
+    const auto t_convert = std::chrono::steady_clock::now();
     const std::uint8_t* src[4] = {bgra, nullptr, nullptr, nullptr};
     const int src_stride[4] = {static_cast<int>(stride), 0, 0, 0};
     sws_scale(enc.sws, src, src_stride, 0, static_cast<int>(enc.cfg.height), enc.vframe->data,
               enc.vframe->linesize);
+    enc.stats.convert_ms.push_back(
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_convert)
+            .count());
 
     enc.vframe->pts = av_rescale_q(pts_ns - enc.t0_ns, AVRational{1, 1'000'000'000},
                                    enc.vctx->time_base);

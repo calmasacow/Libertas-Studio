@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <format>
 
 #include <unistd.h>
 #include <vulkan/vulkan.h>
@@ -26,6 +27,20 @@
 #include <drm_fourcc.h>
 
 namespace libertas::spike {
+
+/// Staging resources for host readback, kept alive across frames. See `readback_image` for why
+/// per-frame allocation and an uncached memory type were both wrong.
+struct ReadbackStaging {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    VkDeviceSize capacity = 0;
+    std::uint32_t type_index = UINT32_MAX;
+    bool cached = false;
+    bool coherent = false;
+};
 
 struct VkCtx {
     VkInstance instance = VK_NULL_HANDLE;
@@ -40,9 +55,26 @@ struct VkCtx {
     PFN_vkGetMemoryFdPropertiesKHR get_memory_fd_properties = nullptr;
     PFN_vkGetImageDrmFormatModifierPropertiesEXT get_image_modifier_properties = nullptr;
     PFN_vkGetMemoryFdKHR get_memory_fd = nullptr;
+
+    ReadbackStaging readback;
 };
 
 namespace {
+
+void destroy_staging(VkCtx& ctx, ReadbackStaging& st) {
+    if (st.mapped != nullptr)
+        vkUnmapMemory(ctx.device, st.memory);
+    if (st.fence != VK_NULL_HANDLE)
+        vkDestroyFence(ctx.device, st.fence, nullptr);
+    if (st.cmd != VK_NULL_HANDLE)
+        vkFreeCommandBuffers(ctx.device, ctx.pool, 1, &st.cmd);
+    if (st.buffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(ctx.device, st.buffer, nullptr);
+    if (st.memory != VK_NULL_HANDLE)
+        vkFreeMemory(ctx.device, st.memory, nullptr);
+    st = ReadbackStaging{};
+}
+
 
 /// DRM fourcc -> Vulkan format. DRM names channels in little-endian word order, Vulkan in byte
 /// order, so DRM_FORMAT_ARGB8888 ("AR24") is B8G8R8A8 in Vulkan terms.
@@ -227,6 +259,8 @@ void vk_destroy(VkCtx* ctx) {
     // Also frees the struct: this is the unique_ptr deleter target.
     if (ctx == nullptr)
         return;
+    if (ctx->device != VK_NULL_HANDLE)
+        destroy_staging(*ctx, ctx->readback);
     if (ctx->pool != VK_NULL_HANDLE)
         vkDestroyCommandPool(ctx->device, ctx->pool, nullptr);
     if (ctx->device != VK_NULL_HANDLE)
@@ -277,62 +311,127 @@ namespace {
 /// `written_by_foreign` selects a queue-family ownership *acquire* as the first barrier. That
 /// acquire is what makes an external writer's contents visible; omitting it is undefined behaviour
 /// that happens to work on some drivers, which is the worst kind of bug to ship.
+///
+/// Two things here were wrong in the first version and cost 46 ms a frame (ADR-0018):
+///
+/// 1. The memory type was chosen as the *first* `HOST_VISIBLE | HOST_COHERENT` match. On this
+///    NVIDIA device that is type 2, which is host-visible and uncoherent-write-combined but
+///    **not** `HOST_CACHED`; type 3 is the cached one. A `memcpy` that *reads* from
+///    write-combined memory bypasses the cache and runs at a few hundred MB/s, so a 14 MiB frame
+///    took tens of milliseconds. WC memory is fast to write and ruinous to read, and a readback
+///    destination is read. `HOST_CACHED` is therefore a requirement, not a preference.
+/// 2. Buffer, allocation, command buffer and fence were created and destroyed per call. A 14 MiB
+///    `vkAllocateMemory` plus the first-touch page faults on every frame is pure overhead.
+///
+/// So the staging resources live in the context and the mapping is permanent.
 bool readback_image(VkCtx& ctx, VkImage image, std::uint32_t width, std::uint32_t height,
                     bool written_by_foreign, std::vector<std::uint8_t>& out, std::string& error) {
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
+    ReadbackStaging& st = ctx.readback;
 
-    VkBufferCreateInfo bci{};
-    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size = bytes;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (st.capacity < bytes) {
+        destroy_staging(ctx, st);
 
-    VkBuffer staging = VK_NULL_HANDLE;
-    if (vkCreateBuffer(ctx.device, &bci, nullptr, &staging) != VK_SUCCESS) {
-        error = "vkCreateBuffer (staging) failed";
-        return false;
-    }
-
-    VkMemoryRequirements bmr{};
-    vkGetBufferMemoryRequirements(ctx.device, staging, &bmr);
-
-    VkPhysicalDeviceMemoryProperties mp{};
-    vkGetPhysicalDeviceMemoryProperties(ctx.phys, &mp);
-    std::uint32_t host_type = UINT32_MAX;
-    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-        const bool fits = (bmr.memoryTypeBits & (1u << i)) != 0u;
-        const auto want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        if (fits && (mp.memoryTypes[i].propertyFlags & want) == want) {
-            host_type = i;
-            break;
+        VkBufferCreateInfo bci{};
+        bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bci.size = bytes;
+        bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(ctx.device, &bci, nullptr, &st.buffer) != VK_SUCCESS) {
+            error = "vkCreateBuffer (staging) failed";
+            return false;
         }
-    }
-    if (host_type == UINT32_MAX) {
-        error = "no host-visible coherent memory type";
-        vkDestroyBuffer(ctx.device, staging, nullptr);
-        return false;
+
+        VkMemoryRequirements bmr{};
+        vkGetBufferMemoryRequirements(ctx.device, st.buffer, &bmr);
+
+        VkPhysicalDeviceMemoryProperties mp{};
+        vkGetPhysicalDeviceMemoryProperties(ctx.phys, &mp);
+
+        // Preference order. Cached first, because reading uncached host memory is the trap above.
+        // Device-local is excluded from the first two passes: on a discrete card a type that is
+        // both device-local and host-visible is resizable-BAR VRAM, and reading that back over
+        // PCIe is the same mistake in a different costume (cf. ADR-0012, which had to avoid it
+        // for the opposite reason).
+        struct Pass {
+            VkMemoryPropertyFlags want;
+            VkMemoryPropertyFlags reject;
+        };
+        const Pass passes[] = {
+            {VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT},
+            {VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT},
+            {VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0},
+        };
+
+        st.type_index = UINT32_MAX;
+        for (const Pass& p : passes) {
+            for (std::uint32_t i = 0; i < mp.memoryTypeCount && st.type_index == UINT32_MAX; ++i) {
+                const VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+                if ((bmr.memoryTypeBits & (1u << i)) == 0u)
+                    continue;
+                if ((f & p.want) != p.want || (f & p.reject) != 0u)
+                    continue;
+                st.type_index = i;
+                st.cached = (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0u;
+                st.coherent = (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0u;
+            }
+            if (st.type_index != UINT32_MAX)
+                break;
+        }
+        if (st.type_index == UINT32_MAX) {
+            error = "no host-visible memory type for readback";
+            destroy_staging(ctx, st);
+            return false;
+        }
+
+        VkMemoryAllocateInfo bai{};
+        bai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        bai.allocationSize = bmr.size;
+        bai.memoryTypeIndex = st.type_index;
+        if (vkAllocateMemory(ctx.device, &bai, nullptr, &st.memory) != VK_SUCCESS) {
+            error = "vkAllocateMemory (staging) failed";
+            destroy_staging(ctx, st);
+            return false;
+        }
+        vkBindBufferMemory(ctx.device, st.buffer, st.memory, 0);
+
+        // Mapped once and left mapped. vkMapMemory is not free and the pointer stays valid.
+        if (vkMapMemory(ctx.device, st.memory, 0, VK_WHOLE_SIZE, 0, &st.mapped) != VK_SUCCESS) {
+            error = "vkMapMemory failed";
+            destroy_staging(ctx, st);
+            return false;
+        }
+
+        VkCommandBufferAllocateInfo cbai{};
+        cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbai.commandPool = ctx.pool;
+        cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbai.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(ctx.device, &cbai, &st.cmd) != VK_SUCCESS) {
+            error = "vkAllocateCommandBuffers failed";
+            destroy_staging(ctx, st);
+            return false;
+        }
+
+        VkFenceCreateInfo fci{};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (vkCreateFence(ctx.device, &fci, nullptr, &st.fence) != VK_SUCCESS) {
+            error = "vkCreateFence failed";
+            destroy_staging(ctx, st);
+            return false;
+        }
+        st.capacity = bmr.size;
     }
 
-    VkMemoryAllocateInfo bai{};
-    bai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    bai.allocationSize = bmr.size;
-    bai.memoryTypeIndex = host_type;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    vkAllocateMemory(ctx.device, &bai, nullptr, &staging_mem);
-    vkBindBufferMemory(ctx.device, staging, staging_mem, 0);
-
-    VkCommandBufferAllocateInfo cbai{};
-    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbai.commandPool = ctx.pool;
-    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = 1;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(ctx.device, &cbai, &cmd);
+    vkResetCommandBuffer(st.cmd, 0);
+    vkResetFences(ctx.device, 1, &st.fence);
 
     VkCommandBufferBeginInfo cbbi{};
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &cbbi);
+    vkBeginCommandBuffer(st.cmd, &cbbi);
 
     VkImageMemoryBarrier acquire{};
     acquire.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -351,8 +450,8 @@ bool readback_image(VkCtx& ctx, VkImage image, std::uint32_t width, std::uint32_
     acquire.image = image;
     acquire.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                         0, nullptr, 0, nullptr, 1, &acquire);
+    vkCmdPipelineBarrier(st.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &acquire);
 
     VkBufferImageCopy copy{};
     copy.bufferOffset = 0;
@@ -360,44 +459,38 @@ bool readback_image(VkCtx& ctx, VkImage image, std::uint32_t width, std::uint32_
     copy.bufferImageHeight = height;
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copy.imageExtent = {width, height, 1};
-    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &copy);
+    vkCmdCopyImageToBuffer(st.cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, st.buffer, 1, &copy);
 
-    vkEndCommandBuffer(cmd);
+    vkEndCommandBuffer(st.cmd);
 
     VkSubmitInfo si{};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
+    si.pCommandBuffers = &st.cmd;
 
-    VkFenceCreateInfo fci{};
-    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    VkFence fence = VK_NULL_HANDLE;
-    vkCreateFence(ctx.device, &fci, nullptr, &fence);
-
-    bool ok = true;
-    if (vkQueueSubmit(ctx.queue, 1, &si, fence) != VK_SUCCESS) {
+    if (vkQueueSubmit(ctx.queue, 1, &si, st.fence) != VK_SUCCESS) {
         error = "vkQueueSubmit failed";
-        ok = false;
-    } else if (vkWaitForFences(ctx.device, 1, &fence, VK_TRUE, 2'000'000'000ULL) != VK_SUCCESS) {
+        return false;
+    }
+    if (vkWaitForFences(ctx.device, 1, &st.fence, VK_TRUE, 2'000'000'000ULL) != VK_SUCCESS) {
         error = "fence wait timed out";
-        ok = false;
-    } else {
-        void* mapped = nullptr;
-        if (vkMapMemory(ctx.device, staging_mem, 0, bytes, 0, &mapped) == VK_SUCCESS) {
-            out.resize(bytes);
-            std::memcpy(out.data(), mapped, bytes);
-            vkUnmapMemory(ctx.device, staging_mem);
-        } else {
-            error = "vkMapMemory failed";
-            ok = false;
-        }
+        return false;
     }
 
-    vkDestroyFence(ctx.device, fence, nullptr);
-    vkFreeCommandBuffers(ctx.device, ctx.pool, 1, &cmd);
-    vkDestroyBuffer(ctx.device, staging, nullptr);
-    vkFreeMemory(ctx.device, staging_mem, nullptr);
-    return ok;
+    // A cached, non-coherent mapping needs the host caches invalidated before the GPU's writes are
+    // visible. Skipping this is another "works on the driver you tested" bug.
+    if (!st.coherent) {
+        VkMappedMemoryRange range{};
+        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        range.memory = st.memory;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        vkInvalidateMappedMemoryRanges(ctx.device, 1, &range);
+    }
+
+    out.resize(bytes);
+    std::memcpy(out.data(), st.mapped, bytes);
+    return true;
 }
 
 } // namespace
@@ -732,6 +825,16 @@ void vk_destroy_exportable(VkCtx& ctx, VkExportedImage& img) {
         vkFreeMemory(ctx.device, static_cast<VkDeviceMemory>(img.memory), nullptr);
         img.memory = nullptr;
     }
+}
+
+std::string vk_readback_note(VkCtx& ctx) {
+    const ReadbackStaging& st = ctx.readback;
+    if (st.type_index == UINT32_MAX)
+        return "readback staging: not allocated";
+    return std::format("readback staging: memory type {} ({}, {}), {:.2f} MiB resident",
+                       st.type_index, st.cached ? "HOST_CACHED" : "UNCACHED - reads will be slow",
+                       st.coherent ? "coherent" : "non-coherent",
+                       static_cast<double>(st.capacity) / (1024.0 * 1024.0));
 }
 
 bool vk_readback_exported(VkCtx& ctx, const VkExportedImage& img, bool written_by_foreign,

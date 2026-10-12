@@ -47,6 +47,7 @@ struct EncoderStats {
     /// Wall time spent inside avcodec_send_frame/receive_packet, which is the number that says
     /// whether this encoder can hold the show's frame budget.
     std::vector<double> video_encode_ms;
+    std::vector<double> convert_ms;
 };
 
 struct Encoder;
