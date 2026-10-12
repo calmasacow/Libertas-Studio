@@ -13,6 +13,7 @@
 
 #include <lcore/log.hpp>
 
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -58,6 +59,16 @@ const char* source_type_name(std::uint32_t t) {
 
 namespace {
 
+std::string g_session_handle; // for the signal handler
+
+void on_fatal_signal(int sig) {
+    // `timeout` sends SIGTERM and destructors do not run, so without this every timed-out run
+    // leaked a live capture session on the compositor.
+    if (!g_session_handle.empty())
+        libertas::spike::close_screencast_session(g_session_handle);
+    std::_Exit(128 + sig);
+}
+
 /// Closes the portal session on any exit path. Leaking one leaves a live capture stream on the
 /// compositor and poisons subsequent sessions (see docs/adr/0009).
 struct SessionCloser {
@@ -81,6 +92,9 @@ int main(int argc, char** argv) {
     bool sweep = false;
     std::string prefer_drm_node;
     libertas::spike::PortalRequest req;
+    // Monitors only unless --window is given: mixing monitor and window sources made earlier
+    // measurements non-comparable.
+    req.source_types = static_cast<std::uint32_t>(libertas::spike::SourceType::Monitor);
 
     const std::vector<std::string_view> args(argv + 1, argv + argc);
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -138,10 +152,22 @@ int main(int argc, char** argv) {
     }
 
     const SessionCloser closer{&session.session_handle};
+    g_session_handle = session.session_handle;
+    std::signal(SIGTERM, on_fatal_signal);
+    std::signal(SIGINT, on_fatal_signal);
+    std::signal(SIGHUP, on_fatal_signal);
 
     std::printf("\n=== portal session ===\n");
     std::printf("  pipewire fd   : %d\n", session.pipewire_fd);
     std::printf("  streams       : %zu\n", session.streams.size());
+    if (!session.streams.empty())
+        lc::info("CAPTURE SOURCE: {} ({}) {}x{} node {}",
+                 session.streams.front().mapping_id.empty()
+                     ? std::string("(no mapping_id)")
+                     : session.streams.front().mapping_id,
+                 source_type_name(session.streams.front().source_type),
+                 session.streams.front().width, session.streams.front().height,
+                 session.streams.front().node_id);
     for (const auto& s : session.streams) {
         std::printf("    node %u  %dx%d  at (%d,%d)  type=%s%s%s\n", s.node_id, s.width, s.height,
                     s.pos_x, s.pos_y, source_type_name(s.source_type),
@@ -195,28 +221,39 @@ int main(int argc, char** argv) {
             const char* label;
             std::vector<std::uint64_t> mods;
         };
+        // Known-good first: a failed negotiation may poison the session for later streams on the
+        // same core, so ordering is part of the experiment.
         std::vector<Variant> variants{
-            {"shm only (no modifier prop)", {}},
-            {"INVALID", {libertas::spike::kModifierInvalid}},
-            {"LINEAR", {libertas::spike::kModifierLinear}},
-            {"INVALID + LINEAR", {libertas::spike::kModifierInvalid,
-                                  libertas::spike::kModifierLinear}},
+            {"INVALID + LINEAR (known good)", {libertas::spike::kModifierInvalid,
+                                               libertas::spike::kModifierLinear}},
         };
         if (!vk_mods.empty()) {
-            variants.push_back({"Vulkan-supported list", vk_mods});
             std::vector<std::uint64_t> with_invalid = vk_mods;
             with_invalid.insert(with_invalid.begin(), libertas::spike::kModifierInvalid);
             variants.push_back({"INVALID + Vulkan list", with_invalid});
+            variants.push_back({"Vulkan-supported list", vk_mods});
         }
+        variants.push_back({"INVALID", {libertas::spike::kModifierInvalid}});
+        variants.push_back({"LINEAR", {libertas::spike::kModifierLinear}});
+        variants.push_back({"shm only (no modifier prop)", {}});
 
         std::printf("=== sweep: %zu variants against ONE session (node %u, %s) ===\n\n",
                     variants.size(), session.streams.front().node_id,
                     session.streams.front().mapping_id.c_str());
 
+        // One PipeWire connection for the whole sweep: pw_init/pw_deinit are not reliably
+        // re-entrant and the portal fd is single-use, so dup()-ing per attempt does not work.
+        std::string serr0;
+        libertas::spike::PwSessionPtr pws =
+            libertas::spike::pw_session_open(session.pipewire_fd, serr0);
+        if (!pws) {
+            lc::error("pw_session_open failed: {}", serr0);
+            return 3;
+        }
+
+        bool dumped_on_failure = false;
         for (const Variant& v : variants) {
             libertas::spike::StreamConfig vc;
-            // Each attempt needs its own fd: pw_context_connect_fd takes ownership.
-            vc.pipewire_fd = ::dup(session.pipewire_fd);
             vc.node_id = session.streams.front().node_id;
             vc.max_frames = 5;
             vc.modifiers = v.mods;
@@ -229,11 +266,16 @@ int main(int argc, char** argv) {
 
             libertas::spike::NegotiatedFormat vf;
             std::string verr2;
-            const bool ok = libertas::spike::run_stream(vc, vf, verr2);
+            const bool ok = libertas::spike::pw_try_variant(*pws, vc, vf, verr2);
 
             std::printf("  %-26s : ", v.label);
             if (!ok) {
                 std::printf("FAIL  (%s)\n", verr2.c_str());
+                if (!dumped_on_failure) {
+                    dumped_on_failure = true;
+                    std::fflush(stdout);
+                    libertas::spike::pw_dump_formats(*pws, vc.node_id);
+                }
             } else {
                 std::printf("OK  %ux%u %s mod=%-34s %u dmabuf %u shm\n", vf.width, vf.height,
                             libertas::spike::fourcc_str(vf.drm_format).c_str(),

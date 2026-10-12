@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -42,8 +43,22 @@ struct NegotiatedFormat {
 inline constexpr std::uint64_t kModifierInvalid = 0x00ffffffffffffffULL;
 inline constexpr std::uint64_t kModifierLinear = 0;
 
+/// A long-lived PipeWire connection. One per process: pw_init/pw_deinit are not reliably
+/// re-entrant, and the fd from OpenPipeWireRemote is effectively single-use, so a sweep must reuse
+/// one connection and create/destroy only streams inside it. This is also the shape the real
+/// capture worker needs, since it holds a persistent connection across reconfigurations.
+struct PwSession;
+void pw_session_close(PwSession*);
+struct PwSessionDeleter {
+    void operator()(PwSession* p) const { pw_session_close(p); }
+};
+using PwSessionPtr = std::unique_ptr<PwSession, PwSessionDeleter>;
+
+/// Takes ownership of `pipewire_fd`.
+PwSessionPtr pw_session_open(int pipewire_fd, std::string& error);
+
 struct StreamConfig {
-    int pipewire_fd = -1;       ///< from the portal; the stream takes ownership
+    int pipewire_fd = -1;       ///< single-shot run_stream only; ignored by pw_try_variant
     std::uint32_t node_id = 0;
     /// Modifiers to advertise, most preferred first. Empty => shm only.
     std::vector<std::uint64_t> modifiers;
@@ -56,9 +71,19 @@ struct StreamConfig {
     std::function<void(const CapturedFrame&)> on_frame;
 };
 
+/// Runs one negotiation attempt inside an existing session. `timeout_ms` bounds how long to wait
+/// for a format before giving up, so a variant that cannot negotiate does not hang the sweep.
+bool pw_try_variant(PwSession& session, const StreamConfig& cfg, NegotiatedFormat& out_format,
+                    std::string& error, int timeout_ms = 4000);
+
 /// Connects to the node, negotiates a format, pumps frames until max_frames or error.
 /// Returns false and fills `error` on failure. `out_format` reflects what was actually agreed.
 bool run_stream(const StreamConfig& cfg, NegotiatedFormat& out_format, std::string& error);
+
+/// Same as dump_node_formats but over an already-open session, so it can be called at the moment
+/// of a negotiation failure. The portal fd is single-use, so this is the only way to see what the
+/// source was offering during a live session.
+bool pw_dump_formats(PwSession& session, std::uint32_t node_id);
 
 /// Asks the source node what EnumFormat params it offers and prints them. Diagnostic: this is how
 /// to learn which DRM format modifiers a compositor will actually give us, rather than guessing.

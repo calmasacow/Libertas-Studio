@@ -96,42 +96,36 @@ const char* spa_format_name(std::uint32_t f) {
     }
 }
 
-struct Runner {
+/// Per-attempt state. One of these exists while a single stream is negotiating/pumping.
+struct Attempt {
+    PwSession* session = nullptr;
     const StreamConfig* cfg = nullptr;
     NegotiatedFormat* fmt = nullptr;
     std::string error;
 
-    pw_main_loop* loop = nullptr;
-    pw_context* context = nullptr;
-    pw_core* core = nullptr;
     pw_stream* stream = nullptr;
     spa_hook stream_listener{};
 
     std::uint32_t frames = 0;
     bool format_logged = false;
     bool fixated = false;
+    bool timed_out = false;
     std::array<std::uint8_t, 2048> fixate_buf{};
 
-    void stop() {
-        if (loop != nullptr)
-            pw_main_loop_quit(loop);
-    }
+    void stop(); // defined after PwSession is complete
 };
 
 /// Builds one EnumFormat POD advertising our modifier list as a mandatory, unfixated choice.
-/// The modifier prop needs flags that add_object cannot express, so this one is built by hand -
-/// but on the same skeleton as the shm variant above.
 spa_pod* build_format_with_modifiers(spa_pod_builder* b, std::uint32_t spa_format,
                                      const std::vector<std::uint64_t>& mods) {
     spa_pod_frame obj;
     spa_pod_builder_push_object(b, &obj, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
-
     spa_pod_builder_add(b, SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
                         SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
                         SPA_FORMAT_VIDEO_format, SPA_POD_Id(spa_format), 0);
 
-    // modifier: MANDATORY (we require dmabuf) + DONT_FIXATE (server replies with the
-    // intersection as a choice, which we then fixate in on_param_changed).
+    // MANDATORY (we require dmabuf) + DONT_FIXATE (server answers with the intersection, which we
+    // then fixate in on_param_changed).
     spa_pod_builder_prop(b, SPA_FORMAT_VIDEO_modifier,
                          SPA_POD_PROP_FLAG_MANDATORY | SPA_POD_PROP_FLAG_DONT_FIXATE);
     spa_pod_frame choice;
@@ -145,13 +139,10 @@ spa_pod* build_format_with_modifiers(spa_pod_builder* b, std::uint32_t spa_forma
                         SPA_POD_CHOICE_RANGE_Rectangle(&kSizeDefault, &kSizeMin, &kSizeMax),
                         SPA_FORMAT_VIDEO_framerate,
                         SPA_POD_CHOICE_RANGE_Fraction(&kFpsDefault, &kFpsMin, &kFpsMax), 0);
-
     return static_cast<spa_pod*>(spa_pod_builder_pop(b, &obj));
 }
 
 /// Builds an EnumFormat POD with no modifier property: the shm/MemPtr fallback.
-/// Uses the canonical single-call spa_pod_builder_add_object form from PipeWire's own examples,
-/// with the pixel format as a CHOICE_ENUM rather than one param per format.
 spa_pod* build_format_shm(spa_pod_builder* b) {
     return static_cast<spa_pod*>(spa_pod_builder_add_object(
         b, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
@@ -167,20 +158,20 @@ spa_pod* build_format_shm(spa_pod_builder* b) {
         SPA_POD_CHOICE_RANGE_Fraction(&kFpsDefault, &kFpsMin, &kFpsMax)));
 }
 
-/// Builds an EnumFormat POD with the modifier pinned to a single value. Required by the dmabuf
-/// negotiation protocol: the server answers our DONT_FIXATE choice with the intersection, and we
-/// must then come back with exactly one modifier before buffers can be allocated.
+/// Builds an EnumFormat POD with the modifier pinned to one value. Required by the negotiation
+/// protocol: the server answers our DONT_FIXATE choice with the intersection, and we must come back
+/// with exactly one modifier before buffers can be allocated.
 spa_pod* build_format_fixated(spa_pod_builder* b, std::uint32_t spa_format, std::uint64_t modifier,
                               spa_rectangle size, spa_fraction fps) {
     spa_pod_frame f;
     spa_pod_builder_push_object(b, &f, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
-    spa_pod_builder_add(b, SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video), 0);
-    spa_pod_builder_add(b, SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw), 0);
-    spa_pod_builder_add(b, SPA_FORMAT_VIDEO_format, SPA_POD_Id(spa_format), 0);
+    spa_pod_builder_add(b, SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
+                        SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
+                        SPA_FORMAT_VIDEO_format, SPA_POD_Id(spa_format), 0);
     spa_pod_builder_prop(b, SPA_FORMAT_VIDEO_modifier, SPA_POD_PROP_FLAG_MANDATORY);
     spa_pod_builder_long(b, static_cast<int64_t>(modifier));
-    spa_pod_builder_add(b, SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle(&size), 0);
-    spa_pod_builder_add(b, SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&fps), 0);
+    spa_pod_builder_add(b, SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle(&size),
+                        SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&fps), 0);
     return static_cast<spa_pod*>(spa_pod_builder_pop(b, &f));
 }
 
@@ -204,7 +195,7 @@ spa_pod* build_format_mirror(spa_pod_builder* b, std::uint32_t spa_format, spa_r
 }
 
 void on_state_changed(void* data, pw_stream_state old, pw_stream_state state, const char* err) {
-    auto* r = static_cast<Runner*>(data);
+    auto* r = static_cast<Attempt*>(data);
     lc::info("stream state {} -> {}{}{}", pw_stream_state_as_string(old),
              pw_stream_state_as_string(state), (err != nullptr) ? ": " : "",
              (err != nullptr) ? err : "");
@@ -215,7 +206,7 @@ void on_state_changed(void* data, pw_stream_state old, pw_stream_state state, co
 }
 
 void on_param_changed(void* data, std::uint32_t id, const spa_pod* param) {
-    auto* r = static_cast<Runner*>(data);
+    auto* r = static_cast<Attempt*>(data);
     if (param == nullptr || id != SPA_PARAM_Format)
         return;
 
@@ -297,7 +288,7 @@ void on_param_changed(void* data, std::uint32_t id, const spa_pod* param) {
 }
 
 void on_process(void* data) {
-    auto* r = static_cast<Runner*>(data);
+    auto* r = static_cast<Attempt*>(data);
 
     pw_buffer* b = pw_stream_dequeue_buffer(r->stream);
     if (b == nullptr)
@@ -352,6 +343,14 @@ constexpr pw_stream_events kStreamEvents = {
 } // namespace
 
 // ---------------------------------------------------------------------------- format dump
+
+// Definition of the opaque session type declared in the header.
+struct PwSession {
+    pw_main_loop* loop = nullptr;
+    pw_context* context = nullptr;
+    pw_core* core = nullptr;
+    spa_source* timer = nullptr;
+};
 
 namespace {
 
@@ -427,6 +426,28 @@ constexpr pw_core_events kCoreEvents = {
 
 } // namespace
 
+bool pw_dump_formats(PwSession& session, std::uint32_t node_id) {
+    Dumper d;
+    d.want_node = node_id;
+    d.loop = session.loop;
+    d.core = session.core;
+
+    pw_core_add_listener(d.core, &d.core_listener, &kCoreEvents, &d);
+    d.registry = pw_core_get_registry(d.core, PW_VERSION_REGISTRY, 0);
+    pw_registry_add_listener(d.registry, &d.registry_listener, &kRegistryEvents, &d);
+    d.sync_seq = pw_core_sync(d.core, PW_ID_CORE, 0);
+
+    std::printf("\n=== formats offered by node %u (live session) ===\n", node_id);
+    pw_main_loop_run(d.loop);
+    std::printf("  (%u EnumFormat params)\n\n", d.params_seen);
+
+    spa_hook_remove(&d.registry_listener);
+    spa_hook_remove(&d.core_listener);
+    if (d.node != nullptr)
+        spa_hook_remove(&d.node_listener);
+    return d.params_seen > 0;
+}
+
 bool dump_node_formats(int pipewire_fd, std::uint32_t node_id, std::string& error) {
     Dumper d;
     d.want_node = node_id;
@@ -461,94 +482,156 @@ bool dump_node_formats(int pipewire_fd, std::uint32_t node_id, std::string& erro
     return d.params_seen > 0;
 }
 
-bool run_stream(const StreamConfig& cfg, NegotiatedFormat& out_format, std::string& error) {
-    Runner r;
-    r.cfg = &cfg;
-    r.fmt = &out_format;
+namespace {
 
-    pw_init(nullptr, nullptr);
+/// Builds the EnumFormat param list for one attempt into `b`.
+void build_params(spa_pod_builder* b, const StreamConfig& cfg, std::vector<const spa_pod*>& params) {
+    static constexpr std::array<std::uint32_t, 4> kFormats{
+        SPA_VIDEO_FORMAT_BGRA, SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_RGBA,
+        SPA_VIDEO_FORMAT_RGBx};
 
-    r.loop = pw_main_loop_new(nullptr);
-    if (r.loop == nullptr) {
+    if (cfg.mirror_width > 0 && cfg.mirror_height > 0) {
+        const spa_rectangle sz{cfg.mirror_width, cfg.mirror_height};
+        if (!cfg.modifiers.empty())
+            params.push_back(
+                build_format_mirror(b, SPA_VIDEO_FORMAT_BGRA, sz, true, cfg.modifiers.front()));
+        else
+            params.push_back(build_format_mirror(b, SPA_VIDEO_FORMAT_BGRA, sz, false, 0));
+        return;
+    }
+    if (!cfg.modifiers.empty())
+        for (std::uint32_t f : kFormats)
+            params.push_back(build_format_with_modifiers(b, f, cfg.modifiers));
+    params.push_back(build_format_shm(b));
+}
+
+void on_attempt_timeout(void* data, std::uint64_t) {
+    auto* a = static_cast<Attempt*>(data);
+    a->timed_out = true;
+    if (a->error.empty())
+        a->error = "timed out waiting for format negotiation";
+    a->stop();
+}
+
+} // namespace
+
+namespace {
+void Attempt::stop() {
+    if (session != nullptr && session->loop != nullptr)
+        pw_main_loop_quit(session->loop);
+}
+} // namespace
+
+PwSessionPtr pw_session_open(int pipewire_fd, std::string& error) {
+    pw_init(nullptr, nullptr); // once per process: not reliably re-entrant
+
+    PwSessionPtr s(new PwSession());
+    s->loop = pw_main_loop_new(nullptr);
+    if (s->loop == nullptr) {
         error = "pw_main_loop_new failed";
-        return false;
+        return nullptr;
     }
-    r.context = pw_context_new(pw_main_loop_get_loop(r.loop), nullptr, 0);
-    if (r.context == nullptr) {
+    s->context = pw_context_new(pw_main_loop_get_loop(s->loop), nullptr, 0);
+    if (s->context == nullptr) {
         error = "pw_context_new failed";
-        return false;
+        return nullptr;
     }
-    // Takes ownership of the portal's fd.
-    r.core = pw_context_connect_fd(r.context, cfg.pipewire_fd, nullptr, 0);
-    if (r.core == nullptr) {
+    // Takes ownership of the portal's fd, which is effectively single-use.
+    s->core = pw_context_connect_fd(s->context, pipewire_fd, nullptr, 0);
+    if (s->core == nullptr) {
         error = std::format("pw_context_connect_fd failed: {}", std::strerror(errno));
-        return false;
+        return nullptr;
     }
+    return s;
+}
+
+void pw_session_close(PwSession* s) {
+    if (s == nullptr)
+        return;
+    if (s->timer != nullptr && s->loop != nullptr)
+        pw_loop_destroy_source(pw_main_loop_get_loop(s->loop), s->timer);
+    if (s->core != nullptr)
+        pw_core_disconnect(s->core);
+    if (s->context != nullptr)
+        pw_context_destroy(s->context);
+    if (s->loop != nullptr)
+        pw_main_loop_destroy(s->loop);
+    delete s;
+    pw_deinit();
+}
+
+bool pw_try_variant(PwSession& session, const StreamConfig& cfg, NegotiatedFormat& out_format,
+                    std::string& error, int timeout_ms) {
+    Attempt a;
+    a.session = &session;
+    a.cfg = &cfg;
+    a.fmt = &out_format;
+    out_format = NegotiatedFormat{};
 
     pw_properties* props =
         pw_properties_new(PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY, "Capture",
                           PW_KEY_MEDIA_ROLE, "Screen", PW_KEY_APP_NAME, "libertas-capture-spike",
                           nullptr);
-    r.stream = pw_stream_new(r.core, "libertas-capture", props);
-    if (r.stream == nullptr) {
+    a.stream = pw_stream_new(session.core, "libertas-capture", props);
+    if (a.stream == nullptr) {
         error = "pw_stream_new failed";
         return false;
     }
-    pw_stream_add_listener(r.stream, &r.stream_listener, &kStreamEvents, &r);
-
-    // Advertise, in preference order: each format with our modifier list, then the shm fallback.
-    static constexpr std::array<std::uint32_t, 4> kFormats{
-        SPA_VIDEO_FORMAT_BGRA, SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_RGBA,
-        SPA_VIDEO_FORMAT_RGBx};
+    pw_stream_add_listener(a.stream, &a.stream_listener, &kStreamEvents, &a);
 
     std::array<std::uint8_t, 8192> pod_buf{};
     spa_pod_builder b =
         SPA_POD_BUILDER_INIT(pod_buf.data(), static_cast<std::uint32_t>(pod_buf.size()));
     std::vector<const spa_pod*> params;
+    build_params(&b, cfg, params);
 
-    if (cfg.mirror_width > 0 && cfg.mirror_height > 0) {
-        const spa_rectangle sz{cfg.mirror_width, cfg.mirror_height};
-        if (!cfg.modifiers.empty())
-            params.push_back(build_format_mirror(&b, SPA_VIDEO_FORMAT_BGRA, sz, true,
-                                                 cfg.modifiers.front()));
-        else
-            params.push_back(build_format_mirror(&b, SPA_VIDEO_FORMAT_BGRA, sz, false, 0));
-    } else {
-        if (!cfg.modifiers.empty())
-            for (std::uint32_t f : kFormats)
-                params.push_back(build_format_with_modifiers(&b, f, cfg.modifiers));
-        params.push_back(build_format_shm(&b));
-    }
-
-    lc::info("connecting to node {} advertising {} format params ({} modifiers)", cfg.node_id,
-             params.size(), cfg.modifiers.size());
-
-    const int res = pw_stream_connect(
-        r.stream, SPA_DIRECTION_INPUT, cfg.node_id,
-        static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT),
-        params.data(), static_cast<std::uint32_t>(params.size()));
+    const int res = pw_stream_connect(a.stream, SPA_DIRECTION_INPUT, cfg.node_id,
+                                      static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT),
+                                      params.data(), static_cast<std::uint32_t>(params.size()));
     if (res < 0) {
         error = std::format("pw_stream_connect failed: {}", spa_strerror(res));
+        pw_stream_destroy(a.stream);
         return false;
     }
 
-    pw_main_loop_run(r.loop);
+    // Bound the attempt so a variant that cannot negotiate does not hang a sweep. The timer is
+    // recreated per attempt because its callback data points at this Attempt.
+    pw_loop* loop = pw_main_loop_get_loop(session.loop);
+    if (session.timer != nullptr)
+        pw_loop_destroy_source(loop, session.timer);
+    session.timer = pw_loop_add_timer(loop, on_attempt_timeout, &a);
 
-    pw_stream_destroy(r.stream);
-    pw_core_disconnect(r.core);
-    pw_context_destroy(r.context);
-    pw_main_loop_destroy(r.loop);
-    pw_deinit();
+    timespec ts{};
+    ts.tv_sec = timeout_ms / 1000;
+    ts.tv_nsec = static_cast<long>(timeout_ms % 1000) * 1'000'000L;
+    pw_loop_update_timer(loop, session.timer, &ts, nullptr, false);
 
-    if (!r.error.empty()) {
-        error = r.error;
+    pw_main_loop_run(session.loop);
+
+    // Destroy the timer before `a` dies: it holds a pointer to it.
+    pw_loop_destroy_source(loop, session.timer);
+    session.timer = nullptr;
+
+    pw_stream_destroy(a.stream);
+
+    if (!a.error.empty()) {
+        error = std::format("{}{}", a.error,
+                            a.format_logged ? "" : " [param_changed never fired: the server "
+                                                   "rejected every advertised param]");
         return false;
     }
-    if (r.frames == 0) {
-        error = "no frames received";
+    if (a.frames == 0) {
+        error = "negotiated but received no frames";
         return false;
     }
     return true;
+}
+
+bool run_stream(const StreamConfig& cfg, NegotiatedFormat& out_format, std::string& error) {
+    PwSessionPtr s = pw_session_open(cfg.pipewire_fd, error);
+    if (!s)
+        return false;
+    return pw_try_variant(*s, cfg, out_format, error);
 }
 
 } // namespace libertas::spike

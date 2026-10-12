@@ -73,11 +73,8 @@ found afterwards, and a third remains open:
    success from roughly 1-in-3 to 3-in-4. A `SessionCloser` RAII guard now runs on every exit path.
    **A real implementation must close its sessions**; leaking them degrades the compositor for every
    subsequent client, not just itself.
-3. **Still unexplained:** negotiation remains intermittent even with sessions closed and the output
-   held constant, and restarting both `xdg-desktop-portal` and
-   `xdg-desktop-portal-hyprland` did not restore reliability. No leaked PipeWire nodes were visible
-   in `pw-dump` (0 screencast-related of 54 total), so the residual state is likely inside Hyprland's
-   own screencopy bookkeeping. Unresolved.
+3. **The actual root cause** - a node-readiness race. See the section below; this supersedes the
+   speculation that previously sat here.
 
 ## A harness bug to avoid repeating
 
@@ -130,6 +127,42 @@ advertised set contained both `0x...606010-015` and `0x...e08010-015`. If that h
 exactly the "accept a format then fail at import" trap the design set out to avoid, and the reason
 modifier intersection must be computed from the Vulkan list rather than assumed. **It needs
 confirming on a pinned output before being treated as fact.**
+
+## ROOT CAUSE of the intermittency: the node is not ready when Start returns
+
+Found with the live-session format dump plus a `param_changed`-never-fired marker:
+
+```
+=== sweep: 6 variants against ONE session (node 377, DP-1) ===
+  INVALID + LINEAR (known good) : FAIL (no more input formats
+                                  [param_changed never fired: server rejected every param])
+=== formats offered by node 377 (live session) ===
+  (0 EnumFormat params)
+```
+
+**The PipeWire node advertises zero EnumFormat params.** The same kind of node, dumped at a different
+moment, offered two. So `org.freedesktop.portal.ScreenCast.Start` returns a node id *before* that
+node has populated its format params, and connecting immediately means the server has nothing to
+intersect against - which surfaces as `no more input formats` and looks exactly like a modifier
+incompatibility.
+
+This explains every confusing observation:
+
+- Runs that "worked" were ones where a human clicking the picker introduced seconds of delay; runs
+  that failed were fast-path (persisted grant) and connected too early.
+- No modifier list ever mattered. The LINEAR-vs-NVIDIA and INVALID-presence theories were both
+  noise.
+- Restarting the portals changed nothing, because the race is per-session.
+- The monitor choice mattered only because picking different monitors changed the click timing.
+
+**Required fix, and it belongs in the real capture worker:** after `Start`, do not connect
+immediately. Bind the node through the registry and wait until it advertises at least one
+`SPA_PARAM_EnumFormat` - with a timeout and retry - before calling `pw_stream_connect`. The
+registry/param machinery for this already exists in `pw_dump_formats`.
+
+The earlier "accept-then-fail-at-import" lead (a session settling on `NVIDIA(0x300000000e08014)`,
+absent from the device's importable list) is still unverified and remains worth checking once
+negotiation is deterministic.
 
 ## Still open
 
