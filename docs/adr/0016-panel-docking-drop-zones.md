@@ -92,6 +92,37 @@ one.
    not highlight and the drop does nothing. Layouts fail at the gesture, visibly, rather than
    producing a 3-pixel panel the user then has to find and fix.
 
+## Deferred: dragging clear of the application
+
+Releasing a panel outside the application window should tear it off into a floating window. This is
+deliberately **deferred until the docked model is complete**, but the constraint is recorded now
+because it changes how it must be built, and discovering it late would be expensive.
+
+**Detection works.** Wayland gives the client an implicit pointer grab for the duration of a button
+press, so motion events keep arriving after the cursor leaves our surface. We can tell precisely
+when a drag has gone outside the window. What we cannot learn is what is *under* the cursor out
+there - only that it is not us, which is all this gesture needs.
+
+**Placement does not work, and cannot be made to.** This is the same wall as ADR-0015: `xdg_shell`
+has no positioning request, so a newly created toplevel cannot be placed at the point where the
+user released it. The panel will appear wherever the compositor decides. Hyprland will apply its
+own rules; on other compositors it may be centred, tiled, or placed under a cursor-follows policy
+we do not control.
+
+So the Adobe behaviour - the window materialising exactly under your cursor - is **not reproducible
+on Wayland**, and we should not pretend otherwise or spend effort chasing it. What we can do:
+
+- Tag the torn-off toplevel via `xdg_toplevel_tag_manager_v1` (ADR-0015 rule 3) with a stable
+  identifier, and **ship a documented Hyprland window-rule snippet** for Omarchy so the behaviour
+  is good out of the box on our bedrock platform.
+- Size the new window to the panel's previous size, which we *do* control, so only its position is
+  surprising.
+- Keep the gesture reversible: the panel remembers where it came from, so re-docking is one action.
+
+Note that `xdg_positioner` does not rescue this. It positions `xdg_popup`s precisely relative to a
+parent surface, but a popup is transient and dismissed on click-outside - it is not a window a user
+can keep, focus and move. It is the wrong primitive for a persistent floating panel.
+
 ## Consequences
 
 - The layout model is a **tree**: split nodes (with an axis and relative proportions) and tab-group
