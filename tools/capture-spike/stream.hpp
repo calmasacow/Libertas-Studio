@@ -90,13 +90,25 @@ enum class NodeReadiness {
     NoFormats,   ///< node exists but published no formats within the timeout
 };
 
+/// What a source node says it can produce, read structurally rather than printed.
+///
+/// `preferred` is the compositor's *current* layout: a modifier it published as a single fixed
+/// value rather than as a choice. It matters because a compositor will advertise modifiers it
+/// cannot actually allocate with, so its own preference is the candidate most likely to work -
+/// far more meaningful than the order a Vulkan device happens to enumerate modifiers in.
+struct NodeFormats {
+    std::vector<std::uint64_t> offered;   ///< every modifier the node mentions, de-duplicated
+    std::vector<std::uint64_t> preferred; ///< those given as a single fixed value, in param order
+};
+
 /// Polls `node_id` until it advertises at least one SPA_PARAM_EnumFormat, and reports *why* if it
 /// never does.
 ///
 /// portal ScreenCast.Start returns a node id before the node has populated its format params, and
 /// for a restored session it may return a node id that is never registered at all. Every capture
 /// consumer must validate here, before trusting the session.
-NodeReadiness pw_probe_node(PwSession& session, std::uint32_t node_id, int timeout_ms = 5000);
+NodeReadiness pw_probe_node(PwSession& session, std::uint32_t node_id,
+                            NodeFormats* out_formats = nullptr, int timeout_ms = 5000);
 
 /// `pw_probe_node(...) == NodeReadiness::Ready`.
 bool pw_wait_node_ready(PwSession& session, std::uint32_t node_id, int timeout_ms = 5000);

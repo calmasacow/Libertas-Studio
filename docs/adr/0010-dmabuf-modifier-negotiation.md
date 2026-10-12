@@ -103,12 +103,31 @@ Any negative result after several runs must be re-confirmed on a clean portal be
 believed, and the real worker must treat "node with no formats" as a retryable environment fault
 rather than a configuration error.
 
+## Resolution of the ordering question
+
+Candidate modifiers are now ordered by **the source's own preference**, read structurally from the
+node's `SPA_PARAM_EnumFormat` params at validation time (`NodeFormats`): a property carrying one
+fixed value is the compositor's current layout, a choice is the set it will consider. We then
+intersect with what the Vulkan device can import and advertise that, preference first, with
+`DRM_FORMAT_MOD_INVALID` as the last rung only.
+
+This matters more than it first appears. Trying our own enumeration order first means deliberately
+walking into Cause 2 - and the ladder may not be able to recover, because a failed attempt appears
+to leave the node advertising no formats at all. If that holds, each rung would need its own portal
+session and therefore its own picker click, which is not an acceptable design. Ordering by the
+source's preference is what keeps the ladder a cheap safety net rather than the primary mechanism.
+
+An empty intersection is also now reported before connecting, naming both lists, instead of
+surfacing as `no more input formats` three callbacks later.
+
 ## Open
 
+- Whether a failed attempt poisons the node for subsequent attempts on the same session. If it
+  does, the ladder needs a fresh session per rung and the source-preference ordering becomes
+  load-bearing rather than an optimisation.
 - The fallback ladder is **written and compiles but has never engaged** — the run that would have
   exercised it hit Cause 4 instead. First thing to do on a clean session.
 - Stage 3 (Vulkan dmabuf import) is still **unproven**: no frame has yet reached `vk_import.cpp`.
   Negotiation now yields a modifier the device claims it can import, so the import is next.
-- Whether `0x300000000606014` (the compositor's own preference) works where `015` did not, which
-  would say the ladder should be ordered by the source's `EnumFormat[0]` hint rather than by the
-  order Vulkan happens to enumerate modifiers in.
+- Whether `0x300000000606014` (the compositor's own preference) in fact works where `015` did not.
+  The ordering change above assumes it does; that assumption is untested.

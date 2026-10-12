@@ -453,6 +453,7 @@ struct Dumper {
     bool quiet = false;
     bool node_found = false;   ///< did the registry ever announce want_node?
     std::uint32_t nodes_seen = 0;
+    NodeFormats formats;
 };
 
 void on_node_param(void* data, int, std::uint32_t id, std::uint32_t index, std::uint32_t,
@@ -461,6 +462,23 @@ void on_node_param(void* data, int, std::uint32_t id, std::uint32_t index, std::
     if (id != SPA_PARAM_EnumFormat || param == nullptr)
         return;
     ++d->params_seen;
+
+    // Collect modifiers structurally. A property carrying one fixed value is the compositor's
+    // current layout for this source; a choice is the set it is willing to consider.
+    if (const spa_pod_prop* mp = spa_pod_find_prop(param, nullptr, SPA_FORMAT_VIDEO_modifier);
+        mp != nullptr) {
+        const std::vector<std::uint64_t> mods = extract_modifiers(mp);
+        const bool fixed = !spa_pod_is_choice(&mp->value) && mods.size() == 1;
+        for (std::uint64_t m : mods) {
+            if (std::find(d->formats.offered.begin(), d->formats.offered.end(), m) ==
+                d->formats.offered.end())
+                d->formats.offered.push_back(m);
+        }
+        if (fixed && std::find(d->formats.preferred.begin(), d->formats.preferred.end(),
+                               mods.front()) == d->formats.preferred.end())
+            d->formats.preferred.push_back(mods.front());
+    }
+
     if (d->quiet)
         return;
     std::printf("  --- EnumFormat[%u] ---\n", index);
@@ -528,7 +546,8 @@ struct ProbeResult {
     std::uint32_t nodes_seen = 0;
 };
 
-ProbeResult probe_node_params(PwSession& session, std::uint32_t node_id, bool verbose) {
+ProbeResult probe_node_params(PwSession& session, std::uint32_t node_id, bool verbose,
+                              NodeFormats* out_formats = nullptr) {
     Dumper d;
     d.want_node = node_id;
     d.loop = session.loop;
@@ -546,6 +565,8 @@ ProbeResult probe_node_params(PwSession& session, std::uint32_t node_id, bool ve
     spa_hook_remove(&d.core_listener);
     if (d.node != nullptr)
         spa_hook_remove(&d.node_listener);
+    if (out_formats != nullptr)
+        *out_formats = std::move(d.formats);
     return ProbeResult{d.params_seen, d.node_found, d.nodes_seen};
 }
 
@@ -560,12 +581,13 @@ const char* node_readiness_str(NodeReadiness r) {
     return "unknown";
 }
 
-NodeReadiness pw_probe_node(PwSession& session, std::uint32_t node_id, int timeout_ms) {
+NodeReadiness pw_probe_node(PwSession& session, std::uint32_t node_id, NodeFormats* out_formats,
+                            int timeout_ms) {
     constexpr int kIntervalMs = 100;
     int waited = 0;
     ProbeResult last;
     for (;;) {
-        last = probe_node_params(session, node_id, false);
+        last = probe_node_params(session, node_id, false, out_formats);
         if (last.params > 0) {
             if (waited > 0)
                 lc::info("node {} became ready after {} ms", node_id, waited);
@@ -591,7 +613,7 @@ NodeReadiness pw_probe_node(PwSession& session, std::uint32_t node_id, int timeo
 }
 
 bool pw_wait_node_ready(PwSession& session, std::uint32_t node_id, int timeout_ms) {
-    return pw_probe_node(session, node_id, timeout_ms) == NodeReadiness::Ready;
+    return pw_probe_node(session, node_id, nullptr, timeout_ms) == NodeReadiness::Ready;
 }
 
 bool pw_dump_formats(PwSession& session, std::uint32_t node_id) {

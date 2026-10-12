@@ -151,8 +151,44 @@ void forget_cached_token() {
 struct Acquired {
     libertas::spike::PortalSession session;
     libertas::spike::PwSessionPtr pw;
+    libertas::spike::NodeFormats formats; ///< what the node advertised at validation time
     bool restored = false; ///< true if a restore token was used and accepted
 };
+
+/// Orders the modifiers we can import by what the source actually offers, its own preference
+/// first, and drops anything the source never mentioned.
+///
+/// The compositor's preference is the single most useful signal available: Hyprland advertises
+/// NVIDIA(0x...606010-015) for DP-1 but publishes 0x...606014 as its fixed layout, and fixating
+/// 0x...606015 negotiates, reaches `streaming`, and then delivers no frames at all. Trying our own
+/// enumeration order first means walking into that on purpose. Ordering by the source's preference
+/// is also what keeps the fallback ladder cheap - and possibly what keeps it workable, since a
+/// failed attempt appears to leave the node with no formats to retry against.
+std::vector<std::uint64_t> order_candidates(const std::vector<std::uint64_t>& ours,
+                                            const libertas::spike::NodeFormats& src) {
+    if (src.offered.empty())
+        return ours; // a source with no modifier property at all: shm path, nothing to intersect
+    std::vector<std::uint64_t> out;
+    const auto take = [&](std::uint64_t m) {
+        if (m == libertas::spike::kModifierInvalid)
+            return; // wildcard: appended last, never preferred
+        if (std::find(ours.begin(), ours.end(), m) == ours.end())
+            return;
+        if (std::find(out.begin(), out.end(), m) == out.end())
+            out.push_back(m);
+    };
+    for (std::uint64_t m : src.preferred)
+        take(m);
+    for (std::uint64_t m : src.offered)
+        take(m);
+    // DRM_FORMAT_MOD_INVALID means "implicit, producer's choice", which gives up the guarantee
+    // that what we receive is importable. Keep it as the last rung, never as a preference.
+    if (std::find(ours.begin(), ours.end(), libertas::spike::kModifierInvalid) != ours.end() &&
+        std::find(src.offered.begin(), src.offered.end(), libertas::spike::kModifierInvalid) !=
+            src.offered.end())
+        out.push_back(libertas::spike::kModifierInvalid);
+    return out;
+}
 
 /// Negotiates a ScreenCast session and *validates* it before handing it back, which is the
 /// behaviour ADR-0009 requires of the real capture worker:
@@ -196,11 +232,14 @@ bool acquire_capture_session(libertas::spike::PortalRequest req, Acquired& out,
             return false;
         }
 
-        const libertas::spike::NodeReadiness r = libertas::spike::pw_probe_node(*pw, node_id);
+        libertas::spike::NodeFormats formats;
+        const libertas::spike::NodeReadiness r =
+            libertas::spike::pw_probe_node(*pw, node_id, &formats);
         std::string why;
         if (r == libertas::spike::NodeReadiness::Ready) {
             out.session = std::move(session);
             out.pw = std::move(pw);
+            out.formats = std::move(formats);
             out.restored = restoring;
             // Readiness is necessary but NOT sufficient: a restored session can hand back a node
             // that is still in the registry, still answers a format query, and is dead by the
@@ -345,13 +384,15 @@ int main(int argc, char** argv) {
     sc.max_frames = 30;
     // Stage 2 advertises a broad list to learn what the compositor actually offers. Stage 3
     // replaces this with the set Vulkan reports as importable for the chosen format.
+    // What this device can import, before intersecting with any particular source.
+    std::vector<std::uint64_t> importable;
     if (!shm_only) {
         if (!explicit_mods.empty())
-            sc.modifiers = explicit_mods;
+            importable = explicit_mods;
         else if (!vk_mods.empty())
-            sc.modifiers = vk_mods; // the device's real capability
+            importable = vk_mods; // the device's real capability
         else
-            sc.modifiers = {libertas::spike::kModifierInvalid, libertas::spike::kModifierLinear};
+            importable = {libertas::spike::kModifierInvalid, libertas::spike::kModifierLinear};
     }
 
     struct Stats {
@@ -433,6 +474,32 @@ int main(int argc, char** argv) {
             sc.mirror_height = static_cast<std::uint32_t>(a.session.streams.front().height);
         }
         lc::info("stage 2: connecting PipeWire stream to node {}", sc.node_id);
+
+        // Intersect against this source before connecting. An empty intersection is a real,
+        // nameable condition - this device cannot import anything this source can produce - and
+        // saying so here beats discovering it as "no more input formats" three callbacks later.
+        if (!explicit_mods.empty() || shm_only) {
+            sc.modifiers = importable; // diagnostic overrides are passed through untouched
+        } else {
+            sc.modifiers = order_candidates(importable, a.formats);
+            if (sc.modifiers.empty() && !a.formats.offered.empty()) {
+                std::string off;
+                for (std::uint64_t m : a.formats.offered)
+                    off += (off.empty() ? "" : " ") + libertas::spike::modifier_str(m);
+                std::string ours;
+                for (std::uint64_t m : importable)
+                    ours += (ours.empty() ? "" : " ") + libertas::spike::modifier_str(m);
+                serr = std::format("no common DRM format modifier: source offers [{}], this "
+                                   "device can import [{}]", off, ours);
+                lc::error("{}", serr);
+                return false;
+            }
+            lc::info("candidates after intersecting with the source: {} (source prefers {})",
+                     sc.modifiers.size(),
+                     a.formats.preferred.empty()
+                         ? std::string("nothing in particular")
+                         : libertas::spike::modifier_str(a.formats.preferred.front()));
+        }
 
         // ADR-0007's fallback ladder, as an actual loop rather than a promise.
         //
