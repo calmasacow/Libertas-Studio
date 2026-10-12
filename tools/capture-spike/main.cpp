@@ -10,6 +10,7 @@
 #include "portal.hpp"
 #include "stream.hpp"
 #include "vk_import.hpp"
+#include "wlcap.hpp"
 
 #include <lcore/log.hpp>
 
@@ -40,6 +41,8 @@ usage:
   --stage N            stop after stage N (1=portal, 2=stream, 3=vulkan import)
   --no-restore         ignore the cached restore token and always show the picker
   --no-probe           skip the node readiness probe and connect immediately
+  --wayland, --wl      use the ext-image-copy-capture-v1 backend (no portal, NO PICKER)
+  --output NAME        capture this output by connector name, e.g. DP-1 (implies --wayland)
   --forget             delete the cached restore token and exit
   --sweep              try every modifier variant inside ONE portal session (one picker click)
   --drm-node MAJ:MIN   select the Vulkan device by DRM node (never by index)
@@ -306,6 +309,138 @@ bool acquire_capture_session(libertas::spike::PortalRequest req, Acquired& out,
     return false;
 }
 
+/// The ext-image-copy-capture-v1 path, end to end: enumerate outputs, open a session, intersect
+/// modifiers, allocate the buffer ourselves, let the compositor render into it, read it back.
+///
+/// No picker and no portal, so unlike the PipeWire path this can be run as many times as needed.
+int run_wayland_backend(const std::string& output_name, bool with_cursor, bool want_cursor_set,
+                        const std::string& prefer_drm_node, std::uint32_t frames) {
+    std::string err;
+    libertas::spike::WlCapPtr cap = libertas::spike::wlcap_open(err);
+    if (!cap) {
+        lc::error("ext-image-copy-capture unavailable: {}", err);
+        return 2;
+    }
+
+    std::printf("\n=== outputs (no picker needed) ===\n");
+    for (const auto& o : libertas::spike::wlcap_outputs(*cap))
+        std::printf("  %-10s %5dx%-5d @ %.3f Hz  %s\n", o.name.c_str(), o.width, o.height,
+                    o.refresh_mhz / 1000.0, o.description.c_str());
+
+    libertas::spike::WlCapCaps caps;
+    if (!libertas::spike::wlcap_begin_session(*cap, output_name, want_cursor_set && with_cursor,
+                                              caps, err)) {
+        lc::error("session failed: {}", err);
+        return 3;
+    }
+
+    std::printf("\n=== what the COMPOSITOR itself offers ===\n");
+    std::printf("  buffer size   : %ux%u\n", caps.width, caps.height);
+    std::printf("  dmabuf device : %s\n",
+                libertas::spike::wlcap_device_str(caps.dmabuf_device).c_str());
+    for (const auto& f : caps.formats) {
+        std::printf("  format %s (%zu modifiers)\n",
+                    libertas::spike::fourcc_str(f.drm_format).c_str(), f.modifiers.size());
+        for (std::uint64_t m : f.modifiers)
+            std::printf("      %s\n", libertas::spike::modifier_str(m).c_str());
+    }
+
+    libertas::spike::VkCtxPtr vk = libertas::spike::vk_init(prefer_drm_node, err);
+    if (!vk) {
+        lc::error("vulkan init failed: {}", err);
+        return 4;
+    }
+    lc::info("vulkan device: {}", libertas::spike::vk_device_name(*vk));
+
+    // Pick the first offered format our device can also use, and intersect the modifier sets.
+    // Because *we* allocate, this intersection is the whole negotiation - there is no second round
+    // and no way for the compositor to accept a modifier it cannot then write to.
+    for (const auto& f : caps.formats) {
+        const std::vector<std::uint64_t> ours = libertas::spike::vk_supported_modifiers(
+            *vk, f.drm_format);
+        std::vector<std::uint64_t> common;
+        for (std::uint64_t m : f.modifiers)
+            if (std::find(ours.begin(), ours.end(), m) != ours.end())
+                common.push_back(m);
+
+        std::printf("\n=== %s: %zu common modifier(s) ===\n",
+                    libertas::spike::fourcc_str(f.drm_format).c_str(), common.size());
+        for (std::uint64_t m : common)
+            std::printf("  %s\n", libertas::spike::modifier_str(m).c_str());
+        if (common.empty())
+            continue;
+
+        libertas::spike::VkExportedImage img;
+        if (!libertas::spike::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
+                                                   common, img, err)) {
+            lc::warn("could not allocate an exportable image for {}: {}",
+                     libertas::spike::fourcc_str(f.drm_format), err);
+            continue;
+        }
+        lc::info("allocated {}x{} {} modifier {} planes {} stride {} -> dmabuf fd {}", img.width,
+                 img.height, libertas::spike::fourcc_str(f.drm_format),
+                 libertas::spike::modifier_str(img.modifier), img.n_planes, img.strides[0],
+                 img.dmabuf_fd);
+
+        std::uint32_t captured = 0;
+        std::vector<std::uint8_t> pixels;
+        for (std::uint32_t i = 0; i < frames; ++i) {
+            if (!libertas::spike::wlcap_capture_frame(*cap, img, f.drm_format, err)) {
+                lc::error("capture failed on frame {}: {}", i, err);
+                break;
+            }
+            ++captured;
+        }
+        if (captured == 0) {
+            libertas::spike::vk_destroy_exportable(*vk, img);
+            continue;
+        }
+
+        if (!libertas::spike::vk_readback_exported(*vk, img, true, pixels, err)) {
+            lc::error("readback failed: {}", err);
+            libertas::spike::vk_destroy_exportable(*vk, img);
+            return 5;
+        }
+
+        std::uint32_t nonzero = 0;
+        std::uint64_t checksum = 0;
+        for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) {
+            checksum = checksum * 1099511628211ULL ^ pixels[i];
+            if ((pixels[i] | pixels[i + 1] | pixels[i + 2]) != 0)
+                ++nonzero;
+        }
+        const std::uint32_t total = img.width * img.height;
+
+        std::printf("\n=== result ===\n");
+        std::printf("  frames        : %u captured\n", captured);
+        std::printf("  modifier      : %s\n", libertas::spike::modifier_str(img.modifier).c_str());
+        std::printf("  readback      : %zu bytes (%ux%u)\n", pixels.size(), img.width, img.height);
+        std::printf("  non-black px  : %u / %u (%.1f%%)\n", nonzero, total,
+                    total > 0 ? 100.0 * nonzero / total : 0.0);
+        std::printf("  fnv checksum  : 0x%016lx\n", checksum);
+
+        if (std::FILE* fp = std::fopen("/tmp/capture-spike-frame.ppm", "wb"); fp != nullptr) {
+            std::fprintf(fp, "P6\n%u %u\n255\n", img.width, img.height);
+            for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) {
+                const std::uint8_t rgb[3] = {pixels[i + 2], pixels[i + 1], pixels[i]};
+                std::fwrite(rgb, 1, 3, fp);
+            }
+            std::fclose(fp);
+            std::printf("  wrote         : /tmp/capture-spike-frame.ppm\n");
+        }
+
+        libertas::spike::vk_destroy_exportable(*vk, img);
+        const bool pass = nonzero > 0;
+        std::printf("\n  VERDICT: %s\n\n",
+                    pass ? "PASS - compositor rendered into our Vulkan image, real pixel content"
+                         : "FAIL - capture succeeded but every pixel is black");
+        return pass ? 0 : 5;
+    }
+
+    lc::error("no offered format had a modifier this device can use");
+    return 5;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -322,6 +457,9 @@ int main(int argc, char** argv) {
     bool sweep = false;
     bool no_restore = false;
     bool no_probe = false;
+    bool use_wayland = false;
+    bool cursor_set = false;
+    std::string wl_output;
     bool explicit_token = false;
     std::string prefer_drm_node;
     libertas::spike::PortalRequest req;
@@ -341,6 +479,7 @@ int main(int argc, char** argv) {
             req.source_types = static_cast<std::uint32_t>(libertas::spike::SourceType::Window);
         } else if (a == "--no-cursor") {
             req.cursor_mode = libertas::spike::CursorMode::Hidden;
+            cursor_set = true;
         } else if (a == "--modifiers" && i + 1 < args.size()) {
             // Comma-separated, hex (0x..) or decimal. Lets us probe what a compositor accepts
             // without a rebuild.
@@ -374,6 +513,11 @@ int main(int argc, char** argv) {
             no_restore = true;
         } else if (a == "--no-probe") {
             no_probe = true;
+        } else if (a == "--wayland" || a == "--wl") {
+            use_wayland = true;
+        } else if (a == "--output" && i + 1 < args.size()) {
+            wl_output = std::string(args[++i]);
+            use_wayland = true;
         } else if (a == "--forget") {
             forget_cached_token();
             lc::info("cached restore token removed ({})", token_cache_path());
@@ -383,6 +527,12 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+
+    // The Wayland backend is a different path end to end, so it returns rather than falling
+    // through into the portal flow (ADR-0011).
+    if (use_wayland)
+        return run_wayland_backend(wl_output, req.cursor_mode == libertas::spike::CursorMode::Embedded,
+                                   cursor_set, prefer_drm_node, 3);
 
     // -------------------------------------------------------- stage 0: Vulkan, before any click
     // Bring Vulkan up first so negotiation can advertise the modifiers this device can really

@@ -90,6 +90,42 @@ A third backend, **DRM/KMS plane capture**, is explicitly *not* adopted. It is w
 `gsr-kms-server` helper for exactly that reason — and a streaming studio that asks for
 `CAP_SYS_ADMIN` to capture a screen is not a product we want to defend.
 
+## Proven, end to end, on 2026-10-12
+
+`capture-spike --output <name>` with no portal and **no picker**, on the development box:
+
+```
+=== what the COMPOSITOR itself offers ===
+  buffer size   : 2560x1440
+  dmabuf device : 226:128
+  format AR24 (13 modifiers)   format XR24 (13 modifiers)
+=== AR24: 6 common modifier(s) ===   (0x300000000606010-015)
+allocated 2560x1440 AR24 modifier NVIDIA(0x300000000606014) planes 1 stride 10240 -> dmabuf fd 32
+```
+
+| output | result | modifier | non-black |
+|---|---|---|---|
+| DP-1 (Samsung G5, 2560x1440@165) | **PASS** | `0x300000000606014` | 83.1% |
+| DP-2 (Samsung G5, 2560x1440@165) | **PASS** | `0x300000000606014` | 100% |
+| DP-3 (MSI MAG322CQR, 2560x1440@165) | **PASS** | `0x300000000606014` | 100% |
+| HDMI-A-3 (Samsung, 3840x2160@60) | **PASS** | `0x300000000606014` | 97.8% |
+
+The readback was written to a PPM and inspected: it is the actual desktop, correct colours and
+geometry. **This closes Phase 0's capture question and proves the Vulkan path that ADR-0009 and
+ADR-0010 left open** - a dmabuf shared with the compositor, filled by it, read back correctly.
+
+Two things are worth noting about *which* modifier was chosen. The driver picked
+`0x300000000606014` unprompted from the six-modifier candidate list - the same modifier Hyprland
+publishes as its fixed layout, and the same one ADR-0010 guessed at. And every output chose it,
+including the 4K panel, so the choice is a property of the device and format rather than of the
+monitor.
+
+The structural reason this works where the portal path did not: **the client allocates**. We create
+the image with `VkImageDrmFormatModifierListCreateInfoEXT` carrying the whole intersection and let
+the driver choose; the compositor then either renders into that buffer or rejects it outright.
+There is no "negotiated but unallocatable" state for it to fall into, which is precisely ADR-0010's
+Cause 2.
+
 ## Consequences
 
 - `libertas probe` must report which backends are available and which it would choose, since

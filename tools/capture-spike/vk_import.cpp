@@ -39,6 +39,7 @@ struct VkCtx {
 
     PFN_vkGetMemoryFdPropertiesKHR get_memory_fd_properties = nullptr;
     PFN_vkGetImageDrmFormatModifierPropertiesEXT get_image_modifier_properties = nullptr;
+    PFN_vkGetMemoryFdKHR get_memory_fd = nullptr;
 };
 
 namespace {
@@ -204,6 +205,8 @@ VkCtxPtr vk_init(const std::string& prefer_drm_node, std::string& error) {
     ctx->get_image_modifier_properties =
         reinterpret_cast<PFN_vkGetImageDrmFormatModifierPropertiesEXT>(
             vkGetDeviceProcAddr(ctx->device, "vkGetImageDrmFormatModifierPropertiesEXT"));
+    ctx->get_memory_fd =
+        reinterpret_cast<PFN_vkGetMemoryFdKHR>(vkGetDeviceProcAddr(ctx->device, "vkGetMemoryFdKHR"));
     if (ctx->get_memory_fd_properties == nullptr) {
         error = "vkGetMemoryFdPropertiesKHR unavailable";
         return nullptr;
@@ -264,6 +267,140 @@ std::vector<std::uint64_t> vk_supported_modifiers(VkCtx& ctx, std::uint32_t drm_
     }
     return out;
 }
+
+namespace {
+
+/// Copies an image to host memory as tightly-packed BGRA. Shared by the import and export paths so
+/// the two cannot drift: a readback that differs between them would make their results
+/// incomparable, which is the whole point of having both.
+///
+/// `written_by_foreign` selects a queue-family ownership *acquire* as the first barrier. That
+/// acquire is what makes an external writer's contents visible; omitting it is undefined behaviour
+/// that happens to work on some drivers, which is the worst kind of bug to ship.
+bool readback_image(VkCtx& ctx, VkImage image, std::uint32_t width, std::uint32_t height,
+                    bool written_by_foreign, std::vector<std::uint8_t>& out, std::string& error) {
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4u;
+
+    VkBufferCreateInfo bci{};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = bytes;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer staging = VK_NULL_HANDLE;
+    if (vkCreateBuffer(ctx.device, &bci, nullptr, &staging) != VK_SUCCESS) {
+        error = "vkCreateBuffer (staging) failed";
+        return false;
+    }
+
+    VkMemoryRequirements bmr{};
+    vkGetBufferMemoryRequirements(ctx.device, staging, &bmr);
+
+    VkPhysicalDeviceMemoryProperties mp{};
+    vkGetPhysicalDeviceMemoryProperties(ctx.phys, &mp);
+    std::uint32_t host_type = UINT32_MAX;
+    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
+        const bool fits = (bmr.memoryTypeBits & (1u << i)) != 0u;
+        const auto want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        if (fits && (mp.memoryTypes[i].propertyFlags & want) == want) {
+            host_type = i;
+            break;
+        }
+    }
+    if (host_type == UINT32_MAX) {
+        error = "no host-visible coherent memory type";
+        vkDestroyBuffer(ctx.device, staging, nullptr);
+        return false;
+    }
+
+    VkMemoryAllocateInfo bai{};
+    bai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    bai.allocationSize = bmr.size;
+    bai.memoryTypeIndex = host_type;
+    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    vkAllocateMemory(ctx.device, &bai, nullptr, &staging_mem);
+    vkBindBufferMemory(ctx.device, staging, staging_mem, 0);
+
+    VkCommandBufferAllocateInfo cbai{};
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = ctx.pool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(ctx.device, &cbai, &cmd);
+
+    VkCommandBufferBeginInfo cbbi{};
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &cbbi);
+
+    VkImageMemoryBarrier acquire{};
+    acquire.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    acquire.srcAccessMask = 0;
+    acquire.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    acquire.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    acquire.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    if (written_by_foreign) {
+        acquire.srcQueueFamilyIndex =
+            ctx.have_foreign_queue ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_EXTERNAL;
+        acquire.dstQueueFamilyIndex = ctx.queue_family;
+    } else {
+        acquire.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        acquire.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    }
+    acquire.image = image;
+    acquire.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                         0, nullptr, 0, nullptr, 1, &acquire);
+
+    VkBufferImageCopy copy{};
+    copy.bufferOffset = 0;
+    copy.bufferRowLength = width;
+    copy.bufferImageHeight = height;
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copy.imageExtent = {width, height, 1};
+    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &copy);
+
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+
+    VkFenceCreateInfo fci{};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence = VK_NULL_HANDLE;
+    vkCreateFence(ctx.device, &fci, nullptr, &fence);
+
+    bool ok = true;
+    if (vkQueueSubmit(ctx.queue, 1, &si, fence) != VK_SUCCESS) {
+        error = "vkQueueSubmit failed";
+        ok = false;
+    } else if (vkWaitForFences(ctx.device, 1, &fence, VK_TRUE, 2'000'000'000ULL) != VK_SUCCESS) {
+        error = "fence wait timed out";
+        ok = false;
+    } else {
+        void* mapped = nullptr;
+        if (vkMapMemory(ctx.device, staging_mem, 0, bytes, 0, &mapped) == VK_SUCCESS) {
+            out.resize(bytes);
+            std::memcpy(out.data(), mapped, bytes);
+            vkUnmapMemory(ctx.device, staging_mem);
+        } else {
+            error = "vkMapMemory failed";
+            ok = false;
+        }
+    }
+
+    vkDestroyFence(ctx.device, fence, nullptr);
+    vkFreeCommandBuffers(ctx.device, ctx.pool, 1, &cmd);
+    vkDestroyBuffer(ctx.device, staging, nullptr);
+    vkFreeMemory(ctx.device, staging_mem, nullptr);
+    return ok;
+}
+
+} // namespace
 
 bool vk_import_and_readback(VkCtx& ctx, const CapturedFrame& frame, std::vector<std::uint8_t>& out,
                             std::string& error) {
@@ -383,125 +520,205 @@ bool vk_import_and_readback(VkCtx& ctx, const CapturedFrame& frame, std::vector<
         return false;
     }
 
-    // ---- staging buffer for the readback proof
-    const VkDeviceSize bytes =
-        static_cast<VkDeviceSize>(frame.width) * frame.height * 4u;
-
-    VkBufferCreateInfo bci{};
-    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size = bytes;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VkBuffer staging = VK_NULL_HANDLE;
-    vkCreateBuffer(ctx.device, &bci, nullptr, &staging);
-
-    VkMemoryRequirements bmr{};
-    vkGetBufferMemoryRequirements(ctx.device, staging, &bmr);
-
-    VkPhysicalDeviceMemoryProperties mp{};
-    vkGetPhysicalDeviceMemoryProperties(ctx.phys, &mp);
-    std::uint32_t host_type = UINT32_MAX;
-    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
-        const bool fits = (bmr.memoryTypeBits & (1u << i)) != 0u;
-        const auto want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        if (fits && (mp.memoryTypes[i].propertyFlags & want) == want) {
-            host_type = i;
-            break;
-        }
-    }
-    if (host_type == UINT32_MAX) {
-        error = "no host-visible coherent memory type";
-        vkDestroyBuffer(ctx.device, staging, nullptr);
-        vkFreeMemory(ctx.device, memory, nullptr);
-        cleanup_image();
-        return false;
-    }
-
-    VkMemoryAllocateInfo bai{};
-    bai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    bai.allocationSize = bmr.size;
-    bai.memoryTypeIndex = host_type;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    vkAllocateMemory(ctx.device, &bai, nullptr, &staging_mem);
-    vkBindBufferMemory(ctx.device, staging, staging_mem, 0);
-
-    // ---- record: acquire from the foreign queue family, then copy out
-    VkCommandBufferAllocateInfo cbai{};
-    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbai.commandPool = ctx.pool;
-    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = 1;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(ctx.device, &cbai, &cmd);
-
-    VkCommandBufferBeginInfo cbbi{};
-    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &cbbi);
-
-    VkImageMemoryBarrier acquire{};
-    acquire.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    acquire.srcAccessMask = 0;
-    acquire.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    acquire.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    acquire.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    // The ownership acquire is what makes the external writer's contents visible to us.
-    acquire.srcQueueFamilyIndex =
-        ctx.have_foreign_queue ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_EXTERNAL;
-    acquire.dstQueueFamilyIndex = ctx.queue_family;
-    acquire.image = image;
-    acquire.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                         0, nullptr, 0, nullptr, 1, &acquire);
-
-    VkBufferImageCopy copy{};
-    copy.bufferOffset = 0;
-    copy.bufferRowLength = frame.width;
-    copy.bufferImageHeight = frame.height;
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {frame.width, frame.height, 1};
-    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging, 1, &copy);
-
-    vkEndCommandBuffer(cmd);
-
-    VkSubmitInfo si{};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-
-    VkFenceCreateInfo fci{};
-    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    VkFence fence = VK_NULL_HANDLE;
-    vkCreateFence(ctx.device, &fci, nullptr, &fence);
-
-    bool ok = true;
-    if (vkQueueSubmit(ctx.queue, 1, &si, fence) != VK_SUCCESS) {
-        error = "vkQueueSubmit failed";
-        ok = false;
-    } else if (vkWaitForFences(ctx.device, 1, &fence, VK_TRUE, 2'000'000'000ULL) != VK_SUCCESS) {
-        error = "fence wait timed out";
-        ok = false;
-    } else {
-        void* mapped = nullptr;
-        if (vkMapMemory(ctx.device, staging_mem, 0, bytes, 0, &mapped) == VK_SUCCESS) {
-            out.resize(bytes);
-            std::memcpy(out.data(), mapped, bytes);
-            vkUnmapMemory(ctx.device, staging_mem);
-        } else {
-            error = "vkMapMemory failed";
-            ok = false;
-        }
-    }
-
-    vkDestroyFence(ctx.device, fence, nullptr);
-    vkFreeCommandBuffers(ctx.device, ctx.pool, 1, &cmd);
-    vkDestroyBuffer(ctx.device, staging, nullptr);
-    vkFreeMemory(ctx.device, staging_mem, nullptr);
+    const bool ok = readback_image(ctx, image, frame.width, frame.height, true, out, error);
     vkFreeMemory(ctx.device, memory, nullptr);
     cleanup_image();
     return ok;
+}
+
+
+// ---------------------------------------------------------------- export: we allocate, they draw
+
+namespace {
+
+/// Picks a DEVICE_LOCAL memory type from a requirements mask.
+std::uint32_t device_local_memory_type(VkPhysicalDevice phys, std::uint32_t type_bits) {
+    VkPhysicalDeviceMemoryProperties mp{};
+    vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    for (std::uint32_t i = 0; i < mp.memoryTypeCount; ++i)
+        if ((type_bits & (1u << i)) != 0u &&
+            (mp.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0u)
+            return i;
+    return UINT32_MAX;
+}
+
+/// How many memory planes a given modifier uses for this format. Guessing 1 works for linear
+/// single-plane RGBA and then silently corrupts anything else, so ask the driver.
+std::uint32_t modifier_plane_count(VkPhysicalDevice phys, VkFormat fmt, std::uint64_t modifier) {
+    VkDrmFormatModifierPropertiesListEXT list{};
+    list.sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT;
+    VkFormatProperties2 fp{};
+    fp.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+    fp.pNext = &list;
+    vkGetPhysicalDeviceFormatProperties2(phys, fmt, &fp);
+    std::vector<VkDrmFormatModifierPropertiesEXT> props(list.drmFormatModifierCount);
+    list.pDrmFormatModifierProperties = props.data();
+    vkGetPhysicalDeviceFormatProperties2(phys, fmt, &fp);
+    for (const auto& p : props)
+        if (p.drmFormatModifier == modifier)
+            return p.drmFormatModifierPlaneCount;
+    return 0;
+}
+
+} // namespace
+
+bool vk_create_exportable(VkCtx& ctx, std::uint32_t width, std::uint32_t height,
+                          std::uint32_t drm_format, const std::vector<std::uint64_t>& allowed,
+                          VkExportedImage& out, std::string& error) {
+    const VkFormat fmt = drm_to_vk(drm_format);
+    if (fmt == VK_FORMAT_UNDEFINED) {
+        error = std::format("unsupported drm format 0x{:08x}", drm_format);
+        return false;
+    }
+    if (allowed.empty()) {
+        error = "no candidate modifiers";
+        return false;
+    }
+    if (ctx.get_memory_fd == nullptr || ctx.get_image_modifier_properties == nullptr) {
+        error = "vkGetMemoryFdKHR / vkGetImageDrmFormatModifierPropertiesEXT unavailable";
+        return false;
+    }
+
+    VkExternalMemoryImageCreateInfo ext{};
+    ext.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+    ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+    // Hand the driver the whole candidate list and let it choose; we read back which one it took.
+    // Passing a single modifier instead would turn a perfectly good second choice into a failure.
+    VkImageDrmFormatModifierListCreateInfoEXT modlist{};
+    modlist.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT;
+    modlist.drmFormatModifierCount = static_cast<std::uint32_t>(allowed.size());
+    modlist.pDrmFormatModifiers = allowed.data();
+    modlist.pNext = &ext;
+
+    VkImageCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.pNext = &modlist;
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = fmt;
+    ici.extent = {width, height, 1};
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+    // TRANSFER_DST and COLOR_ATTACHMENT matter: the compositor blits or renders into this image,
+    // and a usage set that omits them can make the driver pick a layout it cannot write to.
+    ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage image = VK_NULL_HANDLE;
+    if (VkResult r = vkCreateImage(ctx.device, &ici, nullptr, &image); r != VK_SUCCESS) {
+        error = std::format("vkCreateImage (exportable) failed ({})", static_cast<int>(r));
+        return false;
+    }
+
+    VkMemoryRequirements mr{};
+    vkGetImageMemoryRequirements(ctx.device, image, &mr);
+    const std::uint32_t type = device_local_memory_type(ctx.phys, mr.memoryTypeBits);
+    if (type == UINT32_MAX) {
+        error = "no device-local memory type for the exportable image";
+        vkDestroyImage(ctx.device, image, nullptr);
+        return false;
+    }
+
+    VkExportMemoryAllocateInfo exp{};
+    exp.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+    exp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+    // A dedicated allocation is required for an exported image on most drivers, and is what makes
+    // the exported fd describe exactly this image rather than a suballocation of a heap.
+    VkMemoryDedicatedAllocateInfo ded{};
+    ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+    ded.image = image;
+    ded.pNext = &exp;
+
+    VkMemoryAllocateInfo mai{};
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.pNext = &ded;
+    mai.allocationSize = mr.size;
+    mai.memoryTypeIndex = type;
+
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    if (VkResult r = vkAllocateMemory(ctx.device, &mai, nullptr, &memory); r != VK_SUCCESS) {
+        error = std::format("vkAllocateMemory (exportable) failed ({})", static_cast<int>(r));
+        vkDestroyImage(ctx.device, image, nullptr);
+        return false;
+    }
+    if (vkBindImageMemory(ctx.device, image, memory, 0) != VK_SUCCESS) {
+        error = "vkBindImageMemory (exportable) failed";
+        vkFreeMemory(ctx.device, memory, nullptr);
+        vkDestroyImage(ctx.device, image, nullptr);
+        return false;
+    }
+
+    VkImageDrmFormatModifierPropertiesEXT chosen{};
+    chosen.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT;
+    if (ctx.get_image_modifier_properties(ctx.device, image, &chosen) != VK_SUCCESS) {
+        error = "vkGetImageDrmFormatModifierPropertiesEXT failed";
+        vkFreeMemory(ctx.device, memory, nullptr);
+        vkDestroyImage(ctx.device, image, nullptr);
+        return false;
+    }
+
+    std::uint32_t planes = modifier_plane_count(ctx.phys, fmt, chosen.drmFormatModifier);
+    if (planes == 0 || planes > 4)
+        planes = 1;
+
+    static constexpr VkImageAspectFlagBits kPlaneAspect[4]{
+        VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT, VK_IMAGE_ASPECT_MEMORY_PLANE_1_BIT_EXT,
+        VK_IMAGE_ASPECT_MEMORY_PLANE_2_BIT_EXT, VK_IMAGE_ASPECT_MEMORY_PLANE_3_BIT_EXT};
+    for (std::uint32_t i = 0; i < planes; ++i) {
+        VkImageSubresource sub{};
+        sub.aspectMask = kPlaneAspect[i];
+        VkSubresourceLayout layout{};
+        vkGetImageSubresourceLayout(ctx.device, image, &sub, &layout);
+        out.offsets[i] = static_cast<std::uint32_t>(layout.offset);
+        out.strides[i] = static_cast<std::uint32_t>(layout.rowPitch);
+    }
+
+    VkMemoryGetFdInfoKHR gfi{};
+    gfi.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    gfi.memory = memory;
+    gfi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    int fd = -1;
+    if (ctx.get_memory_fd(ctx.device, &gfi, &fd) != VK_SUCCESS || fd < 0) {
+        error = "vkGetMemoryFdKHR failed";
+        vkFreeMemory(ctx.device, memory, nullptr);
+        vkDestroyImage(ctx.device, image, nullptr);
+        return false;
+    }
+
+    out.image = image;
+    out.memory = memory;
+    out.dmabuf_fd = fd;
+    out.width = width;
+    out.height = height;
+    out.modifier = chosen.drmFormatModifier;
+    out.n_planes = planes;
+    return true;
+}
+
+void vk_destroy_exportable(VkCtx& ctx, VkExportedImage& img) {
+    if (img.dmabuf_fd >= 0) {
+        ::close(img.dmabuf_fd);
+        img.dmabuf_fd = -1;
+    }
+    if (img.image != nullptr) {
+        vkDestroyImage(ctx.device, static_cast<VkImage>(img.image), nullptr);
+        img.image = nullptr;
+    }
+    if (img.memory != nullptr) {
+        vkFreeMemory(ctx.device, static_cast<VkDeviceMemory>(img.memory), nullptr);
+        img.memory = nullptr;
+    }
+}
+
+bool vk_readback_exported(VkCtx& ctx, const VkExportedImage& img, bool written_by_foreign,
+                          std::vector<std::uint8_t>& out, std::string& error) {
+    return readback_image(ctx, static_cast<VkImage>(img.image), img.width, img.height,
+                          written_by_foreign, out, error);
 }
 
 } // namespace libertas::spike

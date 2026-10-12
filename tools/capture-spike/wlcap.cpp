@@ -1,0 +1,397 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// ext-image-copy-capture-v1 capture backend.
+//
+// Why this exists alongside the portal path: see docs/adr/0011. The short version is that the
+// portal path failed on this machine for reasons Omarchy's own recorder documents and routes
+// around, and a capture failure cannot be attributed without a second, independent path.
+//
+// The structural difference from PipeWire is that *the client allocates the buffers*. That inverts
+// the modifier problem in our favour: we choose a modifier from the intersection of what the
+// compositor accepts and what our Vulkan device can use, allocate with it, and hand the compositor
+// a buffer it can only either render into or reject outright. There is no "negotiated but
+// unallocatable" state, which is exactly the trap ADR-0010 documents.
+
+#include "wlcap.hpp"
+
+#include <lcore/log.hpp>
+
+#include <algorithm>
+#include <cstring>
+#include <format>
+
+#include <sys/sysmacros.h>
+#include <unistd.h>
+
+#include <wayland-client.h>
+
+#include "ext-image-capture-source-v1-client-protocol.h"
+#include "ext-image-copy-capture-v1-client-protocol.h"
+#include "linux-dmabuf-v1-client-protocol.h"
+
+namespace libertas::spike {
+
+struct WlCap {
+    wl_display* display = nullptr;
+    wl_registry* registry = nullptr;
+    ext_output_image_capture_source_manager_v1* source_mgr = nullptr;
+    ext_image_copy_capture_manager_v1* capture_mgr = nullptr;
+    zwp_linux_dmabuf_v1* dmabuf = nullptr;
+
+    std::vector<WlOutputInfo> outputs;
+    std::vector<wl_output*> output_proxies;
+
+    ext_image_capture_source_v1* source = nullptr;
+    ext_image_copy_capture_session_v1* session = nullptr;
+
+    // Session description, accumulated until `done`.
+    WlCapCaps caps;
+    bool caps_done = false;
+    bool stopped = false;
+
+    // Per-frame state.
+    bool frame_ready = false;
+    bool frame_failed = false;
+    std::uint32_t frame_failure_reason = 0;
+};
+
+namespace {
+
+// ---------------------------------------------------------------------------- wl_output
+
+void on_output_geometry(void*, wl_output*, std::int32_t, std::int32_t, std::int32_t, std::int32_t,
+                        std::int32_t, const char*, const char*, std::int32_t) {}
+
+void on_output_mode(void* data, wl_output* out, std::uint32_t flags, std::int32_t w, std::int32_t h,
+                    std::int32_t refresh) {
+    auto* cap = static_cast<WlCap*>(data);
+    if ((flags & WL_OUTPUT_MODE_CURRENT) == 0)
+        return;
+    for (std::size_t i = 0; i < cap->output_proxies.size(); ++i) {
+        if (cap->output_proxies[i] == out) {
+            cap->outputs[i].width = w;
+            cap->outputs[i].height = h;
+            cap->outputs[i].refresh_mhz = refresh;
+        }
+    }
+}
+
+void on_output_done(void*, wl_output*) {}
+void on_output_scale(void*, wl_output*, std::int32_t) {}
+
+void on_output_name(void* data, wl_output* out, const char* name) {
+    auto* cap = static_cast<WlCap*>(data);
+    for (std::size_t i = 0; i < cap->output_proxies.size(); ++i)
+        if (cap->output_proxies[i] == out)
+            cap->outputs[i].name = name != nullptr ? name : "";
+}
+
+void on_output_description(void* data, wl_output* out, const char* desc) {
+    auto* cap = static_cast<WlCap*>(data);
+    for (std::size_t i = 0; i < cap->output_proxies.size(); ++i)
+        if (cap->output_proxies[i] == out)
+            cap->outputs[i].description = desc != nullptr ? desc : "";
+}
+
+constexpr wl_output_listener kOutputListener = {
+    .geometry = on_output_geometry,
+    .mode = on_output_mode,
+    .done = on_output_done,
+    .scale = on_output_scale,
+    .name = on_output_name,
+    .description = on_output_description,
+};
+
+// ---------------------------------------------------------------------------- capture session
+
+void on_session_buffer_size(void* data, ext_image_copy_capture_session_v1*, std::uint32_t w,
+                            std::uint32_t h) {
+    auto* cap = static_cast<WlCap*>(data);
+    cap->caps.width = w;
+    cap->caps.height = h;
+}
+
+void on_session_shm_format(void* data, ext_image_copy_capture_session_v1*, std::uint32_t fmt) {
+    static_cast<WlCap*>(data)->caps.shm_formats.push_back(fmt);
+}
+
+void on_session_dmabuf_device(void* data, ext_image_copy_capture_session_v1*, wl_array* dev) {
+    auto* cap = static_cast<WlCap*>(data);
+    // The device arrives as the raw bytes of a dev_t, not as a string or a pair of ints.
+    if (dev != nullptr && dev->size >= sizeof(dev_t)) {
+        dev_t d{};
+        std::memcpy(&d, dev->data, sizeof d);
+        cap->caps.dmabuf_device = static_cast<std::uint64_t>(d);
+    }
+}
+
+void on_session_dmabuf_format(void* data, ext_image_copy_capture_session_v1*, std::uint32_t fmt,
+                              wl_array* modifiers) {
+    auto* cap = static_cast<WlCap*>(data);
+    WlCapFormat f;
+    f.drm_format = fmt;
+    if (modifiers != nullptr) {
+        // A packed array of uint64 modifiers. Reading it as anything else silently yields garbage
+        // modifiers that then fail to allocate, so be explicit about the element size.
+        const std::size_t n = modifiers->size / sizeof(std::uint64_t);
+        const auto* vals = static_cast<const std::uint64_t*>(modifiers->data);
+        f.modifiers.assign(vals, vals + n);
+    }
+    cap->caps.formats.push_back(std::move(f));
+}
+
+void on_session_done(void* data, ext_image_copy_capture_session_v1*) {
+    static_cast<WlCap*>(data)->caps_done = true;
+}
+
+void on_session_stopped(void* data, ext_image_copy_capture_session_v1*) {
+    auto* cap = static_cast<WlCap*>(data);
+    cap->stopped = true;
+    cap->caps_done = true;
+}
+
+constexpr ext_image_copy_capture_session_v1_listener kSessionListener = {
+    .buffer_size = on_session_buffer_size,
+    .shm_format = on_session_shm_format,
+    .dmabuf_device = on_session_dmabuf_device,
+    .dmabuf_format = on_session_dmabuf_format,
+    .done = on_session_done,
+    .stopped = on_session_stopped,
+};
+
+// ---------------------------------------------------------------------------- frame
+
+void on_frame_transform(void*, ext_image_copy_capture_frame_v1*, std::uint32_t) {}
+void on_frame_damage(void*, ext_image_copy_capture_frame_v1*, std::int32_t, std::int32_t,
+                     std::int32_t, std::int32_t) {}
+void on_frame_presentation_time(void*, ext_image_copy_capture_frame_v1*, std::uint32_t,
+                                std::uint32_t, std::uint32_t) {}
+
+void on_frame_ready(void* data, ext_image_copy_capture_frame_v1*) {
+    static_cast<WlCap*>(data)->frame_ready = true;
+}
+
+void on_frame_failed(void* data, ext_image_copy_capture_frame_v1*, std::uint32_t reason) {
+    auto* cap = static_cast<WlCap*>(data);
+    cap->frame_failed = true;
+    cap->frame_failure_reason = reason;
+}
+
+constexpr ext_image_copy_capture_frame_v1_listener kFrameListener = {
+    .transform = on_frame_transform,
+    .damage = on_frame_damage,
+    .presentation_time = on_frame_presentation_time,
+    .ready = on_frame_ready,
+    .failed = on_frame_failed,
+};
+
+const char* frame_failure_str(std::uint32_t reason) {
+    switch (reason) {
+    case EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN: return "unknown";
+    case EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS:
+        return "buffer constraints: the buffer we supplied is not acceptable";
+    case EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED: return "session stopped";
+    default: return "unrecognised reason";
+    }
+}
+
+// ---------------------------------------------------------------------------- registry
+
+void on_global(void* data, wl_registry* reg, std::uint32_t id, const char* iface,
+               std::uint32_t version) {
+    auto* cap = static_cast<WlCap*>(data);
+    const std::string_view name(iface);
+
+    if (name == wl_output_interface.name) {
+        // Version 4 is where wl_output gained `name`, which is what lets us address an output as
+        // "DP-1" instead of by bind order. Bind order is not stable across compositor restarts.
+        const std::uint32_t v = std::min(version, 4u);
+        auto* out = static_cast<wl_output*>(wl_registry_bind(reg, id, &wl_output_interface, v));
+        cap->output_proxies.push_back(out);
+        cap->outputs.emplace_back();
+        wl_output_add_listener(out, &kOutputListener, cap);
+    } else if (name == ext_output_image_capture_source_manager_v1_interface.name) {
+        cap->source_mgr = static_cast<ext_output_image_capture_source_manager_v1*>(
+            wl_registry_bind(reg, id, &ext_output_image_capture_source_manager_v1_interface, 1));
+    } else if (name == ext_image_copy_capture_manager_v1_interface.name) {
+        cap->capture_mgr = static_cast<ext_image_copy_capture_manager_v1*>(
+            wl_registry_bind(reg, id, &ext_image_copy_capture_manager_v1_interface, 1));
+    } else if (name == zwp_linux_dmabuf_v1_interface.name) {
+        cap->dmabuf = static_cast<zwp_linux_dmabuf_v1*>(
+            wl_registry_bind(reg, id, &zwp_linux_dmabuf_v1_interface, std::min(version, 4u)));
+    }
+}
+
+void on_global_remove(void*, wl_registry*, std::uint32_t) {}
+
+constexpr wl_registry_listener kRegistryListener = {
+    .global = on_global,
+    .global_remove = on_global_remove,
+};
+
+} // namespace
+
+std::string wlcap_device_str(std::uint64_t dev) {
+    const auto d = static_cast<dev_t>(dev);
+    return std::format("{}:{}", major(d), minor(d));
+}
+
+WlCapPtr wlcap_open(std::string& error) {
+    WlCapPtr cap(new WlCap());
+
+    cap->display = wl_display_connect(nullptr);
+    if (cap->display == nullptr) {
+        error = "wl_display_connect failed (no WAYLAND_DISPLAY?)";
+        return nullptr;
+    }
+
+    cap->registry = wl_display_get_registry(cap->display);
+    wl_registry_add_listener(cap->registry, &kRegistryListener, cap.get());
+    // Two roundtrips: the first delivers the globals, the second the wl_output events (name, mode)
+    // that only arrive after we bind.
+    wl_display_roundtrip(cap->display);
+    wl_display_roundtrip(cap->display);
+
+    if (cap->source_mgr == nullptr) {
+        error = "compositor does not implement ext_output_image_capture_source_manager_v1";
+        return nullptr;
+    }
+    if (cap->capture_mgr == nullptr) {
+        error = "compositor does not implement ext_image_copy_capture_manager_v1";
+        return nullptr;
+    }
+    if (cap->dmabuf == nullptr) {
+        error = "compositor does not implement zwp_linux_dmabuf_v1";
+        return nullptr;
+    }
+    return cap;
+}
+
+const std::vector<WlOutputInfo>& wlcap_outputs(WlCap& cap) { return cap.outputs; }
+
+bool wlcap_begin_session(WlCap& cap, const std::string& output_name, bool with_cursor,
+                         WlCapCaps& out, std::string& error) {
+    std::size_t index = 0;
+    if (!output_name.empty()) {
+        const auto it = std::find_if(cap.outputs.begin(), cap.outputs.end(),
+                                     [&](const WlOutputInfo& o) { return o.name == output_name; });
+        if (it == cap.outputs.end()) {
+            error = std::format("no output named '{}'", output_name);
+            return false;
+        }
+        index = static_cast<std::size_t>(it - cap.outputs.begin());
+    }
+    if (cap.output_proxies.empty()) {
+        error = "no outputs";
+        return false;
+    }
+
+    cap.source = ext_output_image_capture_source_manager_v1_create_source(
+        cap.source_mgr, cap.output_proxies[index]);
+    const std::uint32_t options =
+        with_cursor
+            ? static_cast<std::uint32_t>(EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS)
+            : 0u;
+    cap.session =
+        ext_image_copy_capture_manager_v1_create_session(cap.capture_mgr, cap.source, options);
+    if (cap.session == nullptr) {
+        error = "create_session failed";
+        return false;
+    }
+    ext_image_copy_capture_session_v1_add_listener(cap.session, &kSessionListener, &cap);
+
+    cap.caps = WlCapCaps{};
+    cap.caps_done = false;
+    while (!cap.caps_done) {
+        if (wl_display_dispatch(cap.display) < 0) {
+            error = "wl_display_dispatch failed while waiting for session description";
+            return false;
+        }
+    }
+    if (cap.stopped) {
+        error = "compositor stopped the session immediately";
+        return false;
+    }
+    out = cap.caps;
+    return true;
+}
+
+bool wlcap_capture_frame(WlCap& cap, const VkExportedImage& img, std::uint32_t drm_format,
+                         std::string& error) {
+    if (cap.session == nullptr) {
+        error = "no session";
+        return false;
+    }
+
+    zwp_linux_buffer_params_v1* params = zwp_linux_dmabuf_v1_create_params(cap.dmabuf);
+    for (std::uint32_t i = 0; i < img.n_planes; ++i) {
+        zwp_linux_buffer_params_v1_add(params, img.dmabuf_fd, i, img.offsets[i], img.strides[i],
+                                       static_cast<std::uint32_t>(img.modifier >> 32),
+                                       static_cast<std::uint32_t>(img.modifier & 0xffffffffu));
+    }
+    // create_immed rather than create: a protocol error here should be a hard failure now, not an
+    // asynchronous surprise after we have already asked for a capture.
+    wl_buffer* buffer = zwp_linux_buffer_params_v1_create_immed(
+        params, static_cast<std::int32_t>(img.width), static_cast<std::int32_t>(img.height),
+        drm_format, 0);
+    zwp_linux_buffer_params_v1_destroy(params);
+    if (buffer == nullptr) {
+        error = "zwp_linux_buffer_params_v1_create_immed failed";
+        return false;
+    }
+
+    ext_image_copy_capture_frame_v1* frame =
+        ext_image_copy_capture_session_v1_create_frame(cap.session);
+    ext_image_copy_capture_frame_v1_add_listener(frame, &kFrameListener, &cap);
+    ext_image_copy_capture_frame_v1_attach_buffer(frame, buffer);
+    ext_image_copy_capture_frame_v1_damage_buffer(frame, 0, 0, static_cast<std::int32_t>(img.width),
+                                                  static_cast<std::int32_t>(img.height));
+    ext_image_copy_capture_frame_v1_capture(frame);
+
+    cap.frame_ready = false;
+    cap.frame_failed = false;
+    bool ok = true;
+    while (!cap.frame_ready && !cap.frame_failed) {
+        if (wl_display_dispatch(cap.display) < 0) {
+            error = "wl_display_dispatch failed while waiting for the frame";
+            ok = false;
+            break;
+        }
+    }
+    if (ok && cap.frame_failed) {
+        error = std::format("compositor failed the capture: {}",
+                            frame_failure_str(cap.frame_failure_reason));
+        ok = false;
+    }
+
+    ext_image_copy_capture_frame_v1_destroy(frame);
+    wl_buffer_destroy(buffer);
+    return ok;
+}
+
+void wlcap_close(WlCap* cap) {
+    if (cap == nullptr)
+        return;
+    if (cap->session != nullptr)
+        ext_image_copy_capture_session_v1_destroy(cap->session);
+    if (cap->source != nullptr)
+        ext_image_capture_source_v1_destroy(cap->source);
+    if (cap->source_mgr != nullptr)
+        ext_output_image_capture_source_manager_v1_destroy(cap->source_mgr);
+    if (cap->capture_mgr != nullptr)
+        ext_image_copy_capture_manager_v1_destroy(cap->capture_mgr);
+    if (cap->dmabuf != nullptr)
+        zwp_linux_dmabuf_v1_destroy(cap->dmabuf);
+    for (wl_output* o : cap->output_proxies)
+        wl_output_destroy(o);
+    if (cap->registry != nullptr)
+        wl_registry_destroy(cap->registry);
+    if (cap->display != nullptr) {
+        wl_display_flush(cap->display);
+        wl_display_disconnect(cap->display);
+    }
+    delete cap;
+}
+
+} // namespace libertas::spike

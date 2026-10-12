@@ -35,6 +35,35 @@ std::string vk_device_name(VkCtx& ctx);
 
 /// Imports one dmabuf frame as a VkImage and copies it back to host memory, proving the import
 /// produced real pixels. `out` receives width*height*4 bytes in the image's byte order.
+/// A VkImage whose memory is exported as a dmabuf, for a compositor to render into.
+///
+/// This is the inverse of the import path and it is the better arrangement: when *we* allocate,
+/// we choose the modifier from the intersection up front, so the accept-then-fail trap of
+/// ADR-0010 cannot occur - there is nothing to accept.
+struct VkExportedImage {
+    void* image = nullptr;  ///< VkImage
+    void* memory = nullptr; ///< VkDeviceMemory
+    int dmabuf_fd = -1;     ///< owned by the caller; close() or hand to a wl_buffer
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint64_t modifier = 0; ///< the modifier the driver actually chose
+    std::uint32_t n_planes = 0;
+    std::uint32_t offsets[4] = {};
+    std::uint32_t strides[4] = {};
+};
+
+/// Creates an image the compositor can render into, picking from `allowed` (most preferred first).
+bool vk_create_exportable(VkCtx& ctx, std::uint32_t width, std::uint32_t height,
+                          std::uint32_t drm_format, const std::vector<std::uint64_t>& allowed,
+                          VkExportedImage& out, std::string& error);
+
+/// Copies an exported image back to host memory as BGRA. `written_by_foreign` must be true when a
+/// compositor (not us) produced the contents, so the barrier acquires queue ownership.
+bool vk_readback_exported(VkCtx& ctx, const VkExportedImage& img, bool written_by_foreign,
+                          std::vector<std::uint8_t>& out, std::string& error);
+
+void vk_destroy_exportable(VkCtx& ctx, VkExportedImage& img);
+
 bool vk_import_and_readback(VkCtx& ctx, const CapturedFrame& frame, std::vector<std::uint8_t>& out,
                             std::string& error);
 
