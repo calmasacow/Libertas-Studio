@@ -120,7 +120,27 @@ AVCodecContext* try_video(const char* name, const EncoderConfig& cfg, AVFormatCo
     c->height = static_cast<int>(cfg.height);
     c->time_base = AVRational{cfg.fps_den, cfg.fps_num};
     c->framerate = AVRational{cfg.fps_num, cfg.fps_den};
-    c->pix_fmt = AV_PIX_FMT_YUV420P;
+    // NV12 rather than I420: it is what NVENC wants natively, what the GPU convert shader
+    // produces, and what a Vulkan video encode surface will be (G8_B8R8_2PLANE_420_UNORM). A
+    // codec that cannot take it falls back to I420, and the GPU convert path is then refused
+    // rather than silently feeding it the wrong layout.
+    c->pix_fmt = AV_PIX_FMT_NV12;
+    // AVCodec::pix_fmts was removed in FFmpeg 7; avcodec_get_supported_config is the current
+    // way to ask, and it can answer "no list", which means the codec accepts anything.
+    {
+        const AVPixelFormat* fmts = nullptr;
+        int n = 0;
+        if (avcodec_get_supported_config(c, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0,
+                                         reinterpret_cast<const void**>(&fmts), &n) >= 0 &&
+            fmts != nullptr) {
+            bool nv12_ok = false;
+            for (int k = 0; k < n; ++k)
+                if (fmts[k] == AV_PIX_FMT_NV12)
+                    nv12_ok = true;
+            if (!nv12_ok)
+                c->pix_fmt = AV_PIX_FMT_YUV420P;
+        }
+    }
     c->bit_rate = cfg.bitrate;
     // A two-second GOP, which is what every live destination wants and what the operator's
     // existing profile already uses (keyint 2).
@@ -215,7 +235,7 @@ EncoderPtr encoder_open(const EncoderConfig& cfg, std::string& error) {
 
     enc->sws = sws_getContext(static_cast<int>(cfg.width), static_cast<int>(cfg.height),
                               AV_PIX_FMT_BGRA, static_cast<int>(cfg.width),
-                              static_cast<int>(cfg.height), AV_PIX_FMT_YUV420P, SWS_BILINEAR,
+                              static_cast<int>(cfg.height), enc->vctx->pix_fmt, SWS_BILINEAR,
                               nullptr, nullptr, nullptr);
     if (enc->sws == nullptr) {
         error = "sws_getContext failed";
@@ -407,6 +427,52 @@ bool encoder_finish(Encoder& enc, std::string& error) {
     enc.header_written = false;
     return true;
 }
+
+bool encoder_video_nv12(Encoder& enc, const std::uint8_t* y, int y_stride, const std::uint8_t* uv,
+                        int uv_stride, std::int64_t pts_ns, std::string& error) {
+    if (enc.vctx->pix_fmt != AV_PIX_FMT_NV12) {
+        error = "encoder was not opened with NV12; the GPU convert path cannot feed it";
+        return false;
+    }
+    if (enc.t0_ns == AV_NOPTS_VALUE)
+        enc.t0_ns = pts_ns;
+
+    if (av_frame_make_writable(enc.vframe) < 0) {
+        error = "av_frame_make_writable (video) failed";
+        return false;
+    }
+
+    // Not a conversion - the pixels are already in the encoder's layout. This is only the copy
+    // into FFmpeg's own buffer, which exists because the frame must stay valid until the encoder
+    // is done with it. Timed separately so it cannot hide inside a number labelled "encode".
+    const auto t_copy = std::chrono::steady_clock::now();
+    av_image_copy_plane(enc.vframe->data[0], enc.vframe->linesize[0], y, y_stride, enc.vctx->width,
+                        enc.vctx->height);
+    av_image_copy_plane(enc.vframe->data[1], enc.vframe->linesize[1], uv, uv_stride,
+                        enc.vctx->width, enc.vctx->height / 2);
+    enc.stats.copy_ms.push_back(
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_copy)
+            .count());
+
+    enc.vframe->pts = av_rescale_q(pts_ns - enc.t0_ns, AVRational{1, 1'000'000'000},
+                                   enc.vctx->time_base);
+
+    const auto t_begin = std::chrono::steady_clock::now();
+    const int r = avcodec_send_frame(enc.vctx, enc.vframe);
+    if (r < 0) {
+        error = std::format("avcodec_send_frame (video): {}", av_err(r));
+        return false;
+    }
+    if (!drain(enc, enc.vctx, enc.vst, enc.stats.video_bytes, error))
+        return false;
+    enc.stats.video_encode_ms.push_back(
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_begin)
+            .count());
+    ++enc.stats.video_frames;
+    return true;
+}
+
+bool encoder_is_nv12(Encoder& enc) { return enc.vctx->pix_fmt == AV_PIX_FMT_NV12; }
 
 const EncoderStats& encoder_stats(Encoder& enc) { return enc.stats; }
 

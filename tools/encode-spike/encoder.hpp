@@ -48,6 +48,7 @@ struct EncoderStats {
     /// whether this encoder can hold the show's frame budget.
     std::vector<double> video_encode_ms;
     std::vector<double> convert_ms;
+    std::vector<double> copy_ms;
 };
 
 struct Encoder;
@@ -73,5 +74,13 @@ bool encoder_audio(Encoder& enc, const float* interleaved, std::uint32_t frames,
 bool encoder_finish(Encoder& enc, std::string& error);
 
 const EncoderStats& encoder_stats(Encoder& enc);
+
+/// Submits a frame that is already in the encoder's NV12 layout, skipping colour conversion
+/// entirely. This is the GPU-convert path of ADR-0019.
+bool encoder_video_nv12(Encoder& enc, const std::uint8_t* y, int y_stride, const std::uint8_t* uv,
+                        int uv_stride, std::int64_t pts_ns, std::string& error);
+
+/// Whether the encoder opened with NV12, which the GPU convert path requires.
+bool encoder_is_nv12(Encoder& enc);
 
 } // namespace libertas::spike

@@ -17,9 +17,15 @@ add_library(spike-core STATIC
     portal.cpp
     stream.cpp
     vk_import.cpp
+    vk_convert.cpp
     wlcap.cpp
     v4l2cap.cpp
 )
+
+# BGRA->NV12 runs on the GPU so the readback carries 1.5 bytes/pixel and the CPU never sees a
+# colour conversion (ADR-0019).
+include(CompileShader)
+libertas_compile_shader(spike-core shaders/bgra_to_nv12.comp)
 
 # ext-image-copy-capture-v1 is the primary Linux capture backend (ADR-0011); the portal path
 # stays as the universal fallback.

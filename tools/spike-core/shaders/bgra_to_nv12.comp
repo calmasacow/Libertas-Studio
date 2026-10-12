@@ -1,0 +1,105 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// BGRA -> NV12 (4:2:0) on the GPU, so the readback carries 1.5 bytes/pixel instead of 4 and the
+// CPU never sees a colour conversion. ADR-0019: this is what OBS does even on its slow path, and
+// not doing it was costing us 4.351 ms a frame plus 2.7x the PCIe traffic.
+//
+// One invocation owns a 4x2 luma block. That shape is deliberate: 4 luma samples across is one
+// aligned 32-bit store per row, and 2 rows down is exactly one 4:2:0 chroma row, so a block emits
+// three uint stores and nothing is read-modify-written. A 2x2 block would make every luma store a
+// partial word.
+//
+// The matrix is applied to the *encoded* (non-linear) R'G'B' values, not to linear light. That is
+// what every encoder downstream expects, and it is what swscale was doing before this replaced it.
+// The source view is UNORM precisely so sampling does not silently linearise.
+
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1) buffer Dst { uint data[]; };
+
+layout(push_constant) uniform Push {
+    uint width;       // luma width in pixels
+    uint height;      // luma height in pixels
+    uint y_stride;    // bytes per luma row
+    uint uv_stride;   // bytes per chroma row
+    uint uv_offset;   // byte offset of the UV plane
+    uint full_range;  // 0 = limited (ADR-0014 default), 1 = full
+    uint matrix_id;   // 0 = BT.709, 1 = BT.601
+} pc;
+
+// Rec. 709 and Rec. 601 luma coefficients. Chroma is derived from them rather than written out
+// as a second set of constants, so the two can never disagree.
+vec3 luma_coeff() {
+    return (pc.matrix_id == 1u) ? vec3(0.299, 0.587, 0.114)   // BT.601
+                                : vec3(0.2126, 0.7152, 0.0722); // BT.709
+}
+
+float luma(vec3 rgb) { return dot(rgb, luma_coeff()); }
+
+// Packs four bytes little-endian, matching how the plane is read back on the host.
+uint pack4(float a, float b, float c, float d) {
+    uvec4 v = uvec4(round(clamp(vec4(a, b, c, d), 0.0, 255.0)));
+    return v.x | (v.y << 8) | (v.z << 16) | (v.w << 24);
+}
+
+float encode_y(float yf) {
+    return (pc.full_range == 1u) ? yf * 255.0 : 16.0 + yf * 219.0;
+}
+
+// Cb/Cr scaling. The 1.8556 / 1.5748 denominators are (1 - Kb) * 2 and (1 - Kr) * 2 for BT.709;
+// computing them from the coefficients keeps 601 correct for free.
+vec2 encode_uv(vec3 rgb, float yf) {
+    vec3 k = luma_coeff();
+    float cb = (rgb.b - yf) / (2.0 * (1.0 - k.b));
+    float cr = (rgb.r - yf) / (2.0 * (1.0 - k.r));
+    float scale = (pc.full_range == 1u) ? 255.0 : 224.0;
+    return vec2(128.0 + cb * scale, 128.0 + cr * scale);
+}
+
+void main() {
+    uint bx = gl_GlobalInvocationID.x;
+    uint by = gl_GlobalInvocationID.y;
+    uint x0 = bx * 4u;
+    uint y0 = by * 2u;
+    if (x0 >= pc.width || y0 >= pc.height)
+        return;
+
+    // Clamp rather than branch per sample: on the right/bottom edge of an odd-sized image the
+    // duplicated pixel is the correct thing to average into chroma anyway.
+    ivec2 lim = ivec2(pc.width - 1u, pc.height - 1u);
+    vec3 p[8];
+    for (uint r = 0u; r < 2u; ++r) {
+        for (uint c = 0u; c < 4u; ++c) {
+            ivec2 at = min(ivec2(int(x0 + c), int(y0 + r)), lim);
+            p[r * 4u + c] = texelFetch(src, at, 0).rgb;
+        }
+    }
+
+    float yf[8];
+    for (uint i = 0u; i < 8u; ++i)
+        yf[i] = luma(p[i]);
+
+    // Two luma rows, one aligned store each.
+    data[(y0 * pc.y_stride + x0) >> 2] =
+        pack4(encode_y(yf[0]), encode_y(yf[1]), encode_y(yf[2]), encode_y(yf[3]));
+    if (y0 + 1u < pc.height) {
+        data[((y0 + 1u) * pc.y_stride + x0) >> 2] =
+            pack4(encode_y(yf[4]), encode_y(yf[5]), encode_y(yf[6]), encode_y(yf[7]));
+    }
+
+    // 4:2:0 chroma: average each 2x2 group in R'G'B' before converting. Averaging the colour and
+    // then converting is not the same as converting and then averaging; this order is the one
+    // that matches swscale's default and therefore keeps the output comparable to what we had.
+    vec3 c0 = (p[0] + p[1] + p[4] + p[5]) * 0.25;
+    vec3 c1 = (p[2] + p[3] + p[6] + p[7]) * 0.25;
+    vec2 uv0 = encode_uv(c0, luma(c0));
+    vec2 uv1 = encode_uv(c1, luma(c1));
+
+    uint uv_row = y0 >> 1;
+    data[(pc.uv_offset + uv_row * pc.uv_stride + x0) >> 2] =
+        pack4(uv0.x, uv0.y, uv1.x, uv1.y);
+}

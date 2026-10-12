@@ -12,6 +12,7 @@
 #include "audio.hpp"
 #include "encoder.hpp"
 
+#include <vk_convert.hpp>
 #include <vk_import.hpp>
 #include <wlcap.hpp>
 
@@ -39,6 +40,8 @@ usage:
   --fps N              declared output rate (default 60)
   --bitrate KBPS       video bitrate in kbps (default 12000)
   --tier NAME          pin an encoder tier: h264_nvenc | libx264
+  --convert gpu|cpu    where BGRA->NV12 happens (default gpu; cpu is the old swscale path)
+  --range limited|full output range, applied in our shader - never detected (default limited)
   --no-audio           video only - useful to isolate, but NOT the gate
   --audio-source       capture a microphone rather than the desktop's output
   --drm-node MAJ:MIN   select the Vulkan device by DRM node, never by index
@@ -73,6 +76,11 @@ int main(int argc, char** argv) {
     std::int64_t bitrate_kbps = 12000;
     bool want_audio = true;
     bool capture_sink = true;
+    // GPU convert is the default now: ADR-0019 measured the CPU path at 4.351 ms a frame plus
+    // 2.7x the PCIe traffic, for work a shader does for free. --convert cpu keeps the old path
+    // so the two stay comparable.
+    bool gpu_convert = true;
+    libertas::spike::ColorCfg color{};
 
     const std::vector<std::string_view> args(argv + 1, argv + argc);
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -96,6 +104,20 @@ int main(int argc, char** argv) {
             fps = static_cast<std::int32_t>(std::strtol(std::string(args[++i]).c_str(), nullptr, 10));
         } else if (a == "--bitrate" && i + 1 < args.size()) {
             bitrate_kbps = std::strtoll(std::string(args[++i]).c_str(), nullptr, 10);
+        } else if (a == "--convert" && i + 1 < args.size()) {
+            const std::string_view v = args[++i];
+            gpu_convert = (v == "gpu");
+            if (v != "gpu" && v != "cpu") {
+                lc::error("--convert takes 'gpu' or 'cpu', got '{}'", v);
+                return 2;
+            }
+        } else if (a == "--range" && i + 1 < args.size()) {
+            const std::string_view v = args[++i];
+            color.full_range = (v == "full");
+            if (v != "full" && v != "limited") {
+                lc::error("--range takes 'full' or 'limited', got '{}'", v);
+                return 2;
+            }
         } else if (a == "--no-audio") {
             want_audio = false;
         } else if (a == "--audio-source") {
@@ -208,6 +230,7 @@ int main(int argc, char** argv) {
     struct Latest {
         std::mutex mu;
         std::vector<std::uint8_t> pixels;
+        libertas::spike::Nv12Frame nv12;
         std::uint64_t presented_ns = 0;
         std::uint64_t seq = 0;
         bool stop = false;
@@ -216,10 +239,13 @@ int main(int argc, char** argv) {
 
     std::vector<double> capture_ms;
     std::vector<double> readback_ms;
+    std::vector<double> gpu_convert_ms;
+    double first_frame_ms = 0.0;
     std::mutex stats_mu;
 
     std::thread capture_thread([&] {
         std::vector<std::uint8_t> local;
+        libertas::spike::Nv12Frame local_nv12;
         for (std::uint64_t i = 0;; ++i) {
             {
                 std::lock_guard<std::mutex> lk(latest.mu);
@@ -241,7 +267,16 @@ int main(int argc, char** argv) {
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
 
             t = std::chrono::steady_clock::now();
-            if (!libertas::spike::vk_readback_exported(*vk, ring[slot], true, local, e)) {
+            if (gpu_convert) {
+                // Convert on the GPU and read back NV12: 1.5 bytes/pixel instead of 4, and no
+                // CPU colour conversion at all (ADR-0019).
+                if (!libertas::spike::vk_convert_nv12(*vk, ring[slot], true, color, local_nv12,
+                                                      e)) {
+                    std::lock_guard<std::mutex> lk(latest.mu);
+                    latest.err = e;
+                    return;
+                }
+            } else if (!libertas::spike::vk_readback_exported(*vk, ring[slot], true, local, e)) {
                 std::lock_guard<std::mutex> lk(latest.mu);
                 latest.err = e;
                 return;
@@ -249,14 +284,27 @@ int main(int argc, char** argv) {
             const double rms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
 
-            {
+            // The first frame pays one-time costs in both paths - the staging allocation, and
+            // for the GPU path the compute pipeline build - so it is excluded from the per-frame
+            // figures rather than left to drag the mean somewhere unrepresentative. It is
+            // reported on its own line instead of being quietly dropped.
+            if (i == 0) {
+                std::lock_guard<std::mutex> lk(stats_mu);
+                first_frame_ms = cms + rms;
+            } else {
                 std::lock_guard<std::mutex> lk(stats_mu);
                 capture_ms.push_back(cms);
-                readback_ms.push_back(rms);
+                if (gpu_convert)
+                    gpu_convert_ms.push_back(rms);
+                else
+                    readback_ms.push_back(rms);
             }
             {
                 std::lock_guard<std::mutex> lk(latest.mu);
-                latest.pixels = local;
+                if (gpu_convert)
+                    latest.nv12 = local_nv12;
+                else
+                    latest.pixels = local;
                 latest.presented_ns = presented_ns;
                 ++latest.seq;
             }
@@ -265,6 +313,7 @@ int main(int argc, char** argv) {
 
     // Wait for the first real frame; without one there is nothing to duplicate from.
     std::vector<std::uint8_t> pixels;
+    libertas::spike::Nv12Frame nv12;
     std::uint64_t last_seq = 0;
     {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -272,7 +321,10 @@ int main(int argc, char** argv) {
             {
                 std::lock_guard<std::mutex> lk(latest.mu);
                 if (latest.seq > 0) {
-                    pixels = latest.pixels;
+                    if (gpu_convert)
+                        nv12 = latest.nv12;
+                    else
+                        pixels = latest.pixels;
                     last_seq = latest.seq;
                     break;
                 }
@@ -323,7 +375,10 @@ int main(int argc, char** argv) {
                 break;
             }
             if (latest.seq != last_seq) {
-                pixels = latest.pixels;
+                if (gpu_convert)
+                    nv12 = latest.nv12;
+                else
+                    pixels = latest.pixels;
                 last_seq = latest.seq;
                 fresh = true;
             }
@@ -336,8 +391,16 @@ int main(int argc, char** argv) {
         // is new.
         const std::int64_t pts_ns = tick_ns * i;
 
-        if (!libertas::spike::encoder_video(*enc, pixels.data(),
-                                            static_cast<std::size_t>(caps.width) * 4, pts_ns, err)) {
+        const bool sent =
+            gpu_convert
+                ? libertas::spike::encoder_video_nv12(
+                      *enc, nv12.data.data(), static_cast<int>(nv12.y_stride),
+                      nv12.data.data() + nv12.uv_offset, static_cast<int>(nv12.uv_stride), pts_ns,
+                      err)
+                : libertas::spike::encoder_video(*enc, pixels.data(),
+                                                 static_cast<std::size_t>(caps.width) * 4, pts_ns,
+                                                 err);
+        if (!sent) {
             lc::error("video encode failed at frame {}: {}", i, err);
             break;
         }
@@ -403,12 +466,17 @@ int main(int argc, char** argv) {
     std::printf("\n  per-stage cost (sw path; the Vulkan tier removes readback and convert)\n");
     {
         std::lock_guard<std::mutex> lk(stats_mu);
-        std::printf("  captures delivered by the compositor: %zu\n", capture_ms.size());
-        std::printf("  %s\n", libertas::spike::vk_readback_note(*vk).c_str());
+        std::printf("  captures delivered by the compositor: %zu (+1 excluded: first frame "
+                    "pays one-time setup, %.3f ms)\n",
+                    capture_ms.size(), first_frame_ms);
+        std::printf("  %s\n", gpu_convert ? libertas::spike::vk_convert_note(*vk).c_str()
+                                          : libertas::spike::vk_readback_note(*vk).c_str());
         report("capture", capture_ms);
         report("readback", readback_ms);
+        report("convert+readback", gpu_convert_ms);
     }
-    report("bgra->nv12", st.convert_ms);
+    report("bgra->nv12 (cpu)", st.convert_ms);
+    report("nv12 plane copy", st.copy_ms);
     report("encode", st.video_encode_ms);
 
     // The capture thread is detached and may be parked inside a blocking roundtrip waiting for

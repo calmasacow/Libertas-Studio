@@ -14,6 +14,9 @@
 
 #include "vk_import.hpp"
 
+#include "vk_ctx_internal.hpp"
+#include "vk_convert.hpp"
+
 #include <lcore/log.hpp>
 
 #include <algorithm>
@@ -28,36 +31,7 @@
 
 namespace libertas::spike {
 
-/// Staging resources for host readback, kept alive across frames. See `readback_image` for why
-/// per-frame allocation and an uncached memory type were both wrong.
-struct ReadbackStaging {
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
-    void* mapped = nullptr;
-    VkDeviceSize capacity = 0;
-    std::uint32_t type_index = UINT32_MAX;
-    bool cached = false;
-    bool coherent = false;
-};
-
-struct VkCtx {
-    VkInstance instance = VK_NULL_HANDLE;
-    VkPhysicalDevice phys = VK_NULL_HANDLE;
-    VkDevice device = VK_NULL_HANDLE;
-    VkQueue queue = VK_NULL_HANDLE;
-    std::uint32_t queue_family = 0;
-    VkCommandPool pool = VK_NULL_HANDLE;
-    std::string device_name;
-    bool have_foreign_queue = false;
-
-    PFN_vkGetMemoryFdPropertiesKHR get_memory_fd_properties = nullptr;
-    PFN_vkGetImageDrmFormatModifierPropertiesEXT get_image_modifier_properties = nullptr;
-    PFN_vkGetMemoryFdKHR get_memory_fd = nullptr;
-
-    ReadbackStaging readback;
-};
+// VkCtx and ReadbackStaging live in vk_ctx_internal.hpp so vk_convert.cpp can see them too.
 
 namespace {
 
@@ -259,8 +233,10 @@ void vk_destroy(VkCtx* ctx) {
     // Also frees the struct: this is the unique_ptr deleter target.
     if (ctx == nullptr)
         return;
-    if (ctx->device != VK_NULL_HANDLE)
+    if (ctx->device != VK_NULL_HANDLE) {
+        vk_convert_destroy(*ctx);
         destroy_staging(*ctx, ctx->readback);
+    }
     if (ctx->pool != VK_NULL_HANDLE)
         vkDestroyCommandPool(ctx->device, ctx->pool, nullptr);
     if (ctx->device != VK_NULL_HANDLE)
