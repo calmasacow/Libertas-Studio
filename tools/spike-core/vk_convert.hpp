@@ -29,6 +29,16 @@ struct Nv12Frame {
     std::uint32_t uv_offset = 0;
 };
 
+/// Where the time inside one convert went. ADR-0019 recorded a single 61 ms convert against a
+/// p99 of 1.386 ms and could not say which part stalled, which is the whole reason this exists:
+/// a stall that cannot be attributed cannot be fixed.
+struct ConvertTiming {
+    double record_ms = 0.0;  ///< building the command buffer (descriptors, barriers, dispatch)
+    double submit_ms = 0.0;  ///< vkQueueSubmit alone, which is where a driver stall shows up
+    double wait_ms = 0.0;    ///< blocked on the fence, i.e. waiting for the GPU
+    double copy_ms = 0.0;    ///< memcpy out of the mapped staging buffer
+};
+
 /// Converts an imported/exported BGRA image to NV12 on the GPU and reads back the result.
 ///
 /// This replaces "read back BGRA, then sws_scale on the CPU". It moves 1.5 bytes/pixel instead of
@@ -37,7 +47,8 @@ struct Nv12Frame {
 /// `written_by_foreign` must be true when a compositor produced the contents, so the barrier
 /// acquires queue-family ownership - the same rule as the readback path.
 bool vk_convert_nv12(VkCtx& ctx, const VkExportedImage& img, bool written_by_foreign,
-                     const ColorCfg& color, Nv12Frame& out, std::string& error);
+                     const ColorCfg& color, Nv12Frame& out, std::string& error,
+                     ConvertTiming* timing = nullptr);
 
 /// A short description of the convert pipeline's state, for logging.
 std::string vk_convert_note(VkCtx& ctx);

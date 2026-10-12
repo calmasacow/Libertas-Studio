@@ -166,10 +166,69 @@ identical still frame: `YAVG 66.2078` vs `66.217`, `UAVG 132.215` vs `132.218`, 
 busy run the chroma still agrees to 0.002 while luma differs by 0.3, which is the cube being at a
 different angle, not the conversion.
 
-One honest blemish: a single `convert+readback` sample of **61.118 ms** against a p99 of 1.386.
-One outlier in 1622, cause not established. It is recorded rather than trimmed, because a rare
-multi-frame stall is exactly the kind of thing this project exists to not ship, and it needs an
-explanation before Phase 1.5 rather than a smaller y-axis.
+### The outlier, chased
+
+The 61 ms sample above was worth chasing, so the convert was instrumented to time its stages
+separately - *a stall that cannot be attributed cannot be fixed*. It recurred once on a 60 s run
+over real video:
+
+```
+worst convert : frame 90, 40.475 ms = record 39.375 + gpu-wait 0.003 + copy 1.096
+tail          : 1 over 5 ms, 1 over the 16.667 ms budget, of 2495
+```
+
+**The GPU took 0.003 ms.** The stall is entirely in building and submitting the command buffer -
+host-side driver work, not the compute shader, not the transfer, not the fence.
+
+It then refused to reproduce: three further runs over the same content gave **0 stalls in 5366
+captures**, max 2.8 / 2.5 / 3.0 ms. A hypothesis that audio capture was contending was tested
+directly - the clean run was `--no-audio` and both stalls had audio - and **rejected**, because
+two of the three clean runs had audio enabled.
+
+So the honest state is: ~2 events in ~8000 captures, located in submission, not reproducible on
+demand, cause not established. Both occurrences followed a period of GPU idleness while the later
+clean runs were back-to-back, which makes a driver or power-state transition the leading suspect,
+but that is a hypothesis and it is not tested here.
+
+What can be said is that the architecture already tolerates it: ADR-0013 gives the encoder its own
+clock and the last-good-frame rule, so a 40 ms convert costs **one duplicated frame, not a dropped
+stream**. That is the difference between a hitch and a failure, and it is by design rather than by
+luck. It stays on the list for Phase 1.5 and will likely be closed by pre-recorded command buffers
+and explicit sync, both of which remove the per-frame submission work entirely.
+
+### Where the time actually goes
+
+The same instrumentation answered a question nobody had asked. In normal operation:
+
+```
+record 0.054 + submit 0.023 + gpu-wait 1.567 + copy 1.161
+```
+
+The GPU is not the cost, and neither is recording. **It is the copy** - and there are two of them,
+because `vk_convert_nv12` memcpys the staging buffer into a vector and `encoder_video_nv12` then
+copies that vector into FFmpeg's frame. 5.27 MiB moved twice for no reason. Writing the staging
+buffer straight into the AVFrame's planes removes one of them outright, and is the obvious next
+cut before anything more ambitious.
+
+### Confirmed on real content
+
+Repeated against a fullscreen film on the same output, which is harder to compress and harder to
+convert correctly than a desktop or a spinning cube:
+
+```
+                      CPU path (n=1141)   GPU path (n=2495)
+readback / convert         2.214 ms            1.017 ms
+colour convert (CPU)       4.968 ms              -
+NV12 plane copy              -                 0.425 ms
+encode                     0.503 ms            0.459 ms
+                           --------            --------
+total per frame            7.685 ms            1.901 ms
+```
+
+**4.0x**, consistent with the 4.4x on synthetic damage. The 60 s output is intact: 3600 frames,
+both streams starting at 0.000000, audio span -9.7 ms over a minute, zero decode errors, 90.5 MiB.
+An extracted frame shows correct **skin tones**, which is the test that matters here - a BT.601
+matrix applied to BT.709 content shows up on faces before it shows up anywhere else.
 
 ## Third observation: media sources decode on the CPU
 

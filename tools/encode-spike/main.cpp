@@ -241,11 +241,21 @@ int main(int argc, char** argv) {
     std::vector<double> readback_ms;
     std::vector<double> gpu_convert_ms;
     double first_frame_ms = 0.0;
+    // A stall that cannot be attributed cannot be fixed, so the worst frame keeps its breakdown
+    // rather than just its total (ADR-0019's unexplained 61 ms).
+    struct Worst {
+        double total = 0.0;
+        libertas::spike::ConvertTiming t{};
+        std::uint64_t frame = 0;
+    } worst;
+    std::uint32_t over_5ms = 0;
+    std::uint32_t over_budget = 0;
     std::mutex stats_mu;
 
     std::thread capture_thread([&] {
         std::vector<std::uint8_t> local;
         libertas::spike::Nv12Frame local_nv12;
+        libertas::spike::ConvertTiming ct{};
         for (std::uint64_t i = 0;; ++i) {
             {
                 std::lock_guard<std::mutex> lk(latest.mu);
@@ -271,7 +281,7 @@ int main(int argc, char** argv) {
                 // Convert on the GPU and read back NV12: 1.5 bytes/pixel instead of 4, and no
                 // CPU colour conversion at all (ADR-0019).
                 if (!libertas::spike::vk_convert_nv12(*vk, ring[slot], true, color, local_nv12,
-                                                      e)) {
+                                                      e, &ct)) {
                     std::lock_guard<std::mutex> lk(latest.mu);
                     latest.err = e;
                     return;
@@ -294,10 +304,20 @@ int main(int argc, char** argv) {
             } else {
                 std::lock_guard<std::mutex> lk(stats_mu);
                 capture_ms.push_back(cms);
-                if (gpu_convert)
+                if (gpu_convert) {
                     gpu_convert_ms.push_back(rms);
-                else
+                    if (rms > worst.total) {
+                        worst.total = rms;
+                        worst.t = ct;
+                        worst.frame = i;
+                    }
+                    if (rms > 5.0)
+                        ++over_5ms;
+                    if (rms > 16.667)
+                        ++over_budget;
+                } else {
                     readback_ms.push_back(rms);
+                }
             }
             {
                 std::lock_guard<std::mutex> lk(latest.mu);
@@ -474,6 +494,14 @@ int main(int argc, char** argv) {
         report("capture", capture_ms);
         report("readback", readback_ms);
         report("convert+readback", gpu_convert_ms);
+        if (gpu_convert && !gpu_convert_ms.empty()) {
+            std::printf("  tail          : %u over 5 ms, %u over the 16.667 ms budget, of %zu\n",
+                        over_5ms, over_budget, gpu_convert_ms.size());
+            std::printf("  worst convert : frame %llu, %.3f ms = record %.3f + submit %.3f + "
+                        "gpu-wait %.3f + copy %.3f\n",
+                        static_cast<unsigned long long>(worst.frame), worst.total,
+                        worst.t.record_ms, worst.t.submit_ms, worst.t.wait_ms, worst.t.copy_ms);
+        }
     }
     report("bgra->nv12 (cpu)", st.convert_ms);
     report("nv12 plane copy", st.copy_ms);

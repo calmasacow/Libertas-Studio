@@ -17,6 +17,7 @@
 #include "vk_ctx_internal.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <format>
 
@@ -314,7 +315,9 @@ bool ensure_buffers(VkCtx& ctx, VkDeviceSize bytes, std::string& error) {
 } // namespace
 
 bool vk_convert_nv12(VkCtx& ctx, const VkExportedImage& img, bool written_by_foreign,
-                     const ColorCfg& color, Nv12Frame& out, std::string& error) {
+                     const ColorCfg& color, Nv12Frame& out, std::string& error,
+                     ConvertTiming* timing) {
+    const auto t_record = std::chrono::steady_clock::now();
     if (img.width % 4u != 0u || img.height % 2u != 0u) {
         error = std::format("convert needs width%4==0 and height%2==0, got {}x{}", img.width,
                             img.height);
@@ -446,14 +449,17 @@ bool vk_convert_nv12(VkCtx& ctx, const VkExportedImage& img, bool written_by_for
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cs->cmd;
+    const auto t_submit = std::chrono::steady_clock::now();
     if (vkQueueSubmit(ctx.queue, 1, &si, cs->fence) != VK_SUCCESS) {
         error = "vkQueueSubmit failed";
         return false;
     }
+    const auto t_wait = std::chrono::steady_clock::now();
     if (vkWaitForFences(ctx.device, 1, &cs->fence, VK_TRUE, 2'000'000'000ULL) != VK_SUCCESS) {
         error = "fence wait timed out";
         return false;
     }
+    const auto t_copy = std::chrono::steady_clock::now();
     if (!cs->host_coherent) {
         VkMappedMemoryRange range{};
         range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
@@ -470,6 +476,14 @@ bool vk_convert_nv12(VkCtx& ctx, const VkExportedImage& img, bool written_by_for
     out.uv_offset = uv_offset;
     out.data.resize(bytes);
     std::memcpy(out.data.data(), cs->host_mapped, bytes);
+
+    if (timing != nullptr) {
+        using ms = std::chrono::duration<double, std::milli>;
+        timing->record_ms = ms(t_submit - t_record).count();
+        timing->submit_ms = ms(t_wait - t_submit).count();
+        timing->wait_ms = ms(t_copy - t_wait).count();
+        timing->copy_ms = ms(std::chrono::steady_clock::now() - t_copy).count();
+    }
     return true;
 }
 
