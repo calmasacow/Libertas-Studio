@@ -4,6 +4,7 @@
 add_library(lcore STATIC
     src/atomic_file.cpp
     src/log.cpp
+    src/ulid.cpp
 )
 add_library(libertas::lcore ALIAS lcore)
 
