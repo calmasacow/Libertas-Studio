@@ -1,0 +1,85 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include "lsession/session.hpp"
+
+#include "ldoc/history.hpp"
+#include "ldoc/journal.hpp"
+#include "ldoc/project_io.hpp"
+
+#include <map>
+#include <memory>
+
+namespace lsession {
+
+/// A Session that owns the document in this process.
+///
+/// It holds the undo history, the journal and the project lock, so everything that has to happen
+/// together when a command is applied -- apply it, record it durably, tell everyone -- happens in
+/// one place. When the document moves to `libertas-session`, this class moves with it and the UI
+/// gets a proxy implementing the same interface.
+class LocalSession final : public Session {
+public:
+    ~LocalSession() override;
+
+    /// Open an existing project directory. Holds its lock until destroyed, replays any journal,
+    /// and reports whatever was wrong through `problems()`.
+    [[nodiscard]] static std::expected<std::unique_ptr<LocalSession>, std::string> open(
+        const std::filesystem::path& dir);
+
+    /// Create a new project directory from `project` and open it.
+    [[nodiscard]] static std::expected<std::unique_ptr<LocalSession>, std::string> create(
+        const Project& project, const std::filesystem::path& dir);
+
+    /// A document with nowhere to live yet: no lock, no journal, and `save()` fails until it is
+    /// given a path. For tests, and for a new project the operator has not chosen a home for.
+    [[nodiscard]] static std::unique_ptr<LocalSession> in_memory(Project project);
+
+    [[nodiscard]] const Project& project() const override;
+    [[nodiscard]] std::uint64_t revision() const override { return revision_; }
+    [[nodiscard]] std::vector<Problem> problems() const override;
+
+    std::expected<std::string, std::string> run(const Command& command) override;
+    std::expected<void, std::string> undo() override;
+    std::expected<void, std::string> redo() override;
+    [[nodiscard]] bool can_undo() const override { return history_.can_undo(); }
+    [[nodiscard]] bool can_redo() const override { return history_.can_redo(); }
+    [[nodiscard]] std::string undo_description() const override;
+    [[nodiscard]] std::string redo_description() const override;
+
+    [[nodiscard]] bool dirty() const override { return dirty_; }
+    [[nodiscard]] std::filesystem::path path() const override { return dir_; }
+    std::expected<void, std::string> save() override;
+
+    /// Give an in-memory document a home. Fails if it already has one.
+    std::expected<void, std::string> save_as(const std::filesystem::path& dir);
+
+    int subscribe(ChangeListener listener) override;
+    void unsubscribe(int token) override;
+    void set_notice_handler(NoticeHandler handler) override;
+
+private:
+    explicit LocalSession(Project project);
+
+    void notify(Change::Kind kind, std::optional<Command> command);
+    void notice(ldoc::Severity severity, const std::string& text);
+    /// Record a command in the journal, complaining rather than failing if it cannot be: the
+    /// command has already been applied, and refusing it now would make the document and the
+    /// operator's screen disagree.
+    void journal(const Command& command);
+
+    ldoc::DocumentHistory history_;
+    ldoc::Journal journal_;
+    ldoc::ProjectLock lock_;
+    std::filesystem::path dir_;
+
+    std::vector<Problem> open_problems_;
+    std::map<int, ChangeListener> listeners_;
+    NoticeHandler notice_handler_;
+    int next_token_ = 1;
+    std::uint64_t revision_ = 0;
+    bool dirty_ = false;
+};
+
+} // namespace lsession

@@ -36,14 +36,24 @@ public:
     [[nodiscard]] std::string undo_description() const;
     [[nodiscard]] std::string redo_description() const;
 
-    std::expected<void, std::string> undo();
-    std::expected<void, std::string> redo();
+    /// Both return the command that was *actually applied* to the document, which for an undo
+    /// is the inverse. A listener -- or, once the document lives in another process, a replica of
+    /// it -- can then update precisely instead of re-reading everything.
+    std::expected<Command, std::string> undo();
+    std::expected<Command, std::string> redo();
 
     [[nodiscard]] std::size_t undo_depth() const { return past_.size(); }
     [[nodiscard]] std::size_t redo_depth() const { return future_.size(); }
 
     /// Replace the project and forget the history, for loading a different one.
     void reset(Project project);
+
+    /// Record that the document was written as this generation.
+    ///
+    /// Not `reset`: saving must not throw away the undo stack. The generation is file metadata
+    /// rather than document content -- it is not something the operator did and not something
+    /// they can undo -- so it is set here without touching the history.
+    void note_saved(std::uint64_t generation);
 
     /// Apply a command without recording it, for replaying a journal into a freshly loaded
     /// project: those commands already happened, and they are not undo steps for this session.

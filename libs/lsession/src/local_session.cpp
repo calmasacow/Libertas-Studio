@@ -1,0 +1,207 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "lsession/local_session.hpp"
+
+#include <format>
+#include <utility>
+
+namespace lsession {
+
+LocalSession::LocalSession(Project p) : history_(std::move(p)) {}
+
+LocalSession::~LocalSession() = default;
+
+std::expected<std::unique_ptr<LocalSession>, std::string> LocalSession::open(
+    const std::filesystem::path& dir) {
+    auto opened = ldoc::open_project(dir);
+    if (!opened)
+        return std::unexpected(opened.error());
+
+    std::unique_ptr<LocalSession> s{new LocalSession{std::move(opened->project)}};
+    s->lock_ = std::move(opened->lock);
+    s->dir_ = dir;
+    s->open_problems_ = std::move(opened->problems);
+
+    // Journal entries replayed on open are real changes that the project file does not yet hold,
+    // so the document is dirty before the operator has touched anything. Saying otherwise would
+    // let them close it and lose exactly the work that was just recovered.
+    s->dirty_ = opened->recovered_commands > 0;
+
+    // A journal that cannot be opened is a warning, not a refusal to open the project. The
+    // operator can still work; they just cannot be promised that unsaved work survives a crash,
+    // and that is worth saying loudly rather than making the project unopenable.
+    auto journal = ldoc::Journal::open(ldoc::journal_path(dir));
+    if (journal) {
+        s->journal_ = std::move(*journal);
+    } else {
+        s->open_problems_.push_back(
+            Problem{ldoc::Severity::Warning,
+                    std::format("the recovery journal could not be opened ({}), so changes made "
+                                "now will be lost if the application stops before you save",
+                                journal.error()),
+                    ldoc::Id::nil()});
+    }
+    return s;
+}
+
+std::expected<std::unique_ptr<LocalSession>, std::string> LocalSession::create(
+    const Project& p, const std::filesystem::path& dir) {
+    if (const auto r = ldoc::create_project(p, dir); !r)
+        return std::unexpected(r.error());
+    return open(dir);
+}
+
+std::unique_ptr<LocalSession> LocalSession::in_memory(Project p) {
+    return std::unique_ptr<LocalSession>{new LocalSession{std::move(p)}};
+}
+
+const Project& LocalSession::project() const { return history_.project(); }
+
+std::vector<Problem> LocalSession::problems() const {
+    std::vector<Problem> out = open_problems_;
+    for (Problem& p : ldoc::validate(history_.project()))
+        out.push_back(std::move(p));
+    return out;
+}
+
+std::string LocalSession::undo_description() const { return history_.undo_description(); }
+std::string LocalSession::redo_description() const { return history_.redo_description(); }
+
+void LocalSession::notify(Change::Kind kind, std::optional<Command> command) {
+    const Change change{kind, std::move(command), revision_};
+    // Over a copy: a listener may unsubscribe itself, and several will once the UI has panels.
+    const auto snapshot = listeners_;
+    for (const auto& [token, listener] : snapshot) {
+        (void)token;
+        if (listener)
+            listener(change);
+    }
+}
+
+void LocalSession::notice(ldoc::Severity severity, const std::string& text) {
+    if (notice_handler_)
+        notice_handler_(severity, text);
+}
+
+void LocalSession::journal(const Command& command) {
+    if (!journal_.is_open())
+        return; // an in-memory document has nowhere to record to, and that is not a failure
+    if (const auto r = journal_.record(command, history_.project().generation); !r) {
+        notice(ldoc::Severity::Error,
+               std::format("this change was made but could not be written to the recovery "
+                           "journal, so it would be lost if the application stopped now: {}",
+                           r.error()));
+    }
+}
+
+std::expected<std::string, std::string> LocalSession::run(const Command& command) {
+    auto description = history_.run(command);
+    if (!description)
+        return std::unexpected(description.error());
+
+    journal(command);
+    dirty_ = true;
+    ++revision_;
+    notify(Change::Kind::Applied, command);
+    return *description;
+}
+
+std::expected<void, std::string> LocalSession::undo() {
+    auto applied = history_.undo();
+    if (!applied)
+        return std::unexpected(applied.error());
+
+    // An undo is journaled like anything else. It is a change the project file does not hold
+    // yet, and a crash straight after one should not bring the undone work back.
+    journal(*applied);
+    dirty_ = true;
+    ++revision_;
+    notify(Change::Kind::Undone, *applied);
+    return {};
+}
+
+std::expected<void, std::string> LocalSession::redo() {
+    auto applied = history_.redo();
+    if (!applied)
+        return std::unexpected(applied.error());
+    journal(*applied);
+    dirty_ = true;
+    ++revision_;
+    notify(Change::Kind::Redone, *applied);
+    return {};
+}
+
+std::expected<void, std::string> LocalSession::save() {
+    if (dir_.empty())
+        return std::unexpected("this project has not been given a location yet");
+
+    Project copy = history_.project();
+    if (const auto r = ldoc::save_project(copy, dir_); !r)
+        return std::unexpected(r.error());
+
+    // Take the new generation, keep the undo stack. save_project advances the generation and the
+    // document has to carry it -- otherwise the next save reuses the number and the journal
+    // replays against the wrong one -- but saving is not something the operator did to the
+    // document and emphatically must not throw away what they can undo.
+    history_.note_saved(copy.generation);
+    dirty_ = false;
+    ++revision_;
+    notify(Change::Kind::Saved, std::nullopt);
+    return {};
+}
+
+std::expected<void, std::string> LocalSession::save_as(const std::filesystem::path& dir) {
+    if (!dir_.empty())
+        return std::unexpected("this project already has a location");
+
+    Project copy = history_.project();
+    copy.generation = 0;
+    if (const auto r = ldoc::create_project(copy, dir); !r)
+        return std::unexpected(r.error());
+
+    // open_project returns the lock; taking one separately first would deadlock against it, now
+    // that the lock correctly refuses a second holder inside one process.
+    auto opened = ldoc::open_project(dir);
+    if (!opened)
+        return std::unexpected(opened.error());
+
+    lock_ = std::move(opened->lock);
+    dir_ = dir;
+    for (Problem& p : opened->problems)
+        open_problems_.push_back(std::move(p));
+
+    auto journal = ldoc::Journal::open(ldoc::journal_path(dir));
+    if (journal) {
+        journal_ = std::move(*journal);
+    } else {
+        open_problems_.push_back(
+            Problem{ldoc::Severity::Warning,
+                    std::format("the recovery journal could not be opened ({}), so changes made "
+                                "now will be lost if the application stops before you save",
+                                journal.error()),
+                    ldoc::Id::nil()});
+    }
+
+    // The document is unchanged -- it was just written out -- so take the new generation and
+    // keep the undo stack, exactly as save() does.
+    history_.note_saved(opened->project.generation);
+    dirty_ = false;
+    ++revision_;
+    notify(Change::Kind::Saved, std::nullopt);
+    return {};
+}
+
+int LocalSession::subscribe(ChangeListener listener) {
+    const int token = next_token_++;
+    listeners_.emplace(token, std::move(listener));
+    return token;
+}
+
+void LocalSession::unsubscribe(int token) { listeners_.erase(token); }
+
+void LocalSession::set_notice_handler(NoticeHandler handler) {
+    notice_handler_ = std::move(handler);
+}
+
+} // namespace lsession

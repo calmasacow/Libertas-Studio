@@ -40,7 +40,7 @@ std::string DocumentHistory::redo_description() const {
     return future_.empty() ? std::string{} : future_.front().description;
 }
 
-std::expected<void, std::string> DocumentHistory::undo() {
+std::expected<Command, std::string> DocumentHistory::undo() {
     if (past_.empty())
         return std::unexpected("there is nothing to undo");
 
@@ -57,10 +57,10 @@ std::expected<void, std::string> DocumentHistory::undo() {
     future_.push_front(Step{std::move(applied->inverse), step.description});
     while (future_.size() > limit_)
         future_.pop_back();
-    return {};
+    return step.undo;
 }
 
-std::expected<void, std::string> DocumentHistory::redo() {
+std::expected<Command, std::string> DocumentHistory::redo() {
     if (future_.empty())
         return std::unexpected("there is nothing to redo");
 
@@ -73,7 +73,11 @@ std::expected<void, std::string> DocumentHistory::redo() {
     past_.push_back(Step{std::move(applied->inverse), step.description});
     while (past_.size() > limit_)
         past_.pop_front();
-    return {};
+    return step.undo;
+}
+
+void DocumentHistory::note_saved(std::uint64_t generation) {
+    project_.generation = generation;
 }
 
 void DocumentHistory::reset(Project project) {
