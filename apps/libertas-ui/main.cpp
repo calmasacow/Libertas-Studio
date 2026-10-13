@@ -510,6 +510,37 @@ int main(int argc, char** argv) {
             report(!document.dirty(), "the document saves");
         }
 
+        // ---- inputs ---------------------------------------------------------------------
+        const int inputs_before = document.sourcesModel()->rowCount();
+        report(!document.sourceTypes().isEmpty(), "the source types are listed");
+        document.addSource(QStringLiteral("Desk Cam"), QStringLiteral("source.v4l2"));
+        settle();
+        report(document.sourcesModel()->rowCount() == inputs_before + 1, "an input can be added");
+
+        // Binding needs a layer; the one added above was removed with its scene, so make another.
+        document.addLayer(QStringLiteral("Cam Layer"));
+        settle();
+        const QString input_id =
+            document.sourcesModel()
+                ->data(document.sourcesModel()->index(inputs_before, 0),
+                       Qt::UserRole + 1)
+                .toString();
+        document.bindSelectedLayer(input_id);
+        settle();
+        report(document.sourcesModel()
+                   ->data(document.sourcesModel()->index(inputs_before, 0),
+                          Qt::UserRole + 4)
+                   .toInt() == 1,
+               "and bound to a layer, which the use count reflects");
+
+        document.bindSelectedLayer(QString{});
+        settle();
+        report(document.sourcesModel()
+                   ->data(document.sourcesModel()->index(inputs_before, 0),
+                          Qt::UserRole + 4)
+                   .toInt() == 0,
+               "unbinding it again releases the input");
+
         // ---- actions and bindings -----------------------------------------------------------
         report(shortcuts.bindingsModel()->rowCount() > 10, "the bindings table is populated");
         report(!shortcuts.applicationBindings().isEmpty(),

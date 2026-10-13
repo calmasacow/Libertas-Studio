@@ -164,6 +164,59 @@ struct SetEffectEnabled {
     friend bool operator==(const SetEffectEnabled&, const SetEffectEnabled&) = default;
 };
 
+/// Bind a layer to a source, or to nothing.
+///
+/// Sources are project-level, so this is a reference rather than ownership: two layers binding
+/// the same source show one camera, not two.
+struct SetLayerSource {
+    Id scene;
+    Id node;
+    std::optional<Id> source;
+    friend bool operator==(const SetLayerSource&, const SetLayerSource&) = default;
+};
+
+// ---- sources --------------------------------------------------------------------------------
+
+struct AddSource {
+    Source source;
+    std::size_t index = 0;
+    friend bool operator==(const AddSource&, const AddSource&) = default;
+};
+
+struct RemoveSource {
+    Id source;
+    friend bool operator==(const RemoveSource&, const RemoveSource&) = default;
+};
+
+/// Replace a source wholesale, identified by `value.id`.
+///
+/// One command rather than one per field. The inverse is then exactly the previous struct, which
+/// cannot drift from what it is reversing, and a rename and a settings change are the same kind
+/// of edit as far as undo is concerned. The cost is a coarser undo step, which is the right
+/// trade for a properties panel that commits on editing-finished anyway.
+struct SetSource {
+    Source value;
+    friend bool operator==(const SetSource&, const SetSource&) = default;
+};
+
+// ---- canvases -------------------------------------------------------------------------------
+
+struct AddCanvas {
+    Canvas canvas;
+    std::size_t index = 0;
+    friend bool operator==(const AddCanvas&, const AddCanvas&) = default;
+};
+
+struct RemoveCanvas {
+    Id canvas;
+    friend bool operator==(const RemoveCanvas&, const RemoveCanvas&) = default;
+};
+
+struct SetCanvas {
+    Canvas value;
+    friend bool operator==(const SetCanvas&, const SetCanvas&) = default;
+};
+
 // ---- decks ----------------------------------------------------------------------------------
 
 struct SetDeckProgram {
@@ -196,7 +249,8 @@ using Command =
                  MoveNode, RenameNode, SetNodeVisible, SetNodeLocked, SetNodeTransform,
                  SetNodeLayout, SetNodeBlend, SetCanvasOverride, AddEffect, RemoveEffect,
                  SetEffectParams, SetEffectEnabled, SetDeckProgram, SetDeckPreview,
-                 SetCanvasEmergencyScene>;
+                 SetCanvasEmergencyScene, SetLayerSource, AddSource, RemoveSource,
+                 SetSource, AddCanvas, RemoveCanvas, SetCanvas>;
 
 struct Applied {
     /// A command that, applied to the resulting project, restores the previous one.

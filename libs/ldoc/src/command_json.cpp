@@ -177,6 +177,52 @@ Jv body(const SetCanvasEmergencyScene& c) {
     return o;
 }
 
+Jv body(const SetLayerSource& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["source"] = enc_opt_id(c.source);
+    return o;
+}
+
+Jv body(const AddSource& c) {
+    Jv o{Json::objectValue};
+    o["source"] = detail::enc(c.source);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RemoveSource& c) {
+    Jv o{Json::objectValue};
+    o["source"] = detail::enc(c.source);
+    return o;
+}
+
+Jv body(const SetSource& c) {
+    Jv o{Json::objectValue};
+    o["value"] = detail::enc(c.value);
+    return o;
+}
+
+Jv body(const AddCanvas& c) {
+    Jv o{Json::objectValue};
+    o["canvas"] = detail::enc(c.canvas);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RemoveCanvas& c) {
+    Jv o{Json::objectValue};
+    o["canvas"] = detail::enc(c.canvas);
+    return o;
+}
+
+Jv body(const SetCanvas& c) {
+    Jv o{Json::objectValue};
+    o["value"] = detail::enc(c.value);
+    return o;
+}
+
 Jv body(const SetDeckPreview& c) {
     Jv o{Json::objectValue};
     o["deck"] = detail::enc(c.deck);
@@ -285,6 +331,33 @@ std::expected<Command, std::string> command_from_json(std::string_view text) {
         out = SetDeckPreview{rd.id(o, "deck", path), rd.id_opt(o, "scene", path)};
     } else if (name == "canvas.set-emergency-scene") {
         out = SetCanvasEmergencyScene{rd.id(o, "canvas", path), rd.id_opt(o, "scene", path)};
+    } else if (name == "layer.set-source") {
+        out = SetLayerSource{rd.id(o, "scene", path), rd.id(o, "node", path),
+                             rd.id_opt(o, "source", path)};
+    } else if (name == "source.add") {
+        const Jv* sv = rd.object(o, "source", path);
+        if (!sv)
+            return std::unexpected("source.add has no source");
+        out = AddSource{detail::dec_source(rd, *sv, path), dec_index(rd, o, "index", path)};
+    } else if (name == "source.remove") {
+        out = RemoveSource{rd.id(o, "source", path)};
+    } else if (name == "source.set") {
+        const Jv* sv = rd.object(o, "value", path);
+        if (!sv)
+            return std::unexpected("source.set has no value");
+        out = SetSource{detail::dec_source(rd, *sv, path)};
+    } else if (name == "canvas.add") {
+        const Jv* cv = rd.object(o, "canvas", path);
+        if (!cv)
+            return std::unexpected("canvas.add has no canvas");
+        out = AddCanvas{detail::dec_canvas(rd, *cv, path), dec_index(rd, o, "index", path)};
+    } else if (name == "canvas.remove") {
+        out = RemoveCanvas{rd.id(o, "canvas", path)};
+    } else if (name == "canvas.set") {
+        const Jv* cv = rd.object(o, "value", path);
+        if (!cv)
+            return std::unexpected("canvas.set has no value");
+        out = SetCanvas{detail::dec_canvas(rd, *cv, path)};
     } else {
         // Not a fallback: a command this build cannot perform must not be quietly skipped, or a
         // journal written by a newer build would replay as a different session than it recorded.

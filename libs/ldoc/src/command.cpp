@@ -139,7 +139,15 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetEffectEnabled>) return "effect.set-enabled";
             else if constexpr (std::is_same_v<T, SetDeckProgram>) return "deck.set-program";
             else if constexpr (std::is_same_v<T, SetDeckPreview>) return "deck.set-preview";
-            else return "canvas.set-emergency-scene";
+            else if constexpr (std::is_same_v<T, SetCanvasEmergencyScene>)
+                return "canvas.set-emergency-scene";
+            else if constexpr (std::is_same_v<T, SetLayerSource>) return "layer.set-source";
+            else if constexpr (std::is_same_v<T, AddSource>) return "source.add";
+            else if constexpr (std::is_same_v<T, RemoveSource>) return "source.remove";
+            else if constexpr (std::is_same_v<T, SetSource>) return "source.set";
+            else if constexpr (std::is_same_v<T, AddCanvas>) return "canvas.add";
+            else if constexpr (std::is_same_v<T, RemoveCanvas>) return "canvas.remove";
+            else return "canvas.set";
         },
         command);
 }
@@ -188,8 +196,22 @@ std::string describe(const Command& command) {
                 return c.scene ? "Switch program scene" : "Clear program scene";
             else if constexpr (std::is_same_v<T, SetDeckPreview>)
                 return c.scene ? "Set preview scene" : "Clear preview scene";
-            else
+            else if constexpr (std::is_same_v<T, SetCanvasEmergencyScene>)
                 return c.scene ? "Set emergency scene" : "Clear emergency scene";
+            else if constexpr (std::is_same_v<T, SetLayerSource>)
+                return c.source ? "Bind layer to a source" : "Unbind layer";
+            else if constexpr (std::is_same_v<T, AddSource>)
+                return std::format("Add source {}", quoted(c.source.name));
+            else if constexpr (std::is_same_v<T, RemoveSource>)
+                return "Remove source";
+            else if constexpr (std::is_same_v<T, SetSource>)
+                return std::format("Change source {}", quoted(c.value.name));
+            else if constexpr (std::is_same_v<T, AddCanvas>)
+                return std::format("Add canvas {}", quoted(c.canvas.name));
+            else if constexpr (std::is_same_v<T, RemoveCanvas>)
+                return "Remove canvas";
+            else
+                return std::format("Change canvas {}", quoted(c.value.name));
         },
         command);
 }
@@ -517,6 +539,123 @@ struct Apply {
             return std::unexpected(e.error());
         Applied out{SetEffectEnabled{c.scene, c.node, c.effect, (*e)->enabled}, describe(c)};
         (*e)->enabled = c.enabled;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetLayerSource& c) const {
+        auto scene = find_scene(p, c.scene);
+        if (!scene)
+            return std::unexpected(scene.error());
+        auto n = find_in_scene(**scene, c.node);
+        if (!n)
+            return std::unexpected(n.error());
+        auto* layer = std::get_if<LayerData>(&(*n)->data);
+        if (!layer)
+            return std::unexpected(
+                std::format("{} is not a layer, so nothing can be bound to it",
+                            quoted((*n)->name)));
+        // The source is a reference, not a precondition: see the note on Apply.
+        Applied out{SetLayerSource{c.scene, c.node, layer->source}, describe(c)};
+        layer->source = c.source;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const AddSource& c) const {
+        if (c.index > p.sources.size())
+            return std::unexpected(std::format("source position {} is past the end", c.index));
+        if (c.source.id.is_nil())
+            return std::unexpected("a source needs an id");
+        if (c.source.type.empty())
+            return std::unexpected("a source needs a type");
+        if (all_ids(p).contains(c.source.id))
+            return std::unexpected(
+                std::format("id {} is already in the project", c.source.id.to_string()));
+        Applied out{RemoveSource{c.source.id}, describe(c)};
+        p.sources.insert(p.sources.begin() + static_cast<std::ptrdiff_t>(c.index), c.source);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const RemoveSource& c) const {
+        const auto it = std::find_if(p.sources.begin(), p.sources.end(),
+                                     [&c](const Source& s) { return s.id == c.source; });
+        if (it == p.sources.end())
+            return std::unexpected(std::format("there is no source {}", c.source.to_string()));
+        const auto index = static_cast<std::size_t>(it - p.sources.begin());
+        // Layers still bound to it are left pointing at nothing, which validate() reports as a
+        // warning. Refusing the removal instead would mean a source could never be deleted while
+        // anything used it -- see ADR-0023.
+        Applied out{AddSource{*it, index}, std::format("Remove source {}", quoted(it->name))};
+        p.sources.erase(it);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetSource& c) const {
+        const auto it = std::find_if(p.sources.begin(), p.sources.end(),
+                                     [&c](const Source& s) { return s.id == c.value.id; });
+        if (it == p.sources.end())
+            return std::unexpected(
+                std::format("there is no source {}", c.value.id.to_string()));
+        if (c.value.type.empty())
+            return std::unexpected("a source needs a type");
+        Applied out{SetSource{*it}, describe(c)};
+        *it = c.value;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const AddCanvas& c) const {
+        if (c.index > p.canvases.size())
+            return std::unexpected(std::format("canvas position {} is past the end", c.index));
+        if (c.canvas.id.is_nil())
+            return std::unexpected("a canvas needs an id");
+        if (c.canvas.width <= 0 || c.canvas.height <= 0)
+            return std::unexpected(
+                std::format("a canvas cannot be {}x{}", c.canvas.width, c.canvas.height));
+        if (!c.canvas.fps.valid())
+            return std::unexpected("a canvas needs a valid frame rate");
+        if (all_ids(p).contains(c.canvas.id))
+            return std::unexpected(
+                std::format("id {} is already in the project", c.canvas.id.to_string()));
+        Applied out{RemoveCanvas{c.canvas.id}, describe(c)};
+        p.canvases.insert(p.canvases.begin() + static_cast<std::ptrdiff_t>(c.index), c.canvas);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const RemoveCanvas& c) const {
+        const auto it = std::find_if(p.canvases.begin(), p.canvases.end(),
+                                     [&c](const Canvas& x) { return x.id == c.canvas; });
+        if (it == p.canvases.end())
+            return std::unexpected(std::format("there is no canvas {}", c.canvas.to_string()));
+        // A deck or output without a canvas is an *error* rather than a warning -- it has no
+        // output surface at all -- so this is a precondition and not a reference.
+        for (const Deck& d : p.decks) {
+            if (d.canvas == c.canvas)
+                return std::unexpected(std::format(
+                    "deck '{}' renders to this canvas; point it at another one first", d.name));
+        }
+        for (const Output& o : p.outputs) {
+            if (o.canvas == c.canvas)
+                return std::unexpected(std::format(
+                    "output '{}' encodes this canvas; point it at another one first", o.name));
+        }
+        const auto index = static_cast<std::size_t>(it - p.canvases.begin());
+        Applied out{AddCanvas{*it, index}, std::format("Remove canvas {}", quoted(it->name))};
+        p.canvases.erase(it);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetCanvas& c) const {
+        const auto it = std::find_if(p.canvases.begin(), p.canvases.end(),
+                                     [&c](const Canvas& x) { return x.id == c.value.id; });
+        if (it == p.canvases.end())
+            return std::unexpected(
+                std::format("there is no canvas {}", c.value.id.to_string()));
+        if (c.value.width <= 0 || c.value.height <= 0)
+            return std::unexpected(
+                std::format("a canvas cannot be {}x{}", c.value.width, c.value.height));
+        if (!c.value.fps.valid())
+            return std::unexpected("a canvas needs a valid frame rate");
+        Applied out{SetCanvas{*it}, describe(c)};
+        *it = c.value;
         return out;
     }
 

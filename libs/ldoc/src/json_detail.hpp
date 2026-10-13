@@ -40,6 +40,8 @@ Jv enc(const AudioRouting& a);
 Jv enc(const CanvasOverride& ov);
 Jv enc(const Node& n);
 Jv enc_scene(const Scene& scene);
+Jv enc(const Canvas& c);
+Jv enc(const Source& s);
 
 std::string write(const Jv& root);
 
@@ -106,6 +108,8 @@ std::vector<Send> dec_sends(Rd& rd, const Jv& parent, const char* key, std::stri
 Node dec_node(Rd& rd, const Jv& o, std::string_view path);
 CanvasOverride dec_canvas_override(Rd& rd, const Jv& o, std::string_view path);
 Scene dec_scene(Rd& rd, const Jv& o, std::string_view path);
+Canvas dec_canvas(Rd& rd, const Jv& o, std::string_view path);
+Source dec_source(Rd& rd, const Jv& o, std::string_view path);
 
 std::optional<Jv> parse_text(std::string_view text, std::string& error);
 

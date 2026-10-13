@@ -40,6 +40,7 @@ qt_add_qml_module(libertas-ui
         qml/ChoiceField.qml
         qml/DragGhost.qml
         qml/DropOverlay.qml
+        qml/InputsPanel.qml
         qml/LayersPanel.qml
         qml/Main.qml
         qml/NumberField.qml

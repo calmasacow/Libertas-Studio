@@ -11,6 +11,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
@@ -104,6 +105,20 @@ public:
     /// What is wrong with using this scene as a safety net, for the confirmation the designation
     /// flow shows. Empty when it is suitable.
     Q_INVOKABLE [[nodiscard]] QStringList emergencySceneProblems(const QString& id) const;
+
+    // ---- inputs (project-level source instances) --------------------------------------------
+
+    /// The source types this build can hold in a document. None of them render yet; the list is
+    /// here because a document that cannot name what it is waiting for is harder to build a
+    /// pipeline against than one that can.
+    Q_PROPERTY(QVariantList sourceTypes READ sourceTypes CONSTANT)
+    [[nodiscard]] QVariantList sourceTypes() const;
+
+    Q_INVOKABLE void addSource(const QString& name, const QString& type);
+    Q_INVOKABLE void removeSource(const QString& id);
+    Q_INVOKABLE void renameSource(const QString& id, const QString& name);
+    /// Bind the selected layer to this source, or to nothing when the id is empty.
+    Q_INVOKABLE void bindSelectedLayer(const QString& sourceId);
 
     // ---- layers -----------------------------------------------------------------------------
 

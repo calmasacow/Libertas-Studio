@@ -31,6 +31,8 @@ struct Fixture {
     Id effect;
     Id canvas;
     Id deck;
+    Id existing_source;
+    Id spare_canvas;
 
     Fixture() {
         project = make_default_project("Show");
@@ -58,6 +60,20 @@ struct Fixture {
 
         project.scenes[0].roots.push_back(std::move(g));
         project.scenes[0].roots.push_back(std::move(l));
+
+        Source src;
+        src.id = Id::generate();
+        src.name = "Desk Cam";
+        src.type = "source.v4l2";
+        existing_source = src.id;
+        project.sources.push_back(std::move(src));
+
+        // A canvas nothing renders to, so the removal case has something it is allowed to take.
+        Canvas spare;
+        spare.id = Id::generate();
+        spare.name = "Spare";
+        spare_canvas = spare.id;
+        project.canvases.push_back(std::move(spare));
     }
 };
 
@@ -109,6 +125,25 @@ std::vector<Command> every_command_shape(const Fixture& f) {
     bl.mode = BlendMode::Multiply;
     bl.opacity = 0.5;
 
+    Source src;
+    src.id = Id::generate();
+    src.name = "Camera";
+    src.type = "source.v4l2";
+    src.settings.emplace("device", std::string{"/dev/video0"});
+
+    Source changed = f.project.sources.empty() ? src : f.project.sources.front();
+    changed.name = "Renamed source";
+
+    Canvas vertical;
+    vertical.id = Id::generate();
+    vertical.name = "Vertical";
+    vertical.width = 1080;
+    vertical.height = 1920;
+
+    Canvas resized = f.project.canvases.front();
+    resized.width = 2560;
+    resized.height = 1440;
+
     return {
         SetProjectName{"Renamed"},
         AddScene{fresh, 1},
@@ -131,6 +166,13 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         SetDeckProgram{f.deck, std::nullopt},
         SetDeckPreview{f.deck, f.scene},
         SetCanvasEmergencyScene{f.canvas, f.scene},
+        SetLayerSource{f.scene, f.loose, f.existing_source},
+        AddSource{src, 0},
+        RemoveSource{f.existing_source},
+        SetSource{changed},
+        AddCanvas{vertical, 1},
+        RemoveCanvas{f.spare_canvas},
+        SetCanvas{resized},
     };
 }
 
@@ -604,6 +646,69 @@ LTEST_CASE(designating_an_emergency_scene_is_an_ordinary_undoable_command) {
     // check_emergency_scene before it ever issues this.
     CHECK(!apply(f.project, SetCanvasEmergencyScene{Id::generate(), f.scene}).has_value());
     CHECK(apply(f.project, SetCanvasEmergencyScene{f.canvas, Id::generate()}).has_value());
+}
+
+LTEST_CASE(a_layer_can_be_bound_to_a_source_and_unbound) {
+    Fixture f;
+    DocumentHistory h{f.project};
+    REQUIRE(h.run(SetLayerSource{f.scene, f.loose, f.existing_source}).has_value());
+    const Node* n = find_node(h.project().scenes[0].roots, f.loose);
+    REQUIRE(n != nullptr);
+    CHECK(std::get<LayerData>(n->data).source.value() == f.existing_source);
+
+    REQUIRE(h.undo().has_value());
+    CHECK(!std::get<LayerData>(find_node(h.project().scenes[0].roots, f.loose)->data)
+               .source.has_value());
+
+    // A group is not a layer, so there is nothing to bind.
+    CHECK(!apply(f.project, SetLayerSource{f.scene, f.group, f.existing_source}).has_value());
+}
+
+LTEST_CASE(a_canvas_that_something_renders_to_cannot_be_removed) {
+    // Unlike a source, a deck or output without a canvas has no output surface at all -- which
+    // validate() calls an error, so refusing here is the model's own rule rather than an extra
+    // one. ADR-0023's line again: a command refuses exactly what the model refuses.
+    Fixture f;
+    const Project before = f.project;
+    const auto r = apply(f.project, RemoveCanvas{f.canvas});
+    CHECK(!r.has_value());
+    CHECK(r.error().find("point it at another one first") != std::string::npos);
+    CHECK(f.project == before);
+
+    // The spare one, which nothing renders to, comes away cleanly.
+    check_reversible("remove spare canvas", [](const Fixture& fx) {
+        return Command{RemoveCanvas{fx.spare_canvas}};
+    });
+}
+
+LTEST_CASE(removing_a_source_leaves_its_layers_pointing_at_nothing_and_says_so) {
+    Fixture f;
+    DocumentHistory h{f.project};
+    REQUIRE(h.run(SetLayerSource{f.scene, f.loose, f.existing_source}).has_value());
+    REQUIRE(h.run(RemoveSource{f.existing_source}).has_value());
+
+    CHECK_MSG(is_valid(h.project()), "a dangling source reference was treated as unrenderable");
+    const auto problems = validate(h.project());
+    CHECK(!problems.empty());
+    CHECK(problems.front().severity == Severity::Warning);
+
+    // And undoing brings the source back with the binding intact.
+    REQUIRE(h.undo().has_value());
+    CHECK(h.project().source(f.existing_source) != nullptr);
+    CHECK(validate(h.project()).empty());
+}
+
+LTEST_CASE(a_canvas_cannot_be_given_an_impossible_size_or_rate) {
+    Fixture f;
+    const Project before = f.project;
+    Canvas bad = f.project.canvases.front();
+    bad.width = 0;
+    CHECK(!apply(f.project, SetCanvas{bad}).has_value());
+
+    bad = f.project.canvases.front();
+    bad.fps = Fps{30, 0};
+    CHECK(!apply(f.project, SetCanvas{bad}).has_value());
+    CHECK(f.project == before);
 }
 
 LTEST_MAIN("command")

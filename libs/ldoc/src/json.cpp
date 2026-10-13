@@ -827,6 +827,32 @@ Node dec_node(Rd& rd, const Jv& o, std::string_view path) {
     return n;
 }
 
+Canvas dec_canvas(Rd& rd, const Jv& v, std::string_view path) {
+    Canvas c;
+    c.id = rd.id(v, "id", path);
+    c.name = rd.text(v, "name", path);
+    c.width = rd.integer32(v, "width", path, c.width);
+    c.height = rd.integer32(v, "height", path, c.height);
+    if (const Jv* f = rd.object(v, "fps", path)) {
+        c.fps.num = rd.integer32(*f, "num", path, c.fps.num);
+        c.fps.den = rd.integer32(*f, "den", path, c.fps.den);
+    }
+    c.color_space = rd.enumerated(v, "color_space", path, color_space_from_string,
+                                  c.color_space);
+    c.emergency_scene = rd.id_opt(v, "emergency_scene", path);
+    return c;
+}
+
+Source dec_source(Rd& rd, const Jv& v, std::string_view path) {
+    Source s;
+    s.id = rd.id(v, "id", path);
+    s.name = rd.text(v, "name", path);
+    s.type = rd.text(v, "type", path);
+    s.settings = dec_params(rd, v, "settings", path);
+    s.asset = rd.id_opt(v, "asset", path);
+    return s;
+}
+
 Scene dec_scene(Rd& rd, const Jv& root, std::string_view path) {
     Scene s;
     s.id = rd.id(root, "id", path);
@@ -978,21 +1004,8 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
     p.generation = gen < 0 ? 0 : static_cast<std::uint64_t>(gen);
 
     if (const Jv* a = rd.array(*root, "canvases", "project")) {
-        for (const Jv& v : *a) {
-            Canvas c;
-            c.id = rd.id(v, "id", "project.canvases");
-            c.name = rd.text(v, "name", "project.canvases");
-            c.width = rd.integer32(v, "width", "project.canvases", c.width);
-            c.height = rd.integer32(v, "height", "project.canvases", c.height);
-            if (const Jv* f = rd.object(v, "fps", "project.canvases")) {
-                c.fps.num = rd.integer32(*f, "num", "project.canvases", c.fps.num);
-                c.fps.den = rd.integer32(*f, "den", "project.canvases", c.fps.den);
-            }
-            c.color_space = rd.enumerated(v, "color_space", "project.canvases",
-                                          color_space_from_string, c.color_space);
-            c.emergency_scene = rd.id_opt(v, "emergency_scene", "project.canvases");
-            p.canvases.push_back(std::move(c));
-        }
+        for (const Jv& v : *a)
+            p.canvases.push_back(dec_canvas(rd, v, "project.canvases"));
     }
 
     if (const Jv* a = rd.array(*root, "buses", "project")) {
@@ -1029,15 +1042,8 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
     }
 
     if (const Jv* a = rd.array(*root, "sources", "project")) {
-        for (const Jv& v : *a) {
-            Source s;
-            s.id = rd.id(v, "id", "project.sources");
-            s.name = rd.text(v, "name", "project.sources");
-            s.type = rd.text(v, "type", "project.sources");
-            s.settings = dec_params(rd, v, "settings", "project.sources");
-            s.asset = rd.id_opt(v, "asset", "project.sources");
-            p.sources.push_back(std::move(s));
-        }
+        for (const Jv& v : *a)
+            p.sources.push_back(dec_source(rd, v, "project.sources"));
     }
 
     if (const Jv* a = rd.array(*root, "outputs", "project")) {

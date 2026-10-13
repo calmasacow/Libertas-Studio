@@ -40,6 +40,8 @@ Item {
                 return propertiesComponent;
             case "shortcuts":
                 return shortcutsComponent;
+            case "inputs":
+                return inputsComponent;
             default:
                 return null;
             }
@@ -68,6 +70,12 @@ Item {
         id: shortcutsComponent
 
         ShortcutsPanel {}
+    }
+
+    Component {
+        id: inputsComponent
+
+        InputsPanel {}
     }
 
     // The program canvas. ADR-0015 rule 2: it is a region of this surface, never a separate OS
@@ -143,7 +151,8 @@ Item {
     Column {
         visible: body.panelId !== "program" && body.panelId !== "" &&
                  body.panelId !== "scenes" && body.panelId !== "sources" &&
-                 body.panelId !== "properties" && body.panelId !== "shortcuts"
+                 body.panelId !== "properties" && body.panelId !== "shortcuts" &&
+                 body.panelId !== "inputs"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top

@@ -333,6 +333,77 @@ void Document::setEmergencyScene(const QString& id) {
     run(ldoc::SetCanvasEmergencyScene{canvas->id, *parsed});
 }
 
+// ---- inputs -------------------------------------------------------------------------------
+
+QVariantList Document::sourceTypes() const {
+    struct Entry {
+        const char* id;
+        const char* title;
+    };
+    // Ordered so the ones that are safe in an emergency scene come first, since that is the
+    // list an operator is reading when it matters most (ADR-0025).
+    static constexpr Entry kTypes[] = {
+        {"source.media", "Media File"},   {"source.image", "Image"},
+        {"source.text", "Text"},          {"source.color", "Colour"},
+        {"source.screen", "Screen"},      {"source.window", "Window"},
+        {"source.v4l2", "Camera"},        {"source.browser", "Browser"},
+        {"source.audio-input", "Audio Input"},
+        {"source.audio-output", "Audio Output"},
+    };
+    QVariantList out;
+    for (const Entry& e : kTypes) {
+        QVariantMap m;
+        m["id"] = QString::fromLatin1(e.id);
+        m["title"] = QString::fromLatin1(e.title);
+        m["selfContained"] = ldoc::is_self_contained(e.id);
+        out.append(m);
+    }
+    return out;
+}
+
+void Document::addSource(const QString& name, const QString& type) {
+    if (type.isEmpty())
+        return;
+    ldoc::Source src;
+    src.id = ldoc::Id::generate();
+    src.name = name.isEmpty() ? std::string{"Input"} : to_std(name);
+    src.type = to_std(type);
+    // A media source in an emergency scene has to loop or the net expires (ADR-0025), and
+    // looping is the right default for every other use of one too.
+    if (src.type == "source.media")
+        src.settings.emplace("loop", true);
+    run(ldoc::AddSource{std::move(src), session_->project().sources.size()});
+}
+
+void Document::removeSource(const QString& id) {
+    const auto parsed = parse_id(id);
+    if (parsed)
+        run(ldoc::RemoveSource{*parsed});
+}
+
+void Document::renameSource(const QString& id, const QString& name) {
+    const auto parsed = parse_id(id);
+    const ldoc::Source* src = parsed ? session_->project().source(*parsed) : nullptr;
+    if (!src)
+        return;
+    ldoc::Source copy = *src;
+    copy.name = to_std(name);
+    run(ldoc::SetSource{std::move(copy)});
+}
+
+void Document::bindSelectedLayer(const QString& sourceId) {
+    const ldoc::Scene* s = current_scene();
+    const ldoc::Node* n = current_layer();
+    if (!s || !n)
+        return;
+    if (!std::holds_alternative<ldoc::LayerData>(n->data)) {
+        emit notice(QStringLiteral("Only a layer can be bound to an input."));
+        return;
+    }
+    run(ldoc::SetLayerSource{s->id, n->id,
+                             sourceId.isEmpty() ? std::nullopt : parse_id(sourceId)});
+}
+
 // ---- layers -----------------------------------------------------------------------------------
 
 namespace {
