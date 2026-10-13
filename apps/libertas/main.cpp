@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: Libertas-Studio contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "inspect.hpp"
 #include "probe.hpp"
 
 #include <lcore/log.hpp>
 
+#include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <cstring>
 #include <string_view>
 #include <vector>
@@ -17,6 +20,7 @@ void usage() {
 
 usage:
   libertas probe [--strict]   report this machine's capture/encode/theme environment
+  libertas project <dir> [-v] describe a project directory and what is wrong with it
   libertas --version          print version
   libertas --help             this message
 
@@ -46,6 +50,15 @@ int main(int argc, char** argv) {
     if (cmd == "--version" || cmd == "-V") {
         std::puts("libertas " LIBERTAS_VERSION);
         return 0;
+    }
+    if (cmd == "project") {
+        if (args.size() < 2) {
+            std::fputs("libertas: project needs a directory\n", stderr);
+            return 2;
+        }
+        const bool verbose = std::find(args.begin(), args.end(), "-v") != args.end() ||
+                             std::find(args.begin(), args.end(), "--verbose") != args.end();
+        return libertas::inspect_project(std::filesystem::path(std::string{args[1]}), verbose);
     }
     if (cmd == "probe") {
         bool strict = false;
