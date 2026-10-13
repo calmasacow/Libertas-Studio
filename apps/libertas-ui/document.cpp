@@ -485,6 +485,10 @@ void Document::setLayerBlendMode(const QString& mode) {
 
 // ---- history and persistence -------------------------------------------------------------------
 
+const ldoc::Project& Document::projectForBindings() const { return session_->project(); }
+
+void Document::runCommand(const ldoc::Command& command) { run(command); }
+
 void Document::undo() {
     if (const auto r = session_->undo(); !r)
         emit notice(qstr(r.error()));

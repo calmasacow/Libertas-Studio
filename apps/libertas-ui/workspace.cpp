@@ -31,6 +31,7 @@ constexpr std::array kKnownPanels = {
     KnownPanel{"controls", "Controls"},
     KnownPanel{"stats", "Stats"},
     KnownPanel{"log", "Log"},
+    KnownPanel{"shortcuts", "Shortcuts"},
 };
 
 QRectF to_qrect(const llayout::Rect& r) {

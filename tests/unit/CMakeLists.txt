@@ -14,6 +14,7 @@ function(libertas_unit_test name)
     set_tests_properties(${name} PROPERTIES TIMEOUT 120)
 endfunction()
 
+libertas_unit_test(test_actions          libertas::lsession)
 libertas_unit_test(test_command          libertas::ldoc)
 libertas_unit_test(test_document         libertas::ldoc)
 libertas_unit_test(test_dropzone        libertas::llayout)

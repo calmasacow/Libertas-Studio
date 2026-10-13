@@ -17,6 +17,8 @@ qt_add_executable(libertas-ui
     document.hpp
     documentmodels.cpp
     documentmodels.hpp
+    shortcuts.cpp
+    shortcuts.hpp
     layoutmodels.cpp
     layoutmodels.hpp
     main.cpp
@@ -45,6 +47,7 @@ qt_add_qml_module(libertas-ui
         qml/PanelFrame.qml
         qml/PropertiesPanel.qml
         qml/ScenesPanel.qml
+        qml/ShortcutsPanel.qml
         qml/StatusBar.qml
         qml/TabStrip.qml
         qml/ToolButton.qml

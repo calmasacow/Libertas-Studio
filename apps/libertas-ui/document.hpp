@@ -130,6 +130,16 @@ public:
     Q_INVOKABLE void redo();
     Q_INVOKABLE void save();
 
+    // ---- for other C++ bridges, deliberately not Q_INVOKABLE -------------------------------
+    //
+    // Reachable from C++ so that Shortcuts can resolve an action against the real project and
+    // hand back the command it produced; not reachable from QML, which must keep going through
+    // the typed invokables above. A const reference either way: nothing outside the session
+    // holds a mutable Project.
+
+    [[nodiscard]] const ldoc::Project& projectForBindings() const;
+    void runCommand(const ldoc::Command& command);
+
 signals:
     void changed();
     void selectionChanged();

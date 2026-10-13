@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "document.hpp"
+#include "shortcuts.hpp"
 #include "theme.hpp"
 #include "workspace.hpp"
 
@@ -16,10 +17,12 @@
 #include <QEventLoop>
 #include <QImage>
 #include <QQuickItem>
+#include <QVariantMap>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QImage>
 #include <QQuickItem>
+#include <QVariantMap>
 #include <QQuickWindow>
 #include <QTimer>
 #include <QUrl>
@@ -137,6 +140,7 @@ int main(int argc, char** argv) {
         parser.isSet(project_opt)
             ? std::filesystem::path(parser.value(project_opt).toStdString())
             : std::filesystem::path{});
+    libertas::ui::Shortcuts::configure(config_dir() / "bindings.toml");
 
     QQmlApplicationEngine engine;
 
@@ -147,11 +151,14 @@ int main(int argc, char** argv) {
     auto* theme_ptr = engine.singletonInstance<libertas::ui::Theme*>("Libertas", "Theme");
     auto* document_ptr =
         engine.singletonInstance<libertas::ui::Document*>("Libertas", "Document");
-    if (!workspace_ptr || !theme_ptr || !document_ptr)
+    auto* shortcuts_ptr =
+        engine.singletonInstance<libertas::ui::Shortcuts*>("Libertas", "Shortcuts");
+    if (!workspace_ptr || !theme_ptr || !document_ptr || !shortcuts_ptr)
         return fail("the singletons could not be created");
     libertas::ui::Workspace& workspace = *workspace_ptr;
     libertas::ui::Theme& theme = *theme_ptr;
     libertas::ui::Document& document = *document_ptr;
+    libertas::ui::Shortcuts& shortcuts = *shortcuts_ptr;
 
     const auto say = [](const QString& t) {
         std::fprintf(stderr, "notice: %s\n", qPrintable(t));
@@ -159,6 +166,7 @@ int main(int argc, char** argv) {
     QObject::connect(&workspace, &libertas::ui::Workspace::notice, &app, say);
     QObject::connect(&theme, &libertas::ui::Theme::notice, &app, say);
     QObject::connect(&document, &libertas::ui::Document::notice, &app, say);
+    QObject::connect(&shortcuts, &libertas::ui::Shortcuts::notice, &app, say);
 
     engine.load(QUrl(QStringLiteral("qrc:/qt/qml/Libertas/qml/Main.qml")));
 
@@ -501,6 +509,49 @@ int main(int argc, char** argv) {
             settle();
             report(!document.dirty(), "the document saves");
         }
+
+        // ---- actions and bindings -----------------------------------------------------------
+        report(shortcuts.bindingsModel()->rowCount() > 10, "the bindings table is populated");
+        report(!shortcuts.applicationBindings().isEmpty(),
+               "and the application ones are instantiated as shortcuts");
+
+        // Ctrl+Z reaches the document, not the layout: with one stack there is no choice, only a
+        // gamble about which thing a keystroke reaches.
+        document.addScene(QStringLiteral("Undo me"));
+        settle();
+        const int scenes_now = document.scenesModel()->rowCount();
+        shortcuts.perform(QStringLiteral("edit.undo"));
+        settle();
+        report(document.scenesModel()->rowCount() == scenes_now - 1,
+               "performing edit.undo undoes a document change");
+
+        // Rebinding writes through and survives being read back.
+        shortcuts.setTrigger(QStringLiteral("edit.undo"), QStringLiteral("Ctrl+U"));
+        settle();
+        bool rebound = false;
+        for (const QVariant& v : shortcuts.applicationBindings()) {
+            const QVariantMap m = v.toMap();
+            if (m.value("ref").toString() == QLatin1String("edit.undo"))
+                rebound = m.value("trigger").toString() == QLatin1String("Ctrl+U");
+        }
+        report(rebound, "a rebinding reaches the shortcut list");
+        shortcuts.resetTrigger(QStringLiteral("edit.undo"));
+
+        report(shortcuts.formatKey(Qt::Key_S, Qt::ControlModifier) == QLatin1String("Ctrl+S"),
+               "a key event formats as a binding");
+        report(shortcuts.formatKey(Qt::Key_Control, Qt::ControlModifier).isEmpty(),
+               "and a bare modifier is refused, since it would never fire");
+
+        // An action nothing can perform yet says so rather than doing nothing silently.
+        QString unavailable;
+        QMetaObject::Connection sc = QObject::connect(
+            &shortcuts, &libertas::ui::Shortcuts::notice,
+            [&unavailable](const QString& t) { unavailable = t; });
+        shortcuts.perform(QStringLiteral("output.toggle-stream"));
+        settle();
+        QObject::disconnect(sc);
+        report(unavailable.contains(QLatin1String("not wired up")),
+               "an action with nothing behind it yet says so");
         std::fprintf(stderr, "\n  theme: %s (%s), layout: %s\n", qPrintable(theme.name()),
                      theme.dark() ? "dark" : "light", qPrintable(workspace.layoutSource()));
         std::fprintf(stderr, "  %s\n", rc == 0 ? "shell self-check passed" : "SHELL CHECK FAILED");

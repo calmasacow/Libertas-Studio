@@ -3,6 +3,7 @@
 
 pragma ComponentBehavior: Bound
 
+import QtQml
 import QtQuick
 import Libertas
 
@@ -56,38 +57,32 @@ Window {
         }
     }
 
+    Connections {
+        target: Shortcuts
+        function onNotice(text) {
+            root.notice = text;
+            noticeTimer.restart();
+        }
+    }
+
     // ADR-0016 rule 7: Escape cancels an in-flight drag. A mis-drop costs one keystroke.
     Shortcut {
         sequences: ["Escape"]
         onActivated: Workspace.cancelDrag()
     }
-    // Ctrl+Z is the *document's* undo, because that is what it is everywhere else and an
-    // operator should never have to work out which stack it will reach. ADR-0021 kept the two
-    // stacks separate precisely so this choice was available; the layout stack is still there,
-    // on its own binding, which is also how Premiere and After Effects treat a workspace change.
-    Shortcut {
-        sequences: ["Ctrl+Z"]
-        onActivated: Document.undo()
-    }
-    Shortcut {
-        sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]
-        onActivated: Document.redo()
-    }
-    Shortcut {
-        sequences: ["Ctrl+S"]
-        onActivated: Document.save()
-    }
-    Shortcut {
-        sequences: ["Ctrl+Alt+Z"]
-        onActivated: Workspace.undo()
-    }
-    Shortcut {
-        sequences: ["Ctrl+Alt+Shift+Z"]
-        onActivated: Workspace.redo()
-    }
-    Shortcut {
-        sequences: ["Ctrl+Shift+R"]
-        onActivated: Workspace.resetLayout()
+    // Every application-scope binding comes from the registry rather than being written here,
+    // so the table in settings and the keys that actually fire cannot disagree. Global ones are
+    // deliberately absent: they are delivered by the portal to the session process, because a
+    // hotkey that stops working when the frontend dies is the design ADR-0024 rejects.
+    Instantiator {
+        model: Shortcuts.applicationBindings
+
+        delegate: Shortcut {
+            required property var modelData
+
+            sequence: modelData.trigger
+            onActivated: Shortcuts.perform(modelData.ref)
+        }
     }
 
     Item {

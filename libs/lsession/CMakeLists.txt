@@ -8,10 +8,16 @@
 # against a document it holds directly and the split becomes a rewrite rather than a change of
 # transport. LocalSession implements it in-process today; an lipc proxy implements it later.
 
+find_package(tomlplusplus CONFIG REQUIRED)
+
 add_library(lsession STATIC
+    src/actions.cpp
     src/local_session.cpp
 )
 add_library(libertas::lsession ALIAS lsession)
 
 target_include_directories(lsession PUBLIC include)
-target_link_libraries(lsession PUBLIC libertas::flags libertas::ldoc)
+target_link_libraries(lsession
+    PUBLIC libertas::flags libertas::ldoc
+    PRIVATE tomlplusplus::tomlplusplus
+)
