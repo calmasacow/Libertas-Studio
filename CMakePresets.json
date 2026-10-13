@@ -69,6 +69,12 @@
       "execution": { "noTestsAction": "error", "stopOnFailure": false }
     },
     {
+      "name": "linux-ci",
+      "configurePreset": "linux-ci",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    {
       "name": "linux-asan",
       "configurePreset": "linux-asan",
       "output": { "outputOnFailure": true },

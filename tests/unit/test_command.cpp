@@ -33,6 +33,8 @@ struct Fixture {
     Id deck;
     Id existing_source;
     Id spare_canvas;
+    Id existing_bus;
+    Id existing_output;
 
     Fixture() {
         project = make_default_project("Show");
@@ -74,6 +76,18 @@ struct Fixture {
         spare_scene.id = Id::generate();
         spare_scene.name = "Second";
         project.scenes.push_back(std::move(spare_scene));
+
+        existing_bus = project.buses.front().id;
+
+        Output out;
+        out.id = Id::generate();
+        out.name = "YouTube";
+        out.canvas = canvas;
+        out.encoder.bitrate_kbps = 9000;
+        out.destination.url = "rtmps://example/live";
+        out.destination.credential_ref = "youtube-main";
+        existing_output = out.id;
+        project.outputs.push_back(std::move(out));
 
         // A canvas nothing renders to, so the removal case has something it is allowed to take.
         Canvas spare;
@@ -151,6 +165,27 @@ std::vector<Command> every_command_shape(const Fixture& f) {
     resized.width = 2560;
     resized.height = 1440;
 
+    Bus submix;
+    submix.id = Id::generate();
+    submix.name = "Game";
+    submix.kind = BusKind::Submix;
+
+    Bus louder = f.project.buses.front();
+    louder.gain_db = -3.0;
+
+    Output twitch;
+    twitch.id = Id::generate();
+    twitch.name = "Twitch";
+    twitch.canvas = f.canvas;
+    twitch.encoder.bitrate_kbps = 6000;
+    twitch.destination.url = "rtmp://ingest.example/app";
+
+    Output rebitrated = f.project.outputs.front();
+    rebitrated.encoder.bitrate_kbps = 12000;
+
+    Settings tuned = f.project.settings;
+    tuned.sample_rate = 44100;
+
     return {
         SetProjectName{"Renamed"},
         AddScene{fresh, 1},
@@ -181,6 +216,13 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         AddCanvas{vertical, 1},
         RemoveCanvas{f.spare_canvas},
         SetCanvas{resized},
+        AddBus{submix, 0},
+        RemoveBus{f.existing_bus},
+        SetBus{louder},
+        AddOutput{twitch, 0},
+        RemoveOutput{f.existing_output},
+        SetOutput{rebitrated},
+        SetProjectSettings{tuned},
     };
 }
 
@@ -201,7 +243,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
     const Id canvas = p.canvases[rng() % p.canvases.size()].id;
     const Id deck = p.decks[rng() % p.decks.size()].id;
 
-    switch (rng() % 18) {
+    switch (rng() % 25) {
     case 0:
         return SetProjectName{std::format("Show {}", rng() % 100)};
     case 1: {
@@ -264,6 +306,50 @@ Command random_command(std::mt19937& rng, const Project& p) {
     case 15:
         return SetCanvasEmergencyScene{canvas,
                                        (rng() % 3) ? std::optional<Id>{scene.id} : std::nullopt};
+    case 17: {
+        Bus b;
+        b.id = Id::generate();
+        b.name = std::format("Bus {}", rng() % 100);
+        b.kind = static_cast<BusKind>(rng() % 3);
+        b.gain_db = static_cast<double>(rng() % 24) - 12.0;
+        return AddBus{b, rng() % (p.buses.size() + 1)};
+    }
+    case 18:
+        return RemoveBus{p.buses.empty() ? Id::generate()
+                                         : p.buses[rng() % p.buses.size()].id};
+    case 19: {
+        if (p.buses.empty())
+            return SetProjectName{"no buses"};
+        Bus b = p.buses[rng() % p.buses.size()];
+        b.gain_db = static_cast<double>(rng() % 24) - 12.0;
+        b.mute = (rng() % 2) == 0;
+        return SetBus{b};
+    }
+    case 20: {
+        Output o;
+        o.id = Id::generate();
+        o.name = std::format("Out {}", rng() % 100);
+        o.canvas = canvas;
+        o.encoder.bitrate_kbps = 1000 + static_cast<int>(rng() % 20000);
+        o.destination.url = "rtmp://example/app";
+        return AddOutput{o, rng() % (p.outputs.size() + 1)};
+    }
+    case 21:
+        return RemoveOutput{p.outputs.empty() ? Id::generate()
+                                              : p.outputs[rng() % p.outputs.size()].id};
+    case 22: {
+        if (p.outputs.empty())
+            return SetProjectName{"no outputs"};
+        Output o = p.outputs[rng() % p.outputs.size()];
+        o.encoder.bitrate_kbps = 1000 + static_cast<int>(rng() % 20000);
+        o.canvas = canvas;
+        return SetOutput{o};
+    }
+    case 23: {
+        Settings st = p.settings;
+        st.sample_rate = (rng() % 2) ? 48000 : 44100;
+        return SetProjectSettings{st};
+    }
     default:
         return SetDeckPreview{deck, (rng() % 3) ? std::optional<Id>{scene.id} : std::nullopt};
     }
@@ -719,6 +805,58 @@ LTEST_CASE(a_canvas_cannot_be_given_an_impossible_size_or_rate) {
     bad.fps = Fps{30, 0};
     CHECK(!apply(f.project, SetCanvas{bad}).has_value());
     CHECK(f.project == before);
+}
+
+LTEST_CASE(an_output_needs_a_canvas_but_a_bus_does_not_need_its_listeners) {
+    // The same line again, landing differently because the model does. An output with no canvas
+    // has nothing to encode, which validate() calls an error, so the command refuses it. A bus
+    // that something still routes to is only a dangling reference -- a warning -- so removing it
+    // is allowed and the complaint comes later.
+    Fixture f;
+    const Project before = f.project;
+
+    Output orphan;
+    orphan.id = Id::generate();
+    orphan.name = "Nowhere";
+    orphan.canvas = Id::generate();
+    orphan.encoder.bitrate_kbps = 6000;
+    CHECK(!apply(f.project, AddOutput{orphan, 0}).has_value());
+    CHECK(f.project == before);
+
+    Output broke = f.project.outputs.front();
+    broke.encoder.bitrate_kbps = 0;
+    CHECK(!apply(f.project, SetOutput{broke}).has_value());
+
+    Output live = f.project.outputs.front();
+    live.enabled = true;
+    live.destination.url.clear();
+    CHECK_MSG(!apply(f.project, SetOutput{live}).has_value(),
+              "an output was enabled with nowhere to send to");
+    CHECK(f.project == before);
+
+    // Removing a bus a layer routes to is allowed, and reported afterwards.
+    DocumentHistory h{f.project};
+    Node mic = make_node(NodeKind::Layer, "Mic");
+    std::get<LayerData>(mic.data).audio.bus = f.existing_bus;
+    REQUIRE(h.run(AddNode{f.scene, std::nullopt, 0, std::move(mic)}).has_value());
+    REQUIRE(h.run(RemoveBus{f.existing_bus}).has_value());
+    CHECK_MSG(is_valid(h.project()), "a dangling bus reference was treated as unrenderable");
+    CHECK(!validate(h.project()).empty());
+}
+
+LTEST_CASE(project_settings_are_undoable_and_bounded) {
+    Fixture f;
+    DocumentHistory h{f.project};
+    Settings bad = f.project.settings;
+    bad.sample_rate = 0;
+    CHECK(!h.run(SetProjectSettings{bad}).has_value());
+
+    Settings good = f.project.settings;
+    good.sample_rate = 44100;
+    REQUIRE(h.run(SetProjectSettings{good}).has_value());
+    CHECK_EQ(h.project().settings.sample_rate, 44100);
+    REQUIRE(h.undo().has_value());
+    CHECK_EQ(h.project().settings.sample_rate, 48000);
 }
 
 LTEST_MAIN("command")

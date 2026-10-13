@@ -843,6 +843,58 @@ Canvas dec_canvas(Rd& rd, const Jv& v, std::string_view path) {
     return c;
 }
 
+Bus dec_bus(Rd& rd, const Jv& v, std::string_view path) {
+    Bus b;
+    b.id = rd.id(v, "id", path);
+    b.name = rd.text(v, "name", path);
+    b.kind = rd.enumerated(v, "kind", path, bus_kind_from_string, b.kind);
+    b.channels = rd.integer32(v, "channels", path, b.channels);
+    b.inserts = dec_effects(rd, v, "inserts", path);
+    b.sends = dec_sends(rd, v, "sends", path);
+    b.gain_db = rd.number(v, "gain_db", path, 0.0);
+    b.pan = rd.number(v, "pan", path, 0.0);
+    b.mute = rd.boolean(v, "mute", path, false);
+    b.solo = rd.boolean(v, "solo", path, false);
+    b.delay_ms = rd.number(v, "delay_ms", path, 0.0);
+    return b;
+}
+
+Output dec_output(Rd& rd, const Jv& v, std::string_view path) {
+    Output o;
+    o.id = rd.id(v, "id", path);
+    o.name = rd.text(v, "name", path);
+    o.canvas = rd.id(v, "canvas", path);
+    if (const Jv* e = rd.object(v, "encoder", path)) {
+        o.encoder.codec = rd.text(*e, "codec", path, o.encoder.codec);
+        o.encoder.implementation = rd.text(*e, "implementation", path,
+                                           o.encoder.implementation);
+        o.encoder.bitrate_kbps = rd.integer32(*e, "bitrate_kbps", path,
+                                              o.encoder.bitrate_kbps);
+        o.encoder.keyframe_interval_ms =
+            rd.integer32(*e, "keyframe_interval_ms", path, o.encoder.keyframe_interval_ms);
+        o.encoder.preset = rd.text(*e, "preset", path);
+        o.encoder.rate_control = rd.text(*e, "rate_control", path, o.encoder.rate_control);
+        o.encoder.extra = dec_params(rd, *e, "extra", path);
+    }
+    if (const Jv* d = rd.object(v, "destination", path)) {
+        o.destination.kind = rd.enumerated(*d, "kind", path, destination_kind_from_string,
+                                           o.destination.kind);
+        o.destination.url = rd.text(*d, "url", path);
+        o.destination.credential_ref = rd.text(*d, "credential_ref", path);
+    }
+    o.enabled = rd.boolean(v, "enabled", path, false);
+    return o;
+}
+
+Settings dec_settings(Rd& rd, const Jv& v, std::string_view path) {
+    Settings s;
+    s.sample_rate = rd.integer32(v, "sample_rate", path, s.sample_rate);
+    s.render_queue_frames = rd.integer32(v, "render_queue_frames", path,
+                                         s.render_queue_frames);
+    s.extra = dec_params(rd, v, "extra", path);
+    return s;
+}
+
 Source dec_source(Rd& rd, const Jv& v, std::string_view path) {
     Source s;
     s.id = rd.id(v, "id", path);
@@ -1028,21 +1080,8 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
     }
 
     if (const Jv* a = rd.array(*root, "buses", "project")) {
-        for (const Jv& v : *a) {
-            Bus b;
-            b.id = rd.id(v, "id", "project.buses");
-            b.name = rd.text(v, "name", "project.buses");
-            b.kind = rd.enumerated(v, "kind", "project.buses", bus_kind_from_string, b.kind);
-            b.channels = rd.integer32(v, "channels", "project.buses", b.channels);
-            b.inserts = dec_effects(rd, v, "inserts", "project.buses");
-            b.sends = dec_sends(rd, v, "sends", "project.buses");
-            b.gain_db = rd.number(v, "gain_db", "project.buses", 0.0);
-            b.pan = rd.number(v, "pan", "project.buses", 0.0);
-            b.mute = rd.boolean(v, "mute", "project.buses", false);
-            b.solo = rd.boolean(v, "solo", "project.buses", false);
-            b.delay_ms = rd.number(v, "delay_ms", "project.buses", 0.0);
-            p.buses.push_back(std::move(b));
-        }
+        for (const Jv& v : *a)
+            p.buses.push_back(dec_bus(rd, v, "project.buses"));
     }
 
     if (const Jv* a = rd.array(*root, "decks", "project")) {
@@ -1066,44 +1105,12 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
     }
 
     if (const Jv* a = rd.array(*root, "outputs", "project")) {
-        for (const Jv& v : *a) {
-            Output o;
-            o.id = rd.id(v, "id", "project.outputs");
-            o.name = rd.text(v, "name", "project.outputs");
-            o.canvas = rd.id(v, "canvas", "project.outputs");
-            if (const Jv* e = rd.object(v, "encoder", "project.outputs")) {
-                o.encoder.codec = rd.text(*e, "codec", "project.outputs", o.encoder.codec);
-                o.encoder.implementation =
-                    rd.text(*e, "implementation", "project.outputs", o.encoder.implementation);
-                o.encoder.bitrate_kbps =
-                    rd.integer32(*e, "bitrate_kbps", "project.outputs", o.encoder.bitrate_kbps);
-                o.encoder.keyframe_interval_ms = rd.integer32(
-                    *e, "keyframe_interval_ms", "project.outputs", o.encoder.keyframe_interval_ms);
-                o.encoder.preset = rd.text(*e, "preset", "project.outputs");
-                o.encoder.rate_control =
-                    rd.text(*e, "rate_control", "project.outputs", o.encoder.rate_control);
-                o.encoder.extra = dec_params(rd, *e, "extra", "project.outputs");
-            }
-            if (const Jv* d = rd.object(v, "destination", "project.outputs")) {
-                o.destination.kind = rd.enumerated(*d, "kind", "project.outputs",
-                                                   destination_kind_from_string,
-                                                   o.destination.kind);
-                o.destination.url = rd.text(*d, "url", "project.outputs");
-                o.destination.credential_ref = rd.text(*d, "credential_ref", "project.outputs");
-            }
-            o.enabled = rd.boolean(v, "enabled", "project.outputs", false);
-            p.outputs.push_back(std::move(o));
-        }
+        for (const Jv& v : *a)
+            p.outputs.push_back(dec_output(rd, v, "project.outputs"));
     }
 
-    if (const Jv* s = rd.object(*root, "settings", "project")) {
-        p.settings.sample_rate =
-            rd.integer32(*s, "sample_rate", "project.settings", p.settings.sample_rate);
-        p.settings.render_queue_frames = rd.integer32(*s, "render_queue_frames",
-                                                      "project.settings",
-                                                      p.settings.render_queue_frames);
-        p.settings.extra = dec_params(rd, *s, "extra", "project.settings");
-    }
+    if (const Jv* sv = rd.object(*root, "settings", "project"))
+        p.settings = dec_settings(rd, *sv, "project.settings");
 
     std::vector<SceneRef> scene_refs;
     if (const Jv* a = rd.array(*root, "scenes", "project")) {

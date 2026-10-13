@@ -224,6 +224,49 @@ struct SetCanvas {
     friend bool operator==(const SetCanvas&, const SetCanvas&) = default;
 };
 
+// ---- buses ----------------------------------------------------------------------------------
+
+struct AddBus {
+    Bus bus;
+    std::size_t index = 0;
+    friend bool operator==(const AddBus&, const AddBus&) = default;
+};
+
+struct RemoveBus {
+    Id bus;
+    friend bool operator==(const RemoveBus&, const RemoveBus&) = default;
+};
+
+struct SetBus {
+    Bus value;
+    friend bool operator==(const SetBus&, const SetBus&) = default;
+};
+
+// ---- outputs --------------------------------------------------------------------------------
+
+struct AddOutput {
+    Output output;
+    std::size_t index = 0;
+    friend bool operator==(const AddOutput&, const AddOutput&) = default;
+};
+
+struct RemoveOutput {
+    Id output;
+    friend bool operator==(const RemoveOutput&, const RemoveOutput&) = default;
+};
+
+struct SetOutput {
+    Output value;
+    friend bool operator==(const SetOutput&, const SetOutput&) = default;
+};
+
+// ---- project settings -------------------------------------------------------------------------
+
+struct SetProjectSettings {
+    Settings value;
+    friend bool operator==(const SetProjectSettings&, const SetProjectSettings&) = default;
+};
+
 // ---- decks ----------------------------------------------------------------------------------
 
 struct SetDeckProgram {
@@ -257,7 +300,8 @@ using Command =
                  SetNodeLayout, SetNodeBlend, SetCanvasOverride, AddEffect, RemoveEffect,
                  SetEffectParams, SetEffectEnabled, SetDeckProgram, SetDeckPreview,
                  SetCanvasEmergencyScene, SetLayerSource, AddSource, RemoveSource,
-                 SetSource, AddCanvas, RemoveCanvas, SetCanvas>;
+                 SetSource, AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus,
+                 SetBus, AddOutput, RemoveOutput, SetOutput, SetProjectSettings>;
 
 struct Applied {
     /// A command that, applied to the resulting project, restores the previous one.

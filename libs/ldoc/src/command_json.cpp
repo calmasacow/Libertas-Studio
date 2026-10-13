@@ -230,6 +230,50 @@ Jv body(const SetCanvas& c) {
     return o;
 }
 
+Jv body(const AddBus& c) {
+    Jv o{Json::objectValue};
+    o["bus"] = detail::enc(c.bus);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RemoveBus& c) {
+    Jv o{Json::objectValue};
+    o["bus"] = detail::enc(c.bus);
+    return o;
+}
+
+Jv body(const SetBus& c) {
+    Jv o{Json::objectValue};
+    o["value"] = detail::enc(c.value);
+    return o;
+}
+
+Jv body(const AddOutput& c) {
+    Jv o{Json::objectValue};
+    o["output"] = detail::enc(c.output);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RemoveOutput& c) {
+    Jv o{Json::objectValue};
+    o["output"] = detail::enc(c.output);
+    return o;
+}
+
+Jv body(const SetOutput& c) {
+    Jv o{Json::objectValue};
+    o["value"] = detail::enc(c.value);
+    return o;
+}
+
+Jv body(const SetProjectSettings& c) {
+    Jv o{Json::objectValue};
+    o["value"] = detail::enc(c.value);
+    return o;
+}
+
 Jv body(const SetDeckPreview& c) {
     Jv o{Json::objectValue};
     o["deck"] = detail::enc(c.deck);
@@ -362,6 +406,35 @@ std::expected<Command, std::string> command_from_json(std::string_view text) {
         out = AddCanvas{detail::dec_canvas(rd, *cv, path), dec_index(rd, o, "index", path)};
     } else if (name == "canvas.remove") {
         out = RemoveCanvas{rd.id(o, "canvas", path)};
+    } else if (name == "bus.add") {
+        const Jv* bv = rd.object(o, "bus", path);
+        if (!bv)
+            return std::unexpected("bus.add has no bus");
+        out = AddBus{detail::dec_bus(rd, *bv, path), dec_index(rd, o, "index", path)};
+    } else if (name == "bus.remove") {
+        out = RemoveBus{rd.id(o, "bus", path)};
+    } else if (name == "bus.set") {
+        const Jv* bv = rd.object(o, "value", path);
+        if (!bv)
+            return std::unexpected("bus.set has no value");
+        out = SetBus{detail::dec_bus(rd, *bv, path)};
+    } else if (name == "output.add") {
+        const Jv* ov = rd.object(o, "output", path);
+        if (!ov)
+            return std::unexpected("output.add has no output");
+        out = AddOutput{detail::dec_output(rd, *ov, path), dec_index(rd, o, "index", path)};
+    } else if (name == "output.remove") {
+        out = RemoveOutput{rd.id(o, "output", path)};
+    } else if (name == "output.set") {
+        const Jv* ov = rd.object(o, "value", path);
+        if (!ov)
+            return std::unexpected("output.set has no value");
+        out = SetOutput{detail::dec_output(rd, *ov, path)};
+    } else if (name == "project.set-settings") {
+        const Jv* sv = rd.object(o, "value", path);
+        if (!sv)
+            return std::unexpected("project.set-settings has no value");
+        out = SetProjectSettings{detail::dec_settings(rd, *sv, path)};
     } else if (name == "canvas.set") {
         const Jv* cv = rd.object(o, "value", path);
         if (!cv)

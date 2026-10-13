@@ -42,6 +42,9 @@ Jv enc(const Node& n);
 Jv enc_scene(const Scene& scene);
 Jv enc(const Canvas& c);
 Jv enc(const Source& s);
+Jv enc(const Bus& b);
+Jv enc(const Output& o);
+Jv enc(const Settings& s);
 
 std::string write(const Jv& root);
 
@@ -110,6 +113,9 @@ CanvasOverride dec_canvas_override(Rd& rd, const Jv& o, std::string_view path);
 Scene dec_scene(Rd& rd, const Jv& o, std::string_view path);
 Canvas dec_canvas(Rd& rd, const Jv& o, std::string_view path);
 Source dec_source(Rd& rd, const Jv& o, std::string_view path);
+Bus dec_bus(Rd& rd, const Jv& o, std::string_view path);
+Output dec_output(Rd& rd, const Jv& o, std::string_view path);
+Settings dec_settings(Rd& rd, const Jv& o, std::string_view path);
 
 std::optional<Jv> parse_text(std::string_view text, std::string& error);
 

@@ -148,7 +148,14 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetSource>) return "source.set";
             else if constexpr (std::is_same_v<T, AddCanvas>) return "canvas.add";
             else if constexpr (std::is_same_v<T, RemoveCanvas>) return "canvas.remove";
-            else return "canvas.set";
+            else if constexpr (std::is_same_v<T, SetCanvas>) return "canvas.set";
+            else if constexpr (std::is_same_v<T, AddBus>) return "bus.add";
+            else if constexpr (std::is_same_v<T, RemoveBus>) return "bus.remove";
+            else if constexpr (std::is_same_v<T, SetBus>) return "bus.set";
+            else if constexpr (std::is_same_v<T, AddOutput>) return "output.add";
+            else if constexpr (std::is_same_v<T, RemoveOutput>) return "output.remove";
+            else if constexpr (std::is_same_v<T, SetOutput>) return "output.set";
+            else return "project.set-settings";
         },
         command);
 }
@@ -213,8 +220,22 @@ std::string describe(const Command& command) {
                 return std::format("Add canvas {}", quoted(c.canvas.name));
             else if constexpr (std::is_same_v<T, RemoveCanvas>)
                 return "Remove canvas";
-            else
+            else if constexpr (std::is_same_v<T, SetCanvas>)
                 return std::format("Change canvas {}", quoted(c.value.name));
+            else if constexpr (std::is_same_v<T, AddBus>)
+                return std::format("Add bus {}", quoted(c.bus.name));
+            else if constexpr (std::is_same_v<T, RemoveBus>)
+                return "Remove bus";
+            else if constexpr (std::is_same_v<T, SetBus>)
+                return std::format("Change bus {}", quoted(c.value.name));
+            else if constexpr (std::is_same_v<T, AddOutput>)
+                return std::format("Add output {}", quoted(c.output.name));
+            else if constexpr (std::is_same_v<T, RemoveOutput>)
+                return "Remove output";
+            else if constexpr (std::is_same_v<T, SetOutput>)
+                return std::format("Change output {}", quoted(c.value.name));
+            else
+                return "Change project settings";
         },
         command);
 }
@@ -676,6 +697,114 @@ struct Apply {
             return std::unexpected("a canvas needs a valid frame rate");
         Applied out{SetCanvas{*it}, describe(c)};
         *it = c.value;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const AddBus& c) const {
+        if (c.index > p.buses.size())
+            return std::unexpected(std::format("bus position {} is past the end", c.index));
+        if (c.bus.id.is_nil())
+            return std::unexpected("a bus needs an id");
+        if (c.bus.channels <= 0)
+            return std::unexpected(std::format("a bus cannot have {} channels", c.bus.channels));
+        if (all_ids(p).contains(c.bus.id))
+            return std::unexpected(
+                std::format("id {} is already in the project", c.bus.id.to_string()));
+        Applied out{RemoveBus{c.bus.id}, describe(c)};
+        p.buses.insert(p.buses.begin() + static_cast<std::ptrdiff_t>(c.index), c.bus);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const RemoveBus& c) const {
+        const auto it = std::find_if(p.buses.begin(), p.buses.end(),
+                                     [&c](const Bus& b) { return b.id == c.bus; });
+        if (it == p.buses.end())
+            return std::unexpected(std::format("there is no bus {}", c.bus.to_string()));
+        // Layers routed to it and sends into it are left dangling, which validate() reports as a
+        // warning -- the same line as a source. Refusing would mean a bus could never be removed
+        // while anything named it.
+        const auto index = static_cast<std::size_t>(it - p.buses.begin());
+        Applied out{AddBus{*it, index}, std::format("Remove bus {}", quoted(it->name))};
+        p.buses.erase(it);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetBus& c) const {
+        const auto it = std::find_if(p.buses.begin(), p.buses.end(),
+                                     [&c](const Bus& b) { return b.id == c.value.id; });
+        if (it == p.buses.end())
+            return std::unexpected(std::format("there is no bus {}", c.value.id.to_string()));
+        if (c.value.channels <= 0)
+            return std::unexpected(
+                std::format("a bus cannot have {} channels", c.value.channels));
+        for (const Send& s : c.value.sends) {
+            if (s.to == c.value.id)
+                return std::unexpected("a bus cannot send to itself");
+        }
+        Applied out{SetBus{*it}, describe(c)};
+        *it = c.value;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const AddOutput& c) const {
+        if (c.index > p.outputs.size())
+            return std::unexpected(std::format("output position {} is past the end", c.index));
+        if (c.output.id.is_nil())
+            return std::unexpected("an output needs an id");
+        if (c.output.encoder.bitrate_kbps <= 0)
+            return std::unexpected(
+                std::format("a bitrate of {} kbps is not usable", c.output.encoder.bitrate_kbps));
+        // An output without a canvas has nothing to encode at all, which validate() calls an
+        // error -- so unlike a scene reference this really is a precondition.
+        if (!p.canvas(c.output.canvas))
+            return std::unexpected(
+                std::format("there is no canvas {} to encode", c.output.canvas.to_string()));
+        if (all_ids(p).contains(c.output.id))
+            return std::unexpected(
+                std::format("id {} is already in the project", c.output.id.to_string()));
+        Applied out{RemoveOutput{c.output.id}, describe(c)};
+        p.outputs.insert(p.outputs.begin() + static_cast<std::ptrdiff_t>(c.index), c.output);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const RemoveOutput& c) const {
+        const auto it = std::find_if(p.outputs.begin(), p.outputs.end(),
+                                     [&c](const Output& o) { return o.id == c.output; });
+        if (it == p.outputs.end())
+            return std::unexpected(std::format("there is no output {}", c.output.to_string()));
+        const auto index = static_cast<std::size_t>(it - p.outputs.begin());
+        Applied out{AddOutput{*it, index}, std::format("Remove output {}", quoted(it->name))};
+        p.outputs.erase(it);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetOutput& c) const {
+        const auto it = std::find_if(p.outputs.begin(), p.outputs.end(),
+                                     [&c](const Output& o) { return o.id == c.value.id; });
+        if (it == p.outputs.end())
+            return std::unexpected(
+                std::format("there is no output {}", c.value.id.to_string()));
+        if (c.value.encoder.bitrate_kbps <= 0)
+            return std::unexpected(
+                std::format("a bitrate of {} kbps is not usable", c.value.encoder.bitrate_kbps));
+        if (!p.canvas(c.value.canvas))
+            return std::unexpected(
+                std::format("there is no canvas {} to encode", c.value.canvas.to_string()));
+        if (c.value.enabled && c.value.destination.url.empty())
+            return std::unexpected("an output cannot be enabled with nowhere to send to");
+        Applied out{SetOutput{*it}, describe(c)};
+        *it = c.value;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetProjectSettings& c) const {
+        if (c.value.sample_rate <= 0)
+            return std::unexpected(
+                std::format("a sample rate of {} is not usable", c.value.sample_rate));
+        if (c.value.render_queue_frames < 1)
+            return std::unexpected("the render queue needs at least one frame");
+        Applied out{SetProjectSettings{p.settings}, describe(c)};
+        p.settings = c.value;
         return out;
     }
 
