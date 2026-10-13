@@ -30,6 +30,11 @@ qt_add_executable(libertas-ui
 
 # The QML files live in qml/ rather than beside the C++; QTP0004 generates the extra qmldir
 # that makes a subdirectory a proper part of the module.
+# NoticeLog is a QML-side singleton: a rolling record of everything the shell has said, which
+# needs no C++ and no state the session owns.
+set_source_files_properties(qml/NoticeLog.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
+# Must precede qt_add_qml_module: the property is read when the qmldir is generated.
 qt_policy(SET QTP0004 NEW)
 
 qt_add_qml_module(libertas-ui
@@ -42,13 +47,17 @@ qt_add_qml_module(libertas-ui
         qml/DropOverlay.qml
         qml/InputsPanel.qml
         qml/LayersPanel.qml
+        qml/LogPanel.qml
         qml/Main.qml
+        qml/NoticeLog.qml
         qml/NumberField.qml
         qml/PanelBody.qml
         qml/PanelFrame.qml
         qml/PropertiesPanel.qml
         qml/ScenesPanel.qml
         qml/ShortcutsPanel.qml
+        qml/StatRow.qml
+        qml/StatsPanel.qml
         qml/StatusBar.qml
         qml/TabStrip.qml
         qml/ToolButton.qml

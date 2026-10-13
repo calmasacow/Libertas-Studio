@@ -157,6 +157,16 @@ QVariantMap Document::layerProperties() const {
     m["blendMode"] = QString::fromUtf8(
         ldoc::to_string(n->blend.mode).data(),
         static_cast<qsizetype>(ldoc::to_string(n->blend.mode).size()));
+    const auto fit = ldoc::to_string(n->layout.fit);
+    m["fit"] = QString::fromUtf8(fit.data(), static_cast<qsizetype>(fit.size()));
+    m["boxWidth"] = n->layout.size.x;
+    m["boxHeight"] = n->layout.size.y;
+    m["cropLeft"] = n->layout.crop.left;
+    m["cropTop"] = n->layout.crop.top;
+    m["cropRight"] = n->layout.crop.right;
+    m["cropBottom"] = n->layout.crop.bottom;
+    m["alignX"] = n->layout.alignment.x;
+    m["alignY"] = n->layout.alignment.y;
     m["effectCount"] = static_cast<int>(n->effects.size());
     return m;
 }
@@ -541,6 +551,57 @@ void Document::setLayerOpacity(double opacity) {
     ldoc::Blend b = n->blend;
     b.opacity = std::clamp(opacity, 0.0, 1.0);
     run(ldoc::SetNodeBlend{s->id, n->id, b});
+}
+
+QStringList Document::fitModes() const {
+    QStringList out;
+    for (int i = 0; i < 6; ++i) {
+        const auto name = ldoc::to_string(static_cast<ldoc::FitMode>(i));
+        out << QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()));
+    }
+    return out;
+}
+
+void Document::setLayerFit(const QString& fit) {
+    const ldoc::Scene* s = current_scene();
+    const ldoc::Node* n = current_layer();
+    const auto parsed = ldoc::fit_mode_from_string(to_std(fit));
+    if (!s || !n || !parsed)
+        return;
+    ldoc::Layout l = n->layout;
+    l.fit = *parsed;
+    run(ldoc::SetNodeLayout{s->id, n->id, l});
+}
+
+void Document::setLayerBoxSize(double w, double h) {
+    const ldoc::Scene* s = current_scene();
+    const ldoc::Node* n = current_layer();
+    if (!s || !n)
+        return;
+    ldoc::Layout l = n->layout;
+    l.size = ldoc::Vec2{std::max(0.0, w), std::max(0.0, h)};
+    run(ldoc::SetNodeLayout{s->id, n->id, l});
+}
+
+void Document::setLayerCrop(double left, double top, double right, double bottom) {
+    const ldoc::Scene* s = current_scene();
+    const ldoc::Node* n = current_layer();
+    if (!s || !n)
+        return;
+    ldoc::Layout l = n->layout;
+    l.crop = ldoc::CropRect{std::max(0.0, left), std::max(0.0, top), std::max(0.0, right),
+                            std::max(0.0, bottom)};
+    run(ldoc::SetNodeLayout{s->id, n->id, l});
+}
+
+void Document::setLayerAlignment(double x, double y) {
+    const ldoc::Scene* s = current_scene();
+    const ldoc::Node* n = current_layer();
+    if (!s || !n)
+        return;
+    ldoc::Layout l = n->layout;
+    l.alignment = ldoc::Vec2{std::clamp(x, 0.0, 1.0), std::clamp(y, 0.0, 1.0)};
+    run(ldoc::SetNodeLayout{s->id, n->id, l});
 }
 
 void Document::setLayerBlendMode(const QString& mode) {

@@ -27,6 +27,12 @@ Window {
     // show to be acknowledged.
     property string notice: ""
 
+    function report(text) {
+        root.notice = text;
+        noticeTimer.restart();
+        NoticeLog.add(text);
+    }
+
     Timer {
         id: noticeTimer
         interval: 7000
@@ -36,32 +42,28 @@ Window {
     Connections {
         target: Workspace
         function onNotice(text) {
-            root.notice = text;
-            noticeTimer.restart();
+            root.report(text);
         }
     }
 
     Connections {
         target: Theme
         function onNotice(text) {
-            root.notice = text;
-            noticeTimer.restart();
+            root.report(text);
         }
     }
 
     Connections {
         target: Document
         function onNotice(text) {
-            root.notice = text;
-            noticeTimer.restart();
+            root.report(text);
         }
     }
 
     Connections {
         target: Shortcuts
         function onNotice(text) {
-            root.notice = text;
-            noticeTimer.restart();
+            root.report(text);
         }
     }
 

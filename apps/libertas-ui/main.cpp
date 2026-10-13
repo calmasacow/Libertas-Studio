@@ -512,6 +512,27 @@ int main(int argc, char** argv) {
             report(!document.dirty(), "the document saves");
         }
 
+        // ---- layout properties, which are a different thing from transform ----------------
+        document.addLayer(QStringLiteral("Fitted"));
+        settle();
+        report(document.layerProperties().value("fit").toString() == QLatin1String("natural"),
+               "a new layer takes its source's natural size");
+        document.setLayerFit(QStringLiteral("cover"));
+        document.setLayerBoxSize(1920, 1080);
+        document.setLayerCrop(10, 20, 0, 0);
+        settle();
+        const QVariantMap fitted = document.layerProperties();
+        report(fitted.value("fit").toString() == QLatin1String("cover") &&
+                   qFuzzyCompare(fitted.value("boxWidth").toDouble(), 1920.0) &&
+                   qFuzzyCompare(fitted.value("cropTop").toDouble(), 20.0),
+               "fit, box and crop are separate from the transform");
+        report(qFuzzyCompare(fitted.value("scaleX").toDouble(), 1.0),
+               "and changing them left the transform alone");
+        document.undo();
+        document.undo();
+        document.undo();
+        settle();
+
         // ---- the workspace from the keyboard ----------------------------------------------
         //
         // ADR-0016's gesture is pointer-only, so this is the path for anyone who cannot aim one.

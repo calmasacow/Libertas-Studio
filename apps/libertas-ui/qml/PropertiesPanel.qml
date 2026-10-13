@@ -102,6 +102,109 @@ Item {
                 onCommitted: newValue => Document.setLayerRotation(newValue)
             }
 
+            // --- Layout. Separate from Transform, and the separation is the point: where the
+            // box sits versus how the content fills it. Conflating them is why OBS bounding
+            // boxes confuse people -- scaling a source and changing its fit mode look like the
+            // same operation until they disagree.
+            Text {
+                width: parent.width
+                text: qsTr("Layout")
+                font.pixelSize: 10
+                font.weight: Font.DemiBold
+                color: Theme.c.accent
+                topPadding: 10
+                bottomPadding: 4
+            }
+
+            ChoiceField {
+                width: parent.width
+                label: qsTr("Fit")
+                choices: Document.fitModes
+                value: panel.hasLayer ? panel.props.fit : ""
+                onCommitted: newValue => Document.setLayerFit(newValue)
+            }
+
+            Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                visible: panel.hasLayer && panel.props.fit === "natural"
+                text: qsTr("Natural size: the box takes the source's own dimensions and no fitting happens.")
+                font.pixelSize: 9
+                color: Theme.c.textMuted
+                topPadding: 2
+                bottomPadding: 2
+            }
+
+            NumberField {
+                width: parent.width
+                label: qsTr("Box W")
+                decimals: 0
+                enabled: panel.hasLayer && panel.props.fit !== "natural"
+                value: panel.hasLayer ? panel.props.boxWidth : 0
+                onCommitted: newValue => Document.setLayerBoxSize(newValue, panel.props.boxHeight)
+            }
+
+            NumberField {
+                width: parent.width
+                label: qsTr("Box H")
+                decimals: 0
+                enabled: panel.hasLayer && panel.props.fit !== "natural"
+                value: panel.hasLayer ? panel.props.boxHeight : 0
+                onCommitted: newValue => Document.setLayerBoxSize(panel.props.boxWidth, newValue)
+            }
+
+            NumberField {
+                width: parent.width
+                label: qsTr("Crop L")
+                decimals: 0
+                value: panel.hasLayer ? panel.props.cropLeft : 0
+                onCommitted: newValue => Document.setLayerCrop(newValue, panel.props.cropTop,
+                                                               panel.props.cropRight,
+                                                               panel.props.cropBottom)
+            }
+
+            NumberField {
+                width: parent.width
+                label: qsTr("Crop T")
+                decimals: 0
+                value: panel.hasLayer ? panel.props.cropTop : 0
+                onCommitted: newValue => Document.setLayerCrop(panel.props.cropLeft, newValue,
+                                                               panel.props.cropRight,
+                                                               panel.props.cropBottom)
+            }
+
+            NumberField {
+                width: parent.width
+                label: qsTr("Crop R")
+                decimals: 0
+                value: panel.hasLayer ? panel.props.cropRight : 0
+                onCommitted: newValue => Document.setLayerCrop(panel.props.cropLeft,
+                                                               panel.props.cropTop, newValue,
+                                                               panel.props.cropBottom)
+            }
+
+            NumberField {
+                width: parent.width
+                label: qsTr("Crop B")
+                decimals: 0
+                value: panel.hasLayer ? panel.props.cropBottom : 0
+                onCommitted: newValue => Document.setLayerCrop(panel.props.cropLeft,
+                                                               panel.props.cropTop,
+                                                               panel.props.cropRight, newValue)
+            }
+
+            Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                visible: panel.hasLayer &&
+                         (panel.props.cropLeft > 0 || panel.props.cropTop > 0 ||
+                          panel.props.cropRight > 0 || panel.props.cropBottom > 0)
+                text: qsTr("Crop is in source pixels and is taken off before fitting.")
+                font.pixelSize: 9
+                color: Theme.c.textMuted
+                topPadding: 2
+            }
+
             // --- Blending
             Text {
                 width: parent.width

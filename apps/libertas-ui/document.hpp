@@ -138,6 +138,14 @@ public:
     Q_INVOKABLE void setLayerRotation(double degrees);
     Q_INVOKABLE void setLayerOpacity(double opacity);
     Q_INVOKABLE void setLayerBlendMode(const QString& mode);
+    /// How the content fills the node's box, which is a different thing from where the box sits.
+    Q_INVOKABLE void setLayerFit(const QString& fit);
+    Q_INVOKABLE void setLayerBoxSize(double w, double h);
+    Q_INVOKABLE void setLayerCrop(double left, double top, double right, double bottom);
+    Q_INVOKABLE void setLayerAlignment(double x, double y);
+
+    Q_PROPERTY(QStringList fitModes READ fitModes CONSTANT)
+    [[nodiscard]] QStringList fitModes() const;
 
     // ---- history and persistence -------------------------------------------------------------
 

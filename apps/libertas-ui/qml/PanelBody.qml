@@ -42,6 +42,10 @@ Item {
                 return shortcutsComponent;
             case "inputs":
                 return inputsComponent;
+            case "stats":
+                return statsComponent;
+            case "log":
+                return logComponent;
             default:
                 return null;
             }
@@ -76,6 +80,18 @@ Item {
         id: inputsComponent
 
         InputsPanel {}
+    }
+
+    Component {
+        id: statsComponent
+
+        StatsPanel {}
+    }
+
+    Component {
+        id: logComponent
+
+        LogPanel {}
     }
 
     // The program canvas. ADR-0015 rule 2: it is a region of this surface, never a separate OS
@@ -152,7 +168,8 @@ Item {
         visible: body.panelId !== "program" && body.panelId !== "" &&
                  body.panelId !== "scenes" && body.panelId !== "sources" &&
                  body.panelId !== "properties" && body.panelId !== "shortcuts" &&
-                 body.panelId !== "inputs"
+                 body.panelId !== "inputs" && body.panelId !== "stats" &&
+                 body.panelId !== "log"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -177,10 +194,6 @@ Item {
                     return qsTr("Bus graph, meters and sends. Arrives with the audio host.");
                 case "controls":
                     return qsTr("Stream, record, replay buffer and transitions.");
-                case "stats":
-                    return qsTr("Per-output and per-canvas frame times, independently reported — a hitch in one canvas must not be hidden inside another's number.");
-                case "log":
-                    return qsTr("Session log, including which panels were recovered on startup and why.");
                 default:
                     return qsTr("Panel.");
                 }
