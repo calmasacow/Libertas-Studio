@@ -1,0 +1,167 @@
+{
+  "buses" : 
+  [
+    {
+      "channels" : 2,
+      "delay_ms" : 0.0,
+      "gain_db" : 0.0,
+      "id" : "01JD55PV3X40G2081040G20810",
+      "inserts" : [],
+      "kind" : "program",
+      "mute" : false,
+      "name" : "Program",
+      "pan" : 0.0,
+      "sends" : [],
+      "solo" : false
+    },
+    {
+      "channels" : 2,
+      "delay_ms" : 0.0,
+      "gain_db" : -2.5,
+      "id" : "01JD55PV3X44GJ289144GJ2891",
+      "inserts" : [],
+      "kind" : "vod",
+      "mute" : false,
+      "name" : "VOD",
+      "pan" : 0.0,
+      "sends" : 
+      [
+        {
+          "gain_db" : -6.0,
+          "pre_fader" : true,
+          "to" : "01JD55PV3X40G2081040G20810"
+        }
+      ],
+      "solo" : false
+    }
+  ],
+  "canvases" : 
+  [
+    {
+      "color_space" : "rec709",
+      "emergency_scene" : "01JD55PV3X81040G2081040G20",
+      "fps" : 
+      {
+        "den" : 1001,
+        "num" : 60000
+      },
+      "height" : 1440,
+      "id" : "01JD55PV3X2081040G2081040G",
+      "name" : "Main",
+      "width" : 2560
+    },
+    {
+      "color_space" : "rec2100-pq",
+      "emergency_scene" : "01JD55PV3X81040G2081040G20",
+      "fps" : 
+      {
+        "den" : 1,
+        "num" : 60
+      },
+      "height" : 1920,
+      "id" : "01JD55PV3X248H248H248H248H",
+      "name" : "Vertical",
+      "width" : 1080
+    }
+  ],
+  "decks" : 
+  [
+    {
+      "canvas" : "01JD55PV3X2081040G2081040G",
+      "id" : "01JD55PV3XC1G60R30C1G60R30",
+      "name" : "Main",
+      "preview_scene" : "01JD55PV3X81040G2081040G20",
+      "program_scene" : "01JD55PV3XA1850M2GA1850M2G",
+      "studio_mode" : false,
+      "transition" : "transition.fade",
+      "transition_ms" : 420
+    }
+  ],
+  "generation" : 1,
+  "id" : "01JD55PV3X040G2081040G2081",
+  "name" : "Golden Show",
+  "outputs" : 
+  [
+    {
+      "canvas" : "01JD55PV3X2081040G2081040G",
+      "destination" : 
+      {
+        "credential_ref" : "youtube-main",
+        "kind" : "rtmps",
+        "url" : "rtmps://a.rtmps.youtube.com/live2"
+      },
+      "enabled" : false,
+      "encoder" : 
+      {
+        "bitrate_kbps" : 12000,
+        "codec" : "h264",
+        "extra" : 
+        {
+          "rc-lookahead" : 
+          {
+            "int" : 20
+          }
+        },
+        "implementation" : "nvenc",
+        "keyframe_interval_ms" : 2000,
+        "preset" : "p5",
+        "rate_control" : "cbr"
+      },
+      "id" : "01JD55PV3XE1R70W3GE1R70W3G",
+      "name" : "YouTube"
+    }
+  ],
+  "scenes" : 
+  [
+    {
+      "generation" : 1,
+      "id" : "01JD55PV3XA1850M2GA1850M2G",
+      "name" : "Live"
+    },
+    {
+      "generation" : 1,
+      "id" : "01JD55PV3X81040G2081040G20",
+      "name" : "Emergency"
+    }
+  ],
+  "schema_version" : 1,
+  "settings" : 
+  {
+    "extra" : 
+    {
+      "tuning" : 0.25
+    },
+    "render_queue_frames" : 3,
+    "sample_rate" : 48000
+  },
+  "sources" : 
+  [
+    {
+      "asset" : null,
+      "id" : "01JD55PV3X60R30C1G60R30C1G",
+      "name" : "Be Right Back",
+      "settings" : 
+      {
+        "gain" : 0.75,
+        "loop" : true,
+        "path" : "assets/brb.webm",
+        "tracks" : 
+        {
+          "int" : 2
+        }
+      },
+      "type" : "source.media"
+    },
+    {
+      "asset" : null,
+      "id" : "01JD55PV3X64RK2C9H64RK2C9H",
+      "name" : "Desk Cam",
+      "settings" : 
+      {
+        "device" : "/dev/video0",
+        "full_range" : false
+      },
+      "type" : "source.v4l2"
+    }
+  ]
+}
