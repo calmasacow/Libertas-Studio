@@ -51,6 +51,40 @@ until the docked model is finished.
 
 Related and also deferred: tearing a panel out to float as its own toplevel (ADR-0015 rule 3).
 
+## Needs the operator, or one of their machines
+
+Not blocked on design — blocked on something only the operator can approve or power on.
+
+- **Portal global shortcuts.** Registering through `org.freedesktop.portal.GlobalShortcuts` may
+  raise a compositor dialog on first bind, so it has not been exercised. Needs a yes before
+  anything appears on screen.
+- **The encode spike's wall-clock accounting.** Verifying it means capturing a display for about
+  ten seconds, which puts a window on a monitor the operator is working on. Needs a yes.
+- **argus.** Green through the `lsession` commit; every commit after that is unverified there.
+  It builds with `-G "Unix Makefiles"` (no ninja) and is usually powered off. Reach it as
+  `ssh -o HostKeyAlias=argus calmasacow@192.168.1.245` — `argus.lan` no longer resolves,
+  `argus.local` does.
+- **The 40 ms submission stall, and explicit sync via `linux_drm_syncobj_v1`.** Both need a live
+  capture session to measure, not a synthetic one.
+
+When a destination is finally needed for a real push, point it at a **local MediaMTX container**.
+Never at a live key.
+
+## Deferred by choice
+
+- Asset commands.
+- Compound editing beyond `Batch` (the 40th command).
+- **The render path as product code** — `lcapture`, `lcomp` and `lmedia` wired into
+  `libertas-render`. The largest remaining piece of work; its transport foundation (`lipc`,
+  ADR-0026) exists and is tested headless.
+
+## Open question the operator has not answered
+
+Whether to drop the layer/source wording difference from the *code* as well
+(`ldoc::Node` / `LayerData`). It is deliberate today and documented in one place, at the top of
+`SourcesPanel.qml`. Changing it would be a project-format bump with a migration and no
+user-visible gain, so it is the operator's call and must not be started unilaterally.
+
 ## Done since this file was written
 
 - **One word for a source.** Anything that can go into a scene is a source — a capture card, a
