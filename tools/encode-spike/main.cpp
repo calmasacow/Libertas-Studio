@@ -241,6 +241,10 @@ int main(int argc, char** argv) {
     std::vector<double> capture_ms;
     std::vector<double> readback_ms;
     std::vector<double> gpu_convert_ms;
+    /// The whole producer iteration, against which the named stages are a breakdown.
+    std::vector<double> capture_loop_ms;
+    /// The whole consumer iteration, excluding the deliberate wait for the frame deadline.
+    std::vector<double> encode_loop_ms;
     double first_frame_ms = 0.0;
     // A stall that cannot be attributed cannot be fixed, so the worst frame keeps its breakdown
     // rather than just its total (ADR-0019's unexplained 61 ms).
@@ -267,7 +271,17 @@ int main(int argc, char** argv) {
             std::uint64_t presented_ns = 0;
             std::string e;
 
-            auto t = std::chrono::steady_clock::now();
+            // Wall clock over the whole iteration, so that what the named stages do not account
+            // for shows up as a gap instead of vanishing.
+            //
+            // Three separate times during this spike's life the expensive thing turned out to be
+            // outside the instrumentation: swscale outside the "encode+convert" timer, the
+            // readback hidden behind a two-sample mean, and two full-frame buffer copies sitting
+            // between the stage timers. Each quoted figure was true and the total it implied was
+            // not. Bracketing named stages does not measure a pipeline; wall clock over the loop
+            // does, and the difference is the part nobody thought to time.
+            const auto iteration_begin = std::chrono::steady_clock::now();
+            auto t = iteration_begin;
             if (!libertas::spike::wlcap_capture_slot(*cap, slot, caps.width, caps.height,
                                                      &presented_ns, e)) {
                 std::lock_guard<std::mutex> lk(latest.mu);
@@ -333,6 +347,15 @@ int main(int argc, char** argv) {
                 latest.presented_ns = presented_ns;
                 ++latest.seq;
             }
+
+            if (i != 0) {
+                const double iteration_ms =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - iteration_begin)
+                        .count();
+                std::lock_guard<std::mutex> lk(stats_mu);
+                capture_loop_ms.push_back(iteration_ms);
+            }
         }
     });
 
@@ -392,6 +415,8 @@ int main(int argc, char** argv) {
         const auto deadline = run_begin + std::chrono::nanoseconds(tick_ns * i);
         std::this_thread::sleep_until(deadline);
 
+        // After the sleep: waiting for the frame deadline is the point of the loop, not work.
+        const auto iteration_begin = std::chrono::steady_clock::now();
         bool fresh = false;
         {
             std::lock_guard<std::mutex> lk(latest.mu);
@@ -443,6 +468,10 @@ int main(int argc, char** argv) {
                 audio_frames_fed += n;
             }
         }
+
+        encode_loop_ms.push_back(std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - iteration_begin)
+                                     .count());
     }
 
     { std::lock_guard<std::mutex> lk(latest.mu); latest.stop = true; }
@@ -512,6 +541,38 @@ int main(int argc, char** argv) {
     report("bgra->nv12 (cpu)", st.convert_ms);
     report("nv12 plane copy", st.copy_ms);
     report("encode", st.video_encode_ms);
+
+    // Each loop's wall clock is the known total; the named stages are a breakdown *within* it,
+    // and whatever they do not account for is printed rather than left to be inferred from a sum
+    // that was never checked. Three times in this spike's life the expensive thing lived in that
+    // gap, so it gets a line of its own.
+    const auto mean_of = [](const std::vector<double>& v) {
+        if (v.empty())
+            return 0.0;
+        double sum = 0.0;
+        for (const double x : v)
+            sum += x;
+        return sum / static_cast<double>(v.size());
+    };
+    const auto budget = [&](const char* name, const std::vector<double>& total,
+                            std::initializer_list<const std::vector<double>*> parts) {
+        if (total.empty())
+            return;
+        const double whole = mean_of(total);
+        double named = 0.0;
+        for (const std::vector<double>* p : parts)
+            named += mean_of(*p);
+        const double gap = whole - named;
+        std::printf("  %-22s wall %7.3f ms = named %7.3f + unaccounted %7.3f (%.0f%%)  n=%zu\n",
+                    name, whole, named, gap, whole > 0.0 ? 100.0 * gap / whole : 0.0,
+                    total.size());
+    };
+
+    std::printf("\n  --- where the time actually goes ---\n");
+    budget("capture loop", capture_loop_ms,
+           {&capture_ms, gpu_convert ? &gpu_convert_ms : &readback_ms});
+    budget("encode loop", encode_loop_ms,
+           {&st.convert_ms, &st.copy_ms, &st.video_encode_ms});
 
     // The capture thread is detached and may be parked inside a blocking roundtrip waiting for
     // damage that will never come, so there is no point at which it is safe to destroy the
