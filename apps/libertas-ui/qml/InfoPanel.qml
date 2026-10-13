@@ -8,9 +8,9 @@ import Libertas
 
 /// What is in the project, and what is wrong with it.
 ///
-/// ADR-0020 is why there is no single "frame time" here waiting to be filled in: per-output and
-/// per-canvas figures have to be reported separately, because a hitch in one canvas must not be
-/// hidden inside another's number. The pipeline rows arrive with the pipeline.
+/// This was called "Stats", which it never was: it counts scenes and layers and lists the
+/// document's problems. Broadcast statistics -- frame times, dropped frames, encoder and network
+/// health -- are a different panel with a different job, and are not shown here even partially.
 Item {
     id: panel
 
@@ -101,23 +101,6 @@ Item {
                 }
             }
 
-            Text {
-                width: parent.width
-                text: qsTr("Pipeline")
-                font.pixelSize: 10
-                font.weight: Font.DemiBold
-                color: Theme.c.accent
-                topPadding: 12
-                bottomPadding: 4
-            }
-
-            Text {
-                width: parent.width
-                wrapMode: Text.WordWrap
-                text: qsTr("No pipeline attached. When there is one, frame times are reported per output and per canvas rather than as a single number — a hitch in one canvas must not be hidden inside another's.")
-                font.pixelSize: 10
-                color: Theme.c.textMuted
-            }
         }
     }
 }

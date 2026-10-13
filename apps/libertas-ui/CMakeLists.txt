@@ -22,6 +22,7 @@ qt_add_executable(libertas-ui
     layoutmodels.cpp
     layoutmodels.hpp
     main.cpp
+    telemetry.cpp
     theme.cpp
     theme.hpp
     workspace.cpp
@@ -42,24 +43,26 @@ qt_add_qml_module(libertas-ui
     VERSION 1.0
     QML_FILES
         qml/AudioMixerPanel.qml
+        qml/BroadcastStatsPanel.qml
         qml/CheckLabel.qml
         qml/ChoiceField.qml
         qml/ControlsPanel.qml
         qml/DragGhost.qml
         qml/DropOverlay.qml
         qml/InputsPanel.qml
+        qml/InfoPanel.qml
         qml/LayersPanel.qml
         qml/LogPanel.qml
         qml/Main.qml
         qml/NoticeLog.qml
         qml/NumberField.qml
+        qml/OutputsPanel.qml
         qml/PanelBody.qml
         qml/PanelFrame.qml
         qml/PropertiesPanel.qml
         qml/ScenesPanel.qml
         qml/ShortcutsPanel.qml
         qml/StatRow.qml
-        qml/StatsPanel.qml
         qml/StatusBar.qml
         qml/TabStrip.qml
         qml/ToolButton.qml

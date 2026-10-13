@@ -236,18 +236,20 @@ Item {
                 onClicked: Document.addLayer("")
             }
 
-            ToolButton {
-                label: "▣"
-                tip: qsTr("Add group")
-                enabled: Document.selectedScene !== ""
-                onClicked: Document.addGroup("")
-            }
-
+            // Remove sits next to add, and the group button on the far side: the two that
+            // create something are not what you want either side of the one that destroys.
             ToolButton {
                 label: "−"
                 tip: qsTr("Remove")
                 enabled: Document.selectedLayer !== ""
                 onClicked: Document.removeLayer(Document.selectedLayer)
+            }
+
+            ToolButton {
+                label: "▣"
+                tip: qsTr("Add group")
+                enabled: Document.selectedScene !== ""
+                onClicked: Document.addGroup("")
             }
         }
 

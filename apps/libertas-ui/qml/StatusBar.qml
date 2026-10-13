@@ -69,7 +69,7 @@ Rectangle {
             ToolTipText {
                 text: qsTr("Unsaved changes — recoverable from the journal if this stops")
                 visible: dirtyHover.containsMouse
-                anchorItem: parent
+                hoverArea: dirtyHover
             }
 
             MouseArea {
@@ -91,7 +91,7 @@ Rectangle {
             ToolTipText {
                 text: Document.problems.join("\n")
                 visible: problemHover.containsMouse
-                anchorItem: parent
+                hoverArea: problemHover
             }
 
             MouseArea {

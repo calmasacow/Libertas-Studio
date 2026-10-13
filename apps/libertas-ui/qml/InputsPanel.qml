@@ -131,7 +131,7 @@ Item {
                     ToolTipText {
                         text: qsTr("Safe to use in an emergency scene")
                         visible: safeHover.containsMouse
-                        anchorItem: parent
+                        hoverArea: safeHover
                     }
 
                     MouseArea {

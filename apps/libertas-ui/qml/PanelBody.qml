@@ -44,14 +44,18 @@ Item {
                 return shortcutsComponent;
             case "inputs":
                 return inputsComponent;
-            case "stats":
-                return statsComponent;
+            case "info":
+                return infoComponent;
+            case "broadcast-stats":
+                return broadcastComponent;
             case "log":
                 return logComponent;
             case "audio-mixer":
                 return mixerComponent;
             case "controls":
                 return controlsComponent;
+            case "outputs":
+                return outputsComponent;
             default:
                 return null;
             }
@@ -89,9 +93,15 @@ Item {
     }
 
     Component {
-        id: statsComponent
+        id: infoComponent
 
-        StatsPanel {}
+        InfoPanel {}
+    }
+
+    Component {
+        id: broadcastComponent
+
+        BroadcastStatsPanel {}
     }
 
     Component {
@@ -110,6 +120,12 @@ Item {
         id: controlsComponent
 
         ControlsPanel {}
+    }
+
+    Component {
+        id: outputsComponent
+
+        OutputsPanel {}
     }
 
     // The program canvas. ADR-0015 rule 2: it is a region of this surface, never a separate OS

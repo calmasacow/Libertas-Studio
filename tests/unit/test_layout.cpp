@@ -57,16 +57,17 @@ LTEST_CASE(the_default_layout_is_valid_and_holds_the_expected_panels) {
     CHECK_MSG(!bad.has_value(), "{}", bad.value_or(""));
 
     CHECK_EQ(sorted_panels(l),
-             (std::vector<std::string>{"audio-mixer", "controls", "log", "program", "properties",
-                                       "scenes", "sources", "stats"}));
+             (std::vector<std::string>{"audio-mixer", "broadcast-stats", "controls", "info",
+                                       "log", "outputs", "program", "properties", "scenes",
+                                       "sources"}));
 
     // The program canvas is a region of the workspace, not a window (ADR-0015 rule 2).
     CHECK(l.has_panel("program"));
     CHECK(l.node_of_panel("program") != kInvalidNode);
 
-    // properties, stats and log ship as one tabbed group, so the tab path is exercised by the
-    // default layout.
-    CHECK_EQ(l.node_of_panel("stats"), l.node_of_panel("log"));
+    // properties, info, broadcast-stats and log ship as one tabbed group, so the tab path is
+    // exercised by the default layout.
+    CHECK_EQ(l.node_of_panel("info"), l.node_of_panel("log"));
     CHECK_EQ(l.node_of_panel("properties"), l.node_of_panel("log"));
 }
 
@@ -164,19 +165,19 @@ LTEST_CASE(a_centre_drop_makes_a_tabbed_group) {
     const Constraints cs = Constraints::studio_defaults();
     const Viewport vp = vp_of(2560.0, 1440.0);
 
-    const NodeId target = l.node_of_panel("stats");
+    const NodeId target = l.node_of_panel("info");
     const DockResult r = l.dock("scenes", target, Zone::Center, vp, cs);
     CHECK_MSG(r.applied(), "{}", r.reason);
     CHECK(!l.validate().has_value());
 
     CHECK_EQ(l.node_of_panel("scenes"), target);
-    CHECK_EQ(l.node_of_panel("scenes"), l.node_of_panel("stats"));
+    CHECK_EQ(l.node_of_panel("scenes"), l.node_of_panel("info"));
     // The dropped panel becomes the visible tab: the user just put it there on purpose.
-    CHECK_EQ(l.tab_index_of("scenes"), std::size_t{3});
+    CHECK_EQ(l.tab_index_of("scenes"), std::size_t{4});
     const Node* n = l.find(target);
     REQUIRE(n != nullptr);
-    CHECK_EQ(n->active, std::size_t{3});
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{8});
+    CHECK_EQ(n->active, std::size_t{4});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{10});
 }
 
 LTEST_CASE(an_outer_drop_splits_the_target_on_the_right_axis_and_side) {
@@ -283,7 +284,7 @@ LTEST_CASE(emptying_a_group_collapses_it_and_the_sibling_takes_the_space) {
     const Rect column_rect = l.rect_of(column, vp, cs).value();
     const std::size_t nodes_before = l.node_count();
 
-    const DockResult r = l.dock("scenes", l.node_of_panel("stats"), Zone::Center, vp, cs);
+    const DockResult r = l.dock("scenes", l.node_of_panel("info"), Zone::Center, vp, cs);
     REQUIRE(r.applied());
     CHECK(!l.validate().has_value());
 
@@ -324,15 +325,15 @@ LTEST_CASE(pulling_one_tab_out_of_a_group_splits_the_group) {
     const Constraints cs = Constraints::studio_defaults();
     const Viewport vp = vp_of(2560.0, 1440.0);
 
-    const NodeId group = l.node_of_panel("stats");
+    const NodeId group = l.node_of_panel("info");
     REQUIRE(l.node_of_panel("log") == group);
 
     const DockResult r = l.dock("log", group, Zone::Bottom, vp, cs);
     CHECK_MSG(r.applied(), "{}", r.reason);
     CHECK(!l.validate().has_value());
-    CHECK(l.node_of_panel("log") != l.node_of_panel("stats"));
+    CHECK(l.node_of_panel("log") != l.node_of_panel("info"));
 
-    const Rect stats = l.rect_of(l.node_of_panel("stats"), vp, cs).value();
+    const Rect stats = l.rect_of(l.node_of_panel("info"), vp, cs).value();
     const Rect log = l.rect_of(l.node_of_panel("log"), vp, cs).value();
     CHECK(log.y > stats.y);
     CHECK_NEAR(log.w, stats.w, 1e-6);
@@ -372,7 +373,7 @@ LTEST_CASE(a_panel_not_yet_in_the_tree_can_be_docked) {
     const DockResult r = l.dock("chat", l.node_of_panel("audio-mixer"), Zone::Right, vp, cs);
     REQUIRE(r.applied());
     CHECK(l.has_panel("chat"));
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{9});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{11});
     CHECK(!l.validate().has_value());
 }
 
@@ -562,24 +563,24 @@ LTEST_CASE(a_hit_test_result_can_be_docked_directly) {
 LTEST_CASE(activating_a_tab_selects_it) {
     Layout l = Layout::default_studio();
     CHECK(l.activate("log"));
-    CHECK_EQ(l.find(l.node_of_panel("log"))->active, std::size_t{2});
-    CHECK(l.activate("stats"));
-    CHECK_EQ(l.find(l.node_of_panel("stats"))->active, std::size_t{1});
+    CHECK_EQ(l.find(l.node_of_panel("log"))->active, std::size_t{3});
+    CHECK(l.activate("info"));
+    CHECK_EQ(l.find(l.node_of_panel("info"))->active, std::size_t{1});
     CHECK(!l.activate("nope"));
 }
 
 LTEST_CASE(closing_the_visible_tab_leaves_a_valid_selection) {
     Layout l = Layout::default_studio();
-    const NodeId group = l.node_of_panel("stats");
+    const NodeId group = l.node_of_panel("info");
     REQUIRE(l.activate("log"));
-    CHECK_EQ(l.find(group)->active, std::size_t{2});
+    CHECK_EQ(l.find(group)->active, std::size_t{3});
 
     // Closing the visible tab leaves the selection on a tab that still exists.
     CHECK(l.close_panel("log"));
-    const Node* n = l.find(l.node_of_panel("stats"));
+    const Node* n = l.find(l.node_of_panel("info"));
     REQUIRE(n != nullptr);
-    CHECK_EQ(n->tabs.size(), std::size_t{2});
-    CHECK_EQ(n->active, std::size_t{1});
+    CHECK_EQ(n->tabs.size(), std::size_t{3});
+    CHECK_EQ(n->active, std::size_t{2});
     CHECK(!l.validate().has_value());
 }
 
@@ -611,7 +612,7 @@ LTEST_CASE(the_neighbour_in_a_direction_is_whatever_is_drawn_there) {
     const NodeId program = l.node_of_panel("program");
     const NodeId scenes = l.node_of_panel("scenes");
     const NodeId sources = l.node_of_panel("sources");
-    const NodeId inspect = l.node_of_panel("stats");
+    const NodeId inspect = l.node_of_panel("info");
     const NodeId mixer = l.node_of_panel("audio-mixer");
 
     // scenes sits above sources in the left column; program is to their right.
@@ -638,7 +639,7 @@ LTEST_CASE(there_is_no_neighbour_past_the_edge_of_the_workspace) {
 
     CHECK(!l.neighbour(l.node_of_panel("scenes"), Edge::Left, vp, cs).has_value());
     CHECK(!l.neighbour(l.node_of_panel("scenes"), Edge::Top, vp, cs).has_value());
-    CHECK(!l.neighbour(l.node_of_panel("stats"), Edge::Right, vp, cs).has_value());
+    CHECK(!l.neighbour(l.node_of_panel("info"), Edge::Right, vp, cs).has_value());
     CHECK(!l.neighbour(l.node_of_panel("audio-mixer"), Edge::Bottom, vp, cs).has_value());
     CHECK(!l.neighbour(99999, Edge::Left, vp, cs).has_value());
 }
@@ -698,9 +699,10 @@ LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
     // Two window sizes, because they exercise different code: the large one applies nearly every
     // dock and hammers the tree surgery, while the small one spends most of its time refusing
     // drops and so tests that a refusal really does leave the layout alone.
-    const std::vector<std::string> pool = {"program", "scenes",      "sources",  "stats",
-                                           "log",     "audio-mixer", "controls", "properties",
-                                           "chat",    "browser",     "replay"};
+    const std::vector<std::string> pool = {"program",  "scenes",   "sources",     "info",
+                                           "log",      "controls", "audio-mixer", "properties",
+                                           "outputs",  "chat",     "browser",     "replay",
+                                           "broadcast-stats"};
     const Constraints cs = Constraints::studio_defaults();
 
     for (const Viewport& vp : {vp_of(3840.0, 2160.0), vp_of(1366.0, 768.0)}) {
@@ -796,7 +798,7 @@ LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
 LTEST_CASE(a_tight_window_refuses_drops_without_corrupting_anything) {
     // The same loop as above, but small enough that refusals are the common case. The point is
     // the refusal path, so assert it was actually taken.
-    const std::vector<std::string> pool = {"program", "scenes", "sources",    "stats",
+    const std::vector<std::string> pool = {"program", "scenes", "sources",    "info",
                                            "log",     "chat",   "browser",    "replay",
                                            "properties"};
     const Constraints cs = Constraints::studio_defaults();

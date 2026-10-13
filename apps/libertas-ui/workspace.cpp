@@ -30,7 +30,9 @@ constexpr std::array kKnownPanels = {
     KnownPanel{"inputs", "Inputs"},
     KnownPanel{"audio-mixer", "Audio Mixer"},
     KnownPanel{"controls", "Controls"},
-    KnownPanel{"stats", "Stats"},
+    KnownPanel{"outputs", "Outputs"},
+    KnownPanel{"info", "Info"},
+    KnownPanel{"broadcast-stats", "Broadcast Stats"},
     KnownPanel{"log", "Log"},
     KnownPanel{"shortcuts", "Shortcuts"},
 };

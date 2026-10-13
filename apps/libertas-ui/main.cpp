@@ -3,6 +3,7 @@
 
 #include "document.hpp"
 #include "shortcuts.hpp"
+#include "telemetry.hpp"
 #include "theme.hpp"
 #include "workspace.hpp"
 
@@ -33,6 +34,12 @@
 #include <filesystem>
 
 namespace {
+
+std::filesystem::path home_dir() {
+    if (const char* h = std::getenv("HOME"); h && *h)
+        return std::filesystem::path(h);
+    return std::filesystem::path(".");
+}
 
 std::filesystem::path config_dir() {
     if (const char* x = std::getenv("XDG_CONFIG_HOME"); x && *x)
@@ -140,6 +147,13 @@ int main(int argc, char** argv) {
             ? std::filesystem::path(parser.value(project_opt).toStdString())
             : std::filesystem::path{});
     libertas::ui::Shortcuts::configure(config_dir() / "bindings.toml");
+    // Free space is measured where recordings would land, which is beside the project. With no
+    // project open there is nothing to measure against yet, so it falls back to the home
+    // directory rather than reporting the build tree's filesystem.
+    libertas::ui::Telemetry::configure(
+        parser.isSet(project_opt)
+            ? parser.value(project_opt)
+            : QString::fromStdString(home_dir().string()));
 
     QQmlApplicationEngine engine;
 
@@ -362,7 +376,7 @@ int main(int argc, char** argv) {
 
         // Escape cancels in flight (ADR-0016 rule 7) and changes nothing.
         const int before_cancel = workspace.revision();
-        workspace.beginDrag(QStringLiteral("stats"));
+        workspace.beginDrag(QStringLiteral("info"));
         workspace.updateDrag(px, py);
         workspace.cancelDrag();
         report(!workspace.dragging(), "Escape cancels a drag in flight");
@@ -396,11 +410,11 @@ int main(int argc, char** argv) {
         workspace.redo();
 
         // Reopening a closed panel: the answer to losing a dock off-screen.
-        workspace.closePanel(QStringLiteral("stats"));
-        report(workspace.closedPanels().contains(QStringLiteral("stats")),
+        workspace.closePanel(QStringLiteral("info"));
+        report(workspace.closedPanels().contains(QStringLiteral("info")),
                "a closed panel is listed as reopenable");
-        workspace.openPanel(QStringLiteral("stats"));
-        report(!workspace.closedPanels().contains(QStringLiteral("stats")),
+        workspace.openPanel(QStringLiteral("info"));
+        report(!workspace.closedPanels().contains(QStringLiteral("info")),
                "and comes back when asked");
 
         // Even the program canvas, which in OBS is the thing that gets lost.
@@ -850,6 +864,52 @@ int main(int argc, char** argv) {
             report(!refusal.isEmpty(), "and routing one says so rather than failing quietly");
         }
 
+        // ---- machine telemetry ------------------------------------------------------------
+        //
+        // The half of the broadcast statistics that is real today. What matters here is not the
+        // values -- they are whatever the machine is doing -- but that a figure is never
+        // reported as available-and-zero when it was not actually read: a CPU of 0.0% and a
+        // *missing* CPU reading look identical in a panel that does not distinguish them.
+        {
+            // The constructor takes the first sample, so the panel is not blank for a second.
+            libertas::ui::Telemetry telemetry;
+            // CPU needs two samples to have an interval to divide by, which is itself the
+            // reason the first one must not claim to be a reading.
+            report(!telemetry.cpuAvailable(),
+                   "the first CPU sample reports as unavailable rather than as zero");
+            telemetry.sample();
+            report(telemetry.cpuAvailable() && telemetry.cpuPercent() >= 0.0,
+                   "and the second has an interval to measure against");
+
+            report(telemetry.memoryAvailable() && telemetry.memoryBytes() > 1024 * 1024,
+                   "memory is read from /proc and is a plausible size");
+            report(telemetry.diskAvailable() && telemetry.diskFreeBytes() > 0,
+                   "free disk space is read where recordings would land");
+
+            // The GPU figures are allowed to be missing -- a machine with no NVIDIA driver is a
+            // supported machine -- but they may not be missing *silently*.
+            if (telemetry.gpuAvailable()) {
+                report(!telemetry.gpuName().isEmpty(), "the GPU names itself");
+                report(telemetry.gpuPercent() >= 0.0 && telemetry.gpuPercent() <= 100.0,
+                       "GPU load is a percentage");
+                report(telemetry.vramTotalBytes() > 0 &&
+                           telemetry.vramUsedBytes() <= telemetry.vramTotalBytes(),
+                       "VRAM in use is within VRAM fitted");
+                std::fprintf(stderr, "       (%s: %.0f%% gpu, %.0f%% encoder, %.1f/%.1f GiB)\n",
+                             telemetry.gpuName().toUtf8().constData(), telemetry.gpuPercent(),
+                             telemetry.encoderPercent(),
+                             telemetry.vramUsedBytes() / 1073741824.0,
+                             telemetry.vramTotalBytes() / 1073741824.0);
+            } else {
+                report(!telemetry.gpuNote().isEmpty(),
+                       "a machine with no GPU telemetry says why rather than showing zeroes");
+            }
+
+            // The renderer's figures are not invented while there is no renderer.
+            report(!telemetry.rendererAttached(),
+                   "no render process is claimed while none exists");
+        }
+
         // ---- the controls panel: decks and outputs ---------------------------------------
         //
         // Nothing broadcasts yet, so what is asserted is the document state the renderer will
@@ -916,9 +976,17 @@ int main(int argc, char** argv) {
         settle();
         report(document.outputsModel()->rowCount() == outputs_before + 1,
                "an output can be added");
+        // Outputs shares a tab group with Controls, and only the visible tab is built -- one
+        // Loader per panel, not one per panel per frame. So the tab has to be brought forward
+        // before asking what it drew, which is itself worth asserting: a panel that is a
+        // background tab must not be instantiated at all.
+        report(collect(window->contentItem(), QStringLiteral("outputBlock")).isEmpty(),
+               "a background tab is not built while it is hidden");
+        workspace.activate(QStringLiteral("outputs"));
+        settle();
         report(collect(window->contentItem(), QStringLiteral("outputBlock")).size() ==
                    outputs_before + 1,
-               "and the panel drew it");
+               "and the panel draws it once the tab is brought forward");
         report(!out_at(outputs_before, 10).toBool(),
                "disabled, because an enabled one would be a keystroke from going live");
 

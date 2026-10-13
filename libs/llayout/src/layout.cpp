@@ -58,6 +58,12 @@ Constraints Constraints::studio_defaults() {
     // near it, not just on itself.
     cs.set("audio-mixer", PanelMin{260.0, 130.0});
     cs.set("controls", PanelMin{180.0, 130.0});
+    cs.set("outputs", PanelMin{220.0, 130.0});
+    // The five-column output table wants about 340px, and the panel folds it into two lines per
+    // output below that rather than demanding the space. Asking for 300 here was tried and
+    // reverted: it does not fit the default layout's right-hand column, which is 18% of the
+    // window, and the engine then water-fills against it and the whole layout stops scaling.
+    cs.set("broadcast-stats", PanelMin{200.0, 160.0});
     return cs;
 }
 
@@ -91,9 +97,12 @@ Layout Layout::default_studio() {
     const NodeId scenes = tabs({"scenes"});
     const NodeId sources = tabs({"sources"});
     const NodeId program = tabs({"program"});
-    const NodeId inspect = tabs({"properties", "stats", "log"});
+    const NodeId inspect = tabs({"properties", "info", "broadcast-stats", "log"});
     const NodeId mixer = tabs({"audio-mixer"});
-    const NodeId controls = tabs({"controls"});
+    // Controls and Outputs share a group: one is touched constantly during a show and the other
+    // is set up once and then wanted out of the way, so they are the same space at different
+    // times rather than two columns competing for it.
+    const NodeId controls = tabs({"controls", "outputs"});
 
     const NodeId left = split(Axis::Vertical, {scenes, sources}, {0.5, 0.5});
     const NodeId upper = split(Axis::Horizontal, {left, program, inspect}, {0.18, 0.64, 0.18});

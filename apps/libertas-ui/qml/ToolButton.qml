@@ -65,6 +65,6 @@ Rectangle {
     ToolTipText {
         text: button.tip
         visible: mouse.containsMouse && button.tip !== ""
-        anchorItem: button
+        hoverArea: mouse
     }
 }

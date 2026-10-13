@@ -178,7 +178,7 @@ Item {
                         : (!row.available ? qsTr("Nothing performs this yet; the binding is kept for when it arrives") : "")
                     visible: conflictHover.containsMouse &&
                              (row.conflict !== "" || !row.available)
-                    anchorItem: triggerBox
+                    hoverArea: conflictHover
                 }
 
                 MouseArea {
