@@ -275,8 +275,9 @@ private:
             if (s.type.empty())
                 err(s.id, std::format("source '{}' has no type", s.name));
             if (s.asset && !exists_as(*s.asset, "asset"))
-                err(s.id, std::format("source '{}' refers to asset {}, which does not exist",
-                                      s.name, s.asset->to_string()));
+                warn(s.id, std::format("source '{}' refers to asset {}, which is not in the "
+                                       "manifest",
+                                       s.name, s.asset->to_string()));
         }
         for (const Asset& a : p_.assets) {
             if (a.path.empty())
@@ -314,17 +315,26 @@ private:
                 case RefKind::Bus:    kind = "bus"; break;
                 case RefKind::Node:   kind = nullptr; break;
                 }
+                // A dangling reference is a *warning*, deliberately.
+                //
+                // It is not structurally broken: the node draws nothing, exactly as it would
+                // with no reference set at all, and the only difference is that this one records
+                // that something was deleted. Making it an error would mean a scene could not be
+                // deleted while anything cloned it and a source could not be removed while any
+                // layer used it -- a web of refusals that makes ordinary editing a puzzle. The
+                // operator is told what is missing and can fix it; nothing silently renders
+                // wrong. Errors are reserved for documents that cannot be rendered as written.
                 if (kind) {
                     if (!exists_as(r.id, kind))
-                        err(r.from, std::format("refers to {} {}, which does not exist",
-                                                ref_kind_name(r.kind), r.id.to_string()));
+                        warn(r.from, std::format("refers to {} {}, which does not exist",
+                                                 ref_kind_name(r.kind), r.id.to_string()));
                 } else {
                     // Node references resolve within the project, not only within this scene: a
                     // Reference may legitimately point at a node in another scene.
                     if (owners_.find(r.id) == owners_.end())
-                        err(r.from,
-                            std::format("refers to node {}, which does not exist",
-                                        r.id.to_string()));
+                        warn(r.from,
+                             std::format("refers to node {}, which does not exist",
+                                         r.id.to_string()));
                 }
             }
 
@@ -334,9 +344,9 @@ private:
                                            "not in it",
                                            s.name, node_id.to_string()));
                 if (ov.bus && !exists_as(*ov.bus, "bus"))
-                    err(s.id, std::format("scene '{}' routes a layer to bus {}, which does not "
-                                          "exist",
-                                          s.name, ov.bus->to_string()));
+                    warn(s.id, std::format("scene '{}' routes a layer to bus {}, which does not "
+                                           "exist",
+                                           s.name, ov.bus->to_string()));
             }
         }
     }
@@ -346,12 +356,13 @@ private:
             if (!exists_as(d.canvas, "canvas"))
                 err(d.id, std::format("deck '{}' targets canvas {}, which does not exist", d.name,
                                       d.canvas.to_string()));
+            // Same reasoning as a dangling reference: a deck pointing at a deleted scene shows
+            // nothing, which is what a deck with no program scene does anyway. The canvas above
+            // is different -- a deck without one has no output surface at all.
             if (d.program_scene && !exists_as(*d.program_scene, "scene"))
-                err(d.id, std::format("deck '{}' has a program scene that does not exist",
-                                      d.name));
+                warn(d.id, std::format("deck '{}' has a program scene that was removed", d.name));
             if (d.preview_scene && !exists_as(*d.preview_scene, "scene"))
-                err(d.id, std::format("deck '{}' has a preview scene that does not exist",
-                                      d.name));
+                warn(d.id, std::format("deck '{}' has a preview scene that was removed", d.name));
             if (d.transition_ms < 0)
                 err(d.id, std::format("deck '{}' has a transition of {} ms", d.name,
                                       d.transition_ms));

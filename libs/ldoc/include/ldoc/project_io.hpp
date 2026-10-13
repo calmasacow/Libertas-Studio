@@ -65,7 +65,13 @@ struct OpenResult {
     bool read_only = false;
     /// An interrupted save was found and completed.
     bool recovered = false;
+    /// Commands replayed from the journal: work done after the last save and not lost to the
+    /// crash that followed it.
+    std::size_t recovered_commands = 0;
 };
+
+/// Where the command journal for a project lives.
+[[nodiscard]] std::filesystem::path journal_path(const std::filesystem::path& dir);
 
 [[nodiscard]] std::expected<OpenResult, std::string> open_project(
     const std::filesystem::path& dir);

@@ -3,7 +3,7 @@
 
 #include "ldoc/json.hpp"
 
-#include <json/json.h>
+#include "json_detail.hpp"
 
 #include <format>
 #include <limits>
@@ -12,7 +12,7 @@
 #include <sstream>
 
 namespace ldoc {
-namespace {
+namespace detail {
 
 using Jv = Json::Value;
 
@@ -343,34 +343,8 @@ Jv enc(const Output& o_) {
     return o;
 }
 
-Jv enc(const Settings& s) {
-    Jv o{Json::objectValue};
-    o["sample_rate"] = s.sample_rate;
-    o["render_queue_frames"] = s.render_queue_frames;
-    o["extra"] = enc(s.extra);
-    return o;
-}
-
-std::string write(const Jv& root) {
-    Json::StreamWriterBuilder b;
-    b["indentation"] = "  ";
-    // Enough digits that a double survives the round trip exactly.
-    b["precision"] = 17;
-    b["precisionType"] = "significant";
-    b["emitUTF8"] = true;
-    const std::unique_ptr<Json::StreamWriter> w{b.newStreamWriter()};
-    std::ostringstream out;
-    w->write(root, &out);
-    out << '\n';
-    return out.str();
-}
-
-} // namespace
-
-std::string scene_to_json(const Scene& scene, std::uint64_t generation) {
+Jv enc_scene(const Scene& scene) {
     Jv root{Json::objectValue};
-    root["schema_version"] = kSchemaVersion;
-    root["generation"] = static_cast<Json::UInt64>(generation);
     root["id"] = enc(scene.id);
     root["name"] = scene.name;
 
@@ -396,6 +370,39 @@ std::string scene_to_json(const Scene& scene, std::uint64_t generation) {
         overrides[node_id.to_string()] = o;
     }
     root["audio_overrides"] = overrides;
+    return root;
+}
+
+Jv enc(const Settings& s) {
+    Jv o{Json::objectValue};
+    o["sample_rate"] = s.sample_rate;
+    o["render_queue_frames"] = s.render_queue_frames;
+    o["extra"] = enc(s.extra);
+    return o;
+}
+
+std::string write(const Jv& root) {
+    Json::StreamWriterBuilder b;
+    b["indentation"] = "  ";
+    // Enough digits that a double survives the round trip exactly.
+    b["precision"] = 17;
+    b["precisionType"] = "significant";
+    b["emitUTF8"] = true;
+    const std::unique_ptr<Json::StreamWriter> w{b.newStreamWriter()};
+    std::ostringstream out;
+    w->write(root, &out);
+    out << '\n';
+    return out.str();
+}
+
+} // namespace detail
+
+using namespace detail;
+
+std::string scene_to_json(const Scene& scene, std::uint64_t generation) {
+    Jv root = detail::enc_scene(scene);
+    root["schema_version"] = kSchemaVersion;
+    root["generation"] = static_cast<Json::UInt64>(generation);
     return write(root);
 }
 
@@ -437,155 +444,121 @@ std::string project_to_json(const Project& project) {
 
 // ---- reading --------------------------------------------------------------------------------
 
-namespace {
+namespace detail {
 
-/// Accumulates the first error with a path to it, so a message names the thing that is wrong
-/// rather than just the kind of wrongness. Every getter is a no-op once an error has been
-/// recorded, which keeps the decoders free of error plumbing.
-class Rd {
-public:
-    [[nodiscard]] bool ok() const { return err_.empty(); }
-    [[nodiscard]] const std::string& error() const { return err_; }
+void Rd::fail(std::string_view path, std::string_view msg) {
+    if (err_.empty())
+        err_ = std::format("{}: {}", path, msg);
+}
 
-    void fail(std::string_view path, std::string_view msg) {
-        if (err_.empty())
-            err_ = std::format("{}: {}", path, msg);
+/// Present but the wrong type is an error; absent takes the default. Lenient on read, strict on
+/// write: a project from an older build must still open, but a corrupted or hand-broken field
+/// must not be silently reinterpreted.
+bool Rd::boolean(const Jv& o, const char* key, std::string_view path, bool def) {
+    const Jv& v = o[key];
+    if (v.isNull())
+        return def;
+    if (!v.isBool()) {
+        fail(path, std::format("'{}' is not a boolean", key));
+        return def;
     }
+    return v.asBool();
+}
 
-    /// Present but the wrong type is an error; absent takes the default. Lenient on read, strict
-    /// on write: a project from an older build must still open, but a corrupted or hand-broken
-    /// field must not be silently reinterpreted.
-    bool boolean(const Jv& o, const char* key, std::string_view path, bool def) {
-        const Jv& v = o[key];
-        if (v.isNull())
-            return def;
-        if (!v.isBool()) {
-            fail(path, std::format("'{}' is not a boolean", key));
-            return def;
-        }
-        return v.asBool();
+double Rd::number(const Jv& o, const char* key, std::string_view path, double def) {
+    const Jv& v = o[key];
+    if (v.isNull())
+        return def;
+    if (!v.isNumeric()) {
+        fail(path, std::format("'{}' is not a number", key));
+        return def;
     }
+    return v.asDouble();
+}
 
-    double number(const Jv& o, const char* key, std::string_view path, double def) {
-        const Jv& v = o[key];
-        if (v.isNull())
-            return def;
-        if (!v.isNumeric()) {
-            fail(path, std::format("'{}' is not a number", key));
-            return def;
-        }
-        return v.asDouble();
+std::int64_t Rd::integer(const Jv& o, const char* key, std::string_view path, std::int64_t def) {
+    const Jv& v = o[key];
+    if (v.isNull())
+        return def;
+    if (!v.isIntegral()) {
+        fail(path, std::format("'{}' is not a whole number", key));
+        return def;
     }
+    return v.asInt64();
+}
 
-    std::int64_t integer(const Jv& o, const char* key, std::string_view path, std::int64_t def) {
-        const Jv& v = o[key];
-        if (v.isNull())
-            return def;
-        if (!v.isIntegral()) {
-            fail(path, std::format("'{}' is not a whole number", key));
-            return def;
-        }
-        return v.asInt64();
-    }
-
-    std::int32_t integer32(const Jv& o, const char* key, std::string_view path,
+std::int32_t Rd::integer32(const Jv& o, const char* key, std::string_view path,
                            std::int32_t def) {
-        const std::int64_t v = integer(o, key, path, def);
-        if (v < std::numeric_limits<std::int32_t>::min() ||
-            v > std::numeric_limits<std::int32_t>::max()) {
-            fail(path, std::format("'{}' is out of range", key));
-            return def;
-        }
-        return static_cast<std::int32_t>(v);
+    const std::int64_t v = integer(o, key, path, def);
+    if (v < std::numeric_limits<std::int32_t>::min() ||
+        v > std::numeric_limits<std::int32_t>::max()) {
+        fail(path, std::format("'{}' is out of range", key));
+        return def;
     }
+    return static_cast<std::int32_t>(v);
+}
 
-    std::string text(const Jv& o, const char* key, std::string_view path,
-                     std::string def = {}) {
-        const Jv& v = o[key];
-        if (v.isNull())
-            return def;
-        if (!v.isString()) {
-            fail(path, std::format("'{}' is not a string", key));
-            return def;
-        }
-        return v.asString();
+std::string Rd::text(const Jv& o, const char* key, std::string_view path, std::string def) {
+    const Jv& v = o[key];
+    if (v.isNull())
+        return def;
+    if (!v.isString()) {
+        fail(path, std::format("'{}' is not a string", key));
+        return def;
     }
+    return v.asString();
+}
 
-    [[nodiscard]] std::optional<Id> parse_id(std::string_view text_value, std::string_view path,
-                                             const char* key) {
-        const auto id = Id::parse(text_value);
-        if (!id)
-            fail(path, std::format("'{}' is not an id", key));
-        return id;
+std::optional<Id> Rd::parse_id(std::string_view value, std::string_view path, const char* key) {
+    const auto parsed = Id::parse(value);
+    if (!parsed)
+        fail(path, std::format("'{}' is not an id", key));
+    return parsed;
+}
+
+/// A required id. A missing or malformed one is an error: nothing in this format is addressable
+/// without it.
+Id Rd::id(const Jv& o, const char* key, std::string_view path) {
+    const Jv& v = o[key];
+    if (!v.isString()) {
+        fail(path, std::format("'{}' is missing or is not an id", key));
+        return Id::nil();
     }
+    return parse_id(v.asString(), path, key).value_or(Id::nil());
+}
 
-    /// A required id. A missing or malformed one is an error: nothing in this format is
-    /// addressable without it.
-    Id id(const Jv& o, const char* key, std::string_view path) {
-        const Jv& v = o[key];
-        if (!v.isString()) {
-            fail(path, std::format("'{}' is missing or is not an id", key));
-            return Id::nil();
-        }
-        return parse_id(v.asString(), path, key).value_or(Id::nil());
+std::optional<Id> Rd::id_opt(const Jv& o, const char* key, std::string_view path) {
+    const Jv& v = o[key];
+    if (v.isNull())
+        return std::nullopt;
+    if (!v.isString()) {
+        fail(path, std::format("'{}' is not an id", key));
+        return std::nullopt;
     }
+    return parse_id(v.asString(), path, key);
+}
 
-    std::optional<Id> id_opt(const Jv& o, const char* key, std::string_view path) {
-        const Jv& v = o[key];
-        if (v.isNull())
-            return std::nullopt;
-        if (!v.isString()) {
-            fail(path, std::format("'{}' is not an id", key));
-            return std::nullopt;
-        }
-        return parse_id(v.asString(), path, key);
+const Jv* Rd::object(const Jv& o, const char* key, std::string_view path) {
+    const Jv& v = o[key];
+    if (v.isNull())
+        return nullptr;
+    if (!v.isObject()) {
+        fail(path, std::format("'{}' is not an object", key));
+        return nullptr;
     }
+    return &v;
+}
 
-    const Jv* object(const Jv& o, const char* key, std::string_view path) {
-        const Jv& v = o[key];
-        if (v.isNull())
-            return nullptr;
-        if (!v.isObject()) {
-            fail(path, std::format("'{}' is not an object", key));
-            return nullptr;
-        }
-        return &v;
+const Jv* Rd::array(const Jv& o, const char* key, std::string_view path) {
+    const Jv& v = o[key];
+    if (v.isNull())
+        return nullptr;
+    if (!v.isArray()) {
+        fail(path, std::format("'{}' is not an array", key));
+        return nullptr;
     }
-
-    const Jv* array(const Jv& o, const char* key, std::string_view path) {
-        const Jv& v = o[key];
-        if (v.isNull())
-            return nullptr;
-        if (!v.isArray()) {
-            fail(path, std::format("'{}' is not an array", key));
-            return nullptr;
-        }
-        return &v;
-    }
-
-    /// Looks a named value up in an enum table, failing rather than silently defaulting: a
-    /// blend mode nobody recognises must not quietly become Normal.
-    template <typename T, typename F>
-    T enumerated(const Jv& o, const char* key, std::string_view path, F from_string, T def) {
-        const Jv& v = o[key];
-        if (v.isNull())
-            return def;
-        if (!v.isString()) {
-            fail(path, std::format("'{}' is not a string", key));
-            return def;
-        }
-        const auto parsed = from_string(v.asString());
-        if (!parsed) {
-            fail(path, std::format("'{}' is '{}', which this build does not know", key,
-                                   v.asString()));
-            return def;
-        }
-        return *parsed;
-    }
-
-private:
-    std::string err_;
-};
+    return &v;
+}
 
 Vec2 dec_vec2(Rd& rd, const Jv& o, std::string_view path) {
     return Vec2{rd.number(o, "x", path, 0.0), rd.number(o, "y", path, 0.0)};
@@ -749,6 +722,19 @@ std::vector<Send> dec_sends(Rd& rd, const Jv& parent, const char* key, std::stri
 
 Node dec_node(Rd& rd, const Jv& o, std::string_view path);
 
+CanvasOverride dec_canvas_override(Rd& rd, const Jv& e, std::string_view path) {
+    CanvasOverride co;
+    if (rd.object(e, "transform", path))
+        co.transform = dec_transform(rd, e, "transform", path);
+    if (rd.object(e, "layout", path))
+        co.layout = dec_layout(rd, e, "layout", path);
+    if (!e["visible"].isNull())
+        co.visible = rd.boolean(e, "visible", path, true);
+    if (const Jv* b = rd.object(e, "blend", path))
+        co.blend = dec_blend_obj(rd, *b, path);
+    return co;
+}
+
 NodeData dec_node_data(Rd& rd, NodeKind kind, const Jv& parent, std::string_view path) {
     const Jv* o = rd.object(parent, "data", path);
     const Jv empty{Json::objectValue};
@@ -832,21 +818,51 @@ Node dec_node(Rd& rd, const Jv& o, std::string_view path) {
                 rd.fail(path, "a canvas override is not an object");
                 break;
             }
-            CanvasOverride co;
-            if (const Jv* t = rd.object(e, "transform", path))
-                co.transform = dec_transform(rd, e, "transform", path), (void)t;
-            if (const Jv* l = rd.object(e, "layout", path))
-                co.layout = dec_layout(rd, e, "layout", path), (void)l;
-            if (!e["visible"].isNull())
-                co.visible = rd.boolean(e, "visible", path, true);
-            if (const Jv* b = rd.object(e, "blend", path))
-                co.blend = dec_blend_obj(rd, *b, path);
-            n.canvas_overrides.emplace(*canvas_id, co);
+            n.canvas_overrides.emplace(*canvas_id, dec_canvas_override(rd, e, path));
         }
     }
 
     n.data = dec_node_data(rd, kind, o, path);
     return n;
+}
+
+Scene dec_scene(Rd& rd, const Jv& root, std::string_view path) {
+    Scene s;
+    s.id = rd.id(root, "id", path);
+    s.name = rd.text(root, "name", path);
+    if (const Jv* roots = rd.array(root, "roots", path)) {
+        for (const Jv& n : *roots) {
+            if (!n.isObject()) {
+                rd.fail(path, "a root is not an object");
+                break;
+            }
+            s.roots.push_back(dec_node(rd, n, path));
+        }
+    }
+    if (const Jv* ov = rd.object(root, "audio_overrides", path)) {
+        for (const std::string& key : ov->getMemberNames()) {
+            const auto node_id = Id::parse(key);
+            if (!node_id) {
+                rd.fail(path, "an audio override is keyed by something that is not an id");
+                break;
+            }
+            const Jv& e = (*ov)[key];
+            if (!e.isObject()) {
+                rd.fail(path, "an audio override is not an object");
+                break;
+            }
+            AudioOverride a;
+            a.bus = rd.id_opt(e, "bus", path);
+            if (!e["gain_db"].isNull())
+                a.gain_db = rd.number(e, "gain_db", path, 0.0);
+            if (!e["mute"].isNull())
+                a.mute = rd.boolean(e, "mute", path, false);
+            if (!e["sends"].isNull())
+                a.sends = dec_sends(rd, e, "sends", path);
+            s.audio_overrides.emplace(*node_id, a);
+        }
+    }
+    return s;
 }
 
 std::optional<Jv> parse_text(std::string_view text, std::string& error) {
@@ -880,7 +896,7 @@ bool check_version(Rd& rd, const Jv& root, std::string_view path) {
     return true;
 }
 
-} // namespace
+} // namespace detail
 
 std::expected<SceneFile, std::string> scene_from_json(std::string_view text) {
     std::string parse_error;
@@ -897,41 +913,7 @@ std::expected<SceneFile, std::string> scene_from_json(std::string_view text) {
     SceneFile out;
     const std::int64_t gen = rd.integer(*root, "generation", "scene", 0);
     out.generation = gen < 0 ? 0 : static_cast<std::uint64_t>(gen);
-    Scene& s = out.scene;
-    s.id = rd.id(*root, "id", "scene");
-    s.name = rd.text(*root, "name", "scene");
-    if (const Jv* roots = rd.array(*root, "roots", "scene")) {
-        for (const Jv& n : *roots) {
-            if (!n.isObject()) {
-                rd.fail("scene.roots", "a root is not an object");
-                break;
-            }
-            s.roots.push_back(dec_node(rd, n, "scene.roots"));
-        }
-    }
-    if (const Jv* ov = rd.object(*root, "audio_overrides", "scene")) {
-        for (const std::string& key : ov->getMemberNames()) {
-            const auto node_id = Id::parse(key);
-            if (!node_id) {
-                rd.fail("scene.audio_overrides", "keyed by something that is not an id");
-                break;
-            }
-            const Jv& e = (*ov)[key];
-            if (!e.isObject()) {
-                rd.fail("scene.audio_overrides", "an entry is not an object");
-                break;
-            }
-            AudioOverride a;
-            a.bus = rd.id_opt(e, "bus", "scene.audio_overrides");
-            if (!e["gain_db"].isNull())
-                a.gain_db = rd.number(e, "gain_db", "scene.audio_overrides", 0.0);
-            if (!e["mute"].isNull())
-                a.mute = rd.boolean(e, "mute", "scene.audio_overrides", false);
-            if (!e["sends"].isNull())
-                a.sends = dec_sends(rd, e, "sends", "scene.audio_overrides");
-            s.audio_overrides.emplace(*node_id, a);
-        }
-    }
+    out.scene = dec_scene(rd, *root, "scene");
     if (!rd.ok())
         return std::unexpected(rd.error());
     return out;

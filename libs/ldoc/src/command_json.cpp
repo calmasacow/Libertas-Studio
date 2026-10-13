@@ -1,0 +1,290 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "ldoc/command.hpp"
+
+#include "json_detail.hpp"
+
+#include <format>
+#include <string>
+
+namespace ldoc {
+namespace {
+
+using detail::Jv;
+using detail::Rd;
+
+Jv enc_opt_id(const std::optional<Id>& id) {
+    return id ? detail::enc(*id) : Jv{Json::nullValue};
+}
+
+Jv enc_index(std::size_t i) { return Jv{static_cast<Json::UInt64>(i)}; }
+
+Jv body(const SetProjectName& c) {
+    Jv o{Json::objectValue};
+    o["name"] = c.name;
+    return o;
+}
+
+Jv body(const AddScene& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc_scene(c.scene);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RemoveScene& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    return o;
+}
+
+Jv body(const RenameScene& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["name"] = c.name;
+    return o;
+}
+
+Jv body(const AddNode& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["parent"] = enc_opt_id(c.parent);
+    o["index"] = enc_index(c.index);
+    o["node"] = detail::enc(c.node);
+    return o;
+}
+
+Jv body(const RemoveNode& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    return o;
+}
+
+Jv body(const MoveNode& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["parent"] = enc_opt_id(c.parent);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RenameNode& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["name"] = c.name;
+    return o;
+}
+
+Jv body(const SetNodeVisible& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["visible"] = c.visible;
+    return o;
+}
+
+Jv body(const SetNodeLocked& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["locked"] = c.locked;
+    return o;
+}
+
+Jv body(const SetNodeTransform& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["transform"] = detail::enc(c.transform);
+    return o;
+}
+
+Jv body(const SetNodeLayout& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["layout"] = detail::enc(c.layout);
+    return o;
+}
+
+Jv body(const SetNodeBlend& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["blend"] = detail::enc(c.blend);
+    return o;
+}
+
+Jv body(const SetCanvasOverride& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["canvas"] = detail::enc(c.canvas);
+    o["value"] = c.value ? detail::enc(*c.value) : Jv{Json::nullValue};
+    return o;
+}
+
+Jv body(const AddEffect& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["index"] = enc_index(c.index);
+    o["effect"] = detail::enc(c.effect);
+    return o;
+}
+
+Jv body(const RemoveEffect& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["effect"] = detail::enc(c.effect);
+    return o;
+}
+
+Jv body(const SetEffectParams& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["effect"] = detail::enc(c.effect);
+    o["params"] = detail::enc(c.params);
+    return o;
+}
+
+Jv body(const SetEffectEnabled& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["effect"] = detail::enc(c.effect);
+    o["enabled"] = c.enabled;
+    return o;
+}
+
+Jv body(const SetDeckProgram& c) {
+    Jv o{Json::objectValue};
+    o["deck"] = detail::enc(c.deck);
+    o["scene"] = enc_opt_id(c.scene);
+    return o;
+}
+
+Jv body(const SetDeckPreview& c) {
+    Jv o{Json::objectValue};
+    o["deck"] = detail::enc(c.deck);
+    o["scene"] = enc_opt_id(c.scene);
+    return o;
+}
+
+std::size_t dec_index(Rd& rd, const Jv& o, const char* key, std::string_view path) {
+    const std::int64_t v = rd.integer(o, key, path, 0);
+    if (v < 0) {
+        rd.fail(path, "a position cannot be negative");
+        return 0;
+    }
+    return static_cast<std::size_t>(v);
+}
+
+} // namespace
+
+std::string command_to_json(const Command& command) {
+    Jv root = std::visit([](const auto& c) { return body(c); }, command);
+    root["cmd"] = std::string{command_name(command)};
+    return detail::write(root);
+}
+
+std::expected<Command, std::string> command_from_json(std::string_view text) {
+    std::string parse_error;
+    const auto root = detail::parse_text(text, parse_error);
+    if (!root)
+        return std::unexpected(parse_error);
+    if (!root->isObject())
+        return std::unexpected("a command is not a JSON object");
+
+    Rd rd;
+    const std::string name = rd.text(*root, "cmd", "command");
+    if (name.empty())
+        return std::unexpected("a command has no 'cmd'");
+    const Jv& o = *root;
+    const std::string_view path = "command";
+
+    Command out = SetProjectName{};
+    if (name == "project.set-name") {
+        out = SetProjectName{rd.text(o, "name", path)};
+    } else if (name == "scene.add") {
+        const Jv* sv = rd.object(o, "scene", path);
+        if (!sv)
+            return std::unexpected("scene.add has no scene");
+        out = AddScene{detail::dec_scene(rd, *sv, path), dec_index(rd, o, "index", path)};
+    } else if (name == "scene.remove") {
+        out = RemoveScene{rd.id(o, "scene", path)};
+    } else if (name == "scene.rename") {
+        out = RenameScene{rd.id(o, "scene", path), rd.text(o, "name", path)};
+    } else if (name == "node.add") {
+        const Jv* nv = rd.object(o, "node", path);
+        if (!nv)
+            return std::unexpected("node.add has no node");
+        out = AddNode{rd.id(o, "scene", path), rd.id_opt(o, "parent", path),
+                      dec_index(rd, o, "index", path), detail::dec_node(rd, *nv, path)};
+    } else if (name == "node.remove") {
+        out = RemoveNode{rd.id(o, "scene", path), rd.id(o, "node", path)};
+    } else if (name == "node.move") {
+        out = MoveNode{rd.id(o, "scene", path), rd.id(o, "node", path),
+                       rd.id_opt(o, "parent", path), dec_index(rd, o, "index", path)};
+    } else if (name == "node.rename") {
+        out = RenameNode{rd.id(o, "scene", path), rd.id(o, "node", path),
+                         rd.text(o, "name", path)};
+    } else if (name == "node.set-visible") {
+        out = SetNodeVisible{rd.id(o, "scene", path), rd.id(o, "node", path),
+                             rd.boolean(o, "visible", path, true)};
+    } else if (name == "node.set-locked") {
+        out = SetNodeLocked{rd.id(o, "scene", path), rd.id(o, "node", path),
+                            rd.boolean(o, "locked", path, false)};
+    } else if (name == "node.set-transform") {
+        out = SetNodeTransform{rd.id(o, "scene", path), rd.id(o, "node", path),
+                               detail::dec_transform(rd, o, "transform", path)};
+    } else if (name == "node.set-layout") {
+        out = SetNodeLayout{rd.id(o, "scene", path), rd.id(o, "node", path),
+                            detail::dec_layout(rd, o, "layout", path)};
+    } else if (name == "node.set-blend") {
+        out = SetNodeBlend{rd.id(o, "scene", path), rd.id(o, "node", path),
+                           detail::dec_blend(rd, o, "blend", path)};
+    } else if (name == "node.set-canvas-override") {
+        std::optional<CanvasOverride> value;
+        if (const Jv* v = rd.object(o, "value", path))
+            value = detail::dec_canvas_override(rd, *v, path);
+        out = SetCanvasOverride{rd.id(o, "scene", path), rd.id(o, "node", path),
+                                rd.id(o, "canvas", path), value};
+    } else if (name == "effect.add") {
+        const Jv* ev = rd.object(o, "effect", path);
+        if (!ev)
+            return std::unexpected("effect.add has no effect");
+        out = AddEffect{rd.id(o, "scene", path), rd.id(o, "node", path),
+                        dec_index(rd, o, "index", path), detail::dec_effect(rd, *ev, path)};
+    } else if (name == "effect.remove") {
+        out = RemoveEffect{rd.id(o, "scene", path), rd.id(o, "node", path),
+                           rd.id(o, "effect", path)};
+    } else if (name == "effect.set-params") {
+        out = SetEffectParams{rd.id(o, "scene", path), rd.id(o, "node", path),
+                              rd.id(o, "effect", path),
+                              detail::dec_params(rd, o, "params", path)};
+    } else if (name == "effect.set-enabled") {
+        out = SetEffectEnabled{rd.id(o, "scene", path), rd.id(o, "node", path),
+                               rd.id(o, "effect", path), rd.boolean(o, "enabled", path, true)};
+    } else if (name == "deck.set-program") {
+        out = SetDeckProgram{rd.id(o, "deck", path), rd.id_opt(o, "scene", path)};
+    } else if (name == "deck.set-preview") {
+        out = SetDeckPreview{rd.id(o, "deck", path), rd.id_opt(o, "scene", path)};
+    } else {
+        // Not a fallback: a command this build cannot perform must not be quietly skipped, or a
+        // journal written by a newer build would replay as a different session than it recorded.
+        return std::unexpected(std::format("'{}' is not a command this build knows", name));
+    }
+
+    if (!rd.ok())
+        return std::unexpected(rd.error());
+    return out;
+}
+
+} // namespace ldoc

@@ -3,6 +3,8 @@
 
 #include "ldoc/project_io.hpp"
 
+#include "ldoc/history.hpp"
+#include "ldoc/journal.hpp"
 #include "ldoc/json.hpp"
 #include "lcore/atomic_file.hpp"
 
@@ -28,6 +30,7 @@ constexpr std::string_view kPrivateDir = ".libertas";
 constexpr std::string_view kLockFile = "lock";
 constexpr std::string_view kQuarantineDir = "quarantine";
 constexpr std::string_view kStagingPrefix = "staging-";
+constexpr std::string_view kJournalFile = "journal.jsonl";
 
 std::string why(std::string_view what, const fs::path& p) {
     return std::format("{} {}: {}", what, p.string(), std::strerror(errno));
@@ -397,6 +400,53 @@ std::expected<OpenResult, std::string> open_project(const fs::path& dir) {
         result.project.scenes.push_back(std::move(scene->scene));
     }
 
+    // Replay anything the journal holds for exactly this generation. Entries tagged with an
+    // older one are already in the saved project -- a journal left behind by a crash *after* a
+    // save -- and replaying them would apply the same edits twice.
+    const auto replayed = Journal::read(journal_path(dir));
+    if (!replayed) {
+        result.problems.push_back(
+            Problem{Severity::Warning,
+                    std::format("the command journal could not be read: {}", replayed.error()),
+                    Id::nil()});
+    } else {
+        std::size_t applied = 0;
+        std::size_t refused = 0;
+        for (const Journal::Entry& e : replayed->entries) {
+            if (e.base_generation != result.project.generation)
+                continue;
+            if (apply(result.project, e.command))
+                ++applied;
+            else
+                ++refused;
+        }
+        result.recovered_commands = applied;
+        if (applied > 0)
+            result.problems.push_back(
+                Problem{Severity::Warning,
+                        std::format("{} unsaved change(s) were recovered from the journal",
+                                    applied),
+                        Id::nil()});
+        if (refused > 0)
+            result.problems.push_back(
+                Problem{Severity::Error,
+                        std::format("{} journal entr(ies) could not be replayed and were "
+                                    "skipped",
+                                    refused),
+                        Id::nil()});
+        if (replayed->truncated_tail)
+            result.problems.push_back(
+                Problem{Severity::Warning,
+                        "the last journal entry was incomplete and was discarded; one change "
+                        "made just before the interruption has been lost",
+                        Id::nil()});
+        if (replayed->unreadable > 0)
+            result.problems.push_back(
+                Problem{Severity::Error,
+                        std::format("{} journal line(s) were unreadable", replayed->unreadable),
+                        Id::nil()});
+    }
+
     for (Problem& p : validate(result.project))
         result.problems.push_back(std::move(p));
     return result;
@@ -443,10 +493,19 @@ std::expected<void, std::string> save_project(Project& project, const fs::path& 
 
     // Only report the new generation if project.json actually got installed.
     if (const auto text = lc::read_file(dir / kProjectFile)) {
-        if (const auto pf = project_from_json(*text); pf && pf->project.generation == gen)
+        if (const auto pf = project_from_json(*text); pf && pf->project.generation == gen) {
             project.generation = gen;
+            // Everything the journal held is now in the project, so it starts again from empty.
+            // Clearing it before the commit would lose the work if the commit then failed.
+            if (auto j = Journal::open(journal_path(dir)))
+                (void)j->clear();
+        }
     }
     return {};
+}
+
+std::filesystem::path journal_path(const fs::path& dir) {
+    return private_dir(dir) / kJournalFile;
 }
 
 std::expected<void, std::string> create_project(const Project& project, const fs::path& dir) {

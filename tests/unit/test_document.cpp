@@ -31,6 +31,25 @@ std::string errors_of(const Project& p) {
     return out;
 }
 
+std::string warnings_of(const Project& p) {
+    std::string out;
+    for (const Problem& problem : validate(p)) {
+        if (problem.severity != Severity::Warning)
+            continue;
+        if (!out.empty())
+            out += "; ";
+        out += problem.message;
+    }
+    return out;
+}
+
+std::size_t warning_count(const Project& p) {
+    const auto problems = validate(p);
+    return static_cast<std::size_t>(std::count_if(
+        problems.begin(), problems.end(),
+        [](const Problem& x) { return x.severity == Severity::Warning; }));
+}
+
 std::size_t error_count(const Project& p) {
     const auto problems = validate(p);
     return static_cast<std::size_t>(std::count_if(
@@ -496,20 +515,38 @@ LTEST_CASE(a_nil_id_is_an_error) {
     CHECK(errors_of(p).find("no id") != std::string::npos);
 }
 
-LTEST_CASE(references_must_resolve_to_the_right_kind_of_thing) {
+LTEST_CASE(a_dangling_reference_is_reported_as_a_warning_not_an_error) {
+    // Deliberately not an error. A layer whose source was deleted draws nothing, exactly as a
+    // layer with no source does; the only difference is that this one records a deletion.
+    // Refusing to open would mean a source could not be removed while any layer used it, which
+    // makes ordinary editing a puzzle. Errors are for documents that cannot be rendered at all.
     Project p = make_default_project("Show");
     Node l = layer("cam");
     std::get<LayerData>(l.data).source = Id::generate(); // no such source
     p.scenes[0].roots.push_back(std::move(l));
-    CHECK(!is_valid(p));
-    CHECK(errors_of(p).find("source") != std::string::npos);
+    CHECK_MSG(is_valid(p), "{}", errors_of(p));
+    CHECK_EQ(warning_count(p), std::size_t{1});
+    CHECK(warnings_of(p).find("source") != std::string::npos);
 
-    // Pointing at something that exists but is the wrong kind is just as wrong.
+    // Pointing at something that exists but is the wrong kind is caught the same way.
     Project q = make_default_project("Show");
     Node l2 = layer("cam");
     std::get<LayerData>(l2.data).source = q.canvases[0].id;
     q.scenes[0].roots.push_back(std::move(l2));
-    CHECK_MSG(!is_valid(q), "a layer was allowed to use a canvas as its source");
+    CHECK_MSG(warning_count(q) == 1, "a layer using a canvas as its source went unreported");
+}
+
+LTEST_CASE(a_deck_without_a_canvas_is_an_error_but_without_a_scene_is_not) {
+    // A deck with no canvas has no output surface at all, which is structural. A deck whose
+    // program scene was deleted shows nothing -- which is what a deck with no program scene
+    // does anyway.
+    Project p = make_default_project("Show");
+    p.decks[0].program_scene = Id::generate();
+    CHECK_MSG(is_valid(p), "{}", errors_of(p));
+    CHECK(warnings_of(p).find("program scene that was removed") != std::string::npos);
+
+    p.decks[0].canvas = Id::generate();
+    CHECK_MSG(!is_valid(p), "a deck with no canvas was accepted");
 }
 
 LTEST_CASE(a_reference_loop_is_refused) {

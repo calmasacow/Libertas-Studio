@@ -9,7 +9,11 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(JSONCPP REQUIRED IMPORTED_TARGET jsoncpp)
 
 add_library(ldoc STATIC
+    src/command.cpp
+    src/command_json.cpp
     src/document.cpp
+    src/history.cpp
+    src/journal.cpp
     src/json.cpp
     src/project_io.cpp
     src/node.cpp
