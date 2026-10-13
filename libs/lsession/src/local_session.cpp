@@ -96,15 +96,28 @@ void LocalSession::journal(const Command& command) {
 }
 
 std::expected<std::string, std::string> LocalSession::run(const Command& command) {
-    auto description = history_.run(command);
+    return run(command, std::string_view{});
+}
+
+std::expected<std::string, std::string> LocalSession::run(const Command& command,
+                                                          std::string_view gesture) {
+    auto description =
+        gesture.empty() ? history_.run(command) : history_.run(command, gesture);
     if (!description)
         return std::unexpected(description.error());
 
+    // Journaled and notified per command even when the undo stack collapsed them. The journal
+    // has to match what was applied, and a listener that only saw the last value of a drag
+    // would draw a fader that jumped rather than followed.
     journal(command);
     dirty_ = true;
     ++revision_;
     notify(Change::Kind::Applied, command);
     return *description;
+}
+
+void LocalSession::end_gesture() {
+    history_.end_gesture();
 }
 
 std::expected<void, std::string> LocalSession::undo() {

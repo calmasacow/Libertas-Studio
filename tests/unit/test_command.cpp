@@ -873,6 +873,113 @@ LTEST_CASE(an_output_needs_a_canvas_but_a_bus_does_not_need_its_listeners) {
     CHECK(!validate(h.project()).empty());
 }
 
+LTEST_CASE(a_continuous_gesture_is_one_undo_step_that_returns_to_where_it_started) {
+    // What a dragged fader needs: four hundred commands, one undo, and the undo lands on the
+    // value the fader had before the drag -- not one notch back.
+    Fixture f;
+    DocumentHistory h{f.project};
+    const Id bus = f.project.buses.front().id;
+    const double before = f.project.buses.front().gain_db;
+
+    const std::string gesture = std::format("bus.gain:{}", bus.to_string());
+    for (int i = 0; i < 400; ++i) {
+        Bus b = h.project().buses.front();
+        b.gain_db = -60.0 + static_cast<double>(i) * 0.15;
+        REQUIRE(h.run(SetBus{b}, gesture).has_value());
+    }
+    CHECK_EQ(h.undo_depth(), std::size_t{1});
+    CHECK_NEAR(h.project().buses.front().gain_db, -60.0 + 399 * 0.15, 1e-9);
+
+    REQUIRE(h.undo().has_value());
+    CHECK_NEAR(h.project().buses.front().gain_db, before, 1e-9);
+    CHECK_EQ(h.undo_depth(), std::size_t{0});
+
+    // And redo puts the whole drag back, not one step of it.
+    REQUIRE(h.redo().has_value());
+    CHECK_NEAR(h.project().buses.front().gain_db, -60.0 + 399 * 0.15, 1e-9);
+}
+
+LTEST_CASE(letting_go_ends_a_gesture_so_the_next_drag_is_its_own_step) {
+    Fixture f;
+    DocumentHistory h{f.project};
+    const auto set_gain = [&](double db, bool coalesce) {
+        Bus b = h.project().buses.front();
+        b.gain_db = db;
+        return coalesce ? h.run(SetBus{b}, "bus.gain") : h.run(SetBus{b});
+    };
+
+    REQUIRE(set_gain(-3.0, true).has_value());
+    REQUIRE(set_gain(-6.0, true).has_value());
+    CHECK_EQ(h.undo_depth(), std::size_t{1});
+
+    h.end_gesture();
+    REQUIRE(set_gain(-9.0, true).has_value());
+    CHECK_MSG(h.undo_depth() == 2, "a second drag of the same fader merged into the first");
+
+    // One undo per drag, each landing where that drag began.
+    REQUIRE(h.undo().has_value());
+    CHECK_NEAR(h.project().buses.front().gain_db, -6.0, 1e-9);
+    REQUIRE(h.undo().has_value());
+    CHECK_NEAR(h.project().buses.front().gain_db, 0.0, 1e-9);
+}
+
+LTEST_CASE(an_ordinary_command_in_the_middle_of_a_gesture_breaks_it) {
+    // Nothing in the UI should do this, but if something does, the two edits must not end up
+    // sharing one undo step -- undoing a fader move would then also rename a scene.
+    Fixture f;
+    DocumentHistory h{f.project};
+    Bus b = h.project().buses.front();
+    b.gain_db = -4.0;
+    REQUIRE(h.run(SetBus{b}, "bus.gain").has_value());
+    CHECK_EQ(h.undo_depth(), std::size_t{1});
+
+    REQUIRE(h.run(RenameScene{f.scene, "Interrupted"}).has_value());
+    CHECK_EQ(h.undo_depth(), std::size_t{2});
+    CHECK(h.open_gesture().empty());
+
+    b = h.project().buses.front();
+    b.gain_db = -8.0;
+    REQUIRE(h.run(SetBus{b}, "bus.gain").has_value());
+    CHECK_MSG(h.undo_depth() == 3, "a gesture merged across an unrelated command");
+
+    REQUIRE(h.undo().has_value());
+    CHECK_NEAR(h.project().buses.front().gain_db, -4.0, 1e-9);
+    CHECK_EQ(h.project().scenes.front().name, std::string{"Interrupted"});
+}
+
+LTEST_CASE(two_different_controls_never_share_a_gesture) {
+    Fixture f;
+    DocumentHistory h{f.project};
+    Bus b = h.project().buses.front();
+    b.gain_db = -2.0;
+    REQUIRE(h.run(SetBus{b}, "bus.gain:a").has_value());
+    b = h.project().buses.front();
+    b.pan = -0.5;
+    REQUIRE(h.run(SetBus{b}, "bus.pan:a").has_value());
+    CHECK_MSG(h.undo_depth() == 2, "a pan drag merged into a gain drag");
+}
+
+LTEST_CASE(a_refused_command_does_not_open_or_close_a_gesture) {
+    Fixture f;
+    DocumentHistory h{f.project};
+    Bus b = h.project().buses.front();
+    b.gain_db = -5.0;
+    REQUIRE(h.run(SetBus{b}, "bus.gain").has_value());
+
+    // A bus with no channels is refused; the drag that is still in progress must survive it.
+    Bus bad = h.project().buses.front();
+    bad.channels = 0;
+    CHECK(!h.run(SetBus{bad}, "bus.gain").has_value());
+    CHECK_EQ(h.open_gesture(), std::string_view{"bus.gain"});
+
+    b = h.project().buses.front();
+    b.gain_db = -7.0;
+    REQUIRE(h.run(SetBus{b}, "bus.gain").has_value());
+    CHECK_EQ(h.undo_depth(), std::size_t{1});
+    REQUIRE(h.undo().has_value());
+    CHECK_NEAR(h.project().buses.front().gain_db, 0.0, 1e-9);
+}
+
 LTEST_CASE(project_settings_are_undoable_and_bounded) {
     Fixture f;
     DocumentHistory h{f.project};

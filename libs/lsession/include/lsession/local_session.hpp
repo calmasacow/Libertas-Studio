@@ -41,6 +41,9 @@ public:
     [[nodiscard]] std::vector<Problem> problems() const override;
 
     std::expected<std::string, std::string> run(const Command& command) override;
+    std::expected<std::string, std::string> run(const Command& command,
+                                                std::string_view gesture) override;
+    void end_gesture() override;
     std::expected<void, std::string> undo() override;
     std::expected<void, std::string> redo() override;
     [[nodiscard]] bool can_undo() const override { return history_.can_undo(); }

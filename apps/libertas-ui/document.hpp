@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <string_view>
 
 class QJSEngine;
 class QQmlEngine;
@@ -143,7 +144,11 @@ public:
     Q_INVOKABLE void addBus(const QString& name, const QString& kind);
     Q_INVOKABLE void removeBus(const QString& id);
     Q_INVOKABLE void renameBus(const QString& id, const QString& name);
-    Q_INVOKABLE void setBusGain(const QString& id, double gainDb);
+    /// `dragging` true while the fader is under the pointer: the whole drag becomes one undo
+    /// step that lands back where it started. The caller must finish with `endGesture()`.
+    Q_INVOKABLE void setBusGain(const QString& id, double gainDb, bool dragging = false);
+    /// The operator let go. Harmless if no drag was in progress.
+    Q_INVOKABLE void endGesture();
     Q_INVOKABLE void setBusPan(const QString& id, double pan);
     Q_INVOKABLE void setBusMute(const QString& id, bool mute);
     Q_INVOKABLE void setBusSolo(const QString& id, bool solo);
@@ -253,7 +258,8 @@ private:
     /// Read-modify-write helpers. SetBus and SetNodeAudio carry a whole value rather than a
     /// delta, so every edit has to start from the current one; doing it in one place is what
     /// stops a setter that forgot a field from quietly resetting it.
-    void edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>& change);
+    void edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>& change,
+                  std::string_view gesture = {});
     void edit_selected_audio(const std::function<void(ldoc::AudioRouting&)>& change);
     void edit_deck(const QString& id, const std::function<void(ldoc::Deck&)>& change);
     void edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change);

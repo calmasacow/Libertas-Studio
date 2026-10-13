@@ -3,6 +3,8 @@
 
 #include "document.hpp"
 
+#include <format>
+
 #include "ldoc/command.hpp"
 
 #include <algorithm>
@@ -602,7 +604,8 @@ void Document::removeBus(const QString& id) {
 /// Read-modify-write on one bus. The command carries the whole bus rather than a delta, so each
 /// of these has to start from the current one -- and there is exactly one place that does it,
 /// because a copy of this that forgot a field would silently reset it.
-void Document::edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>& change) {
+void Document::edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>& change,
+                        std::string_view gesture) {
     const auto parsed = parse_id(id);
     if (!parsed)
         return;
@@ -617,7 +620,13 @@ void Document::edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>
     change(next);
     if (next == *existing)
         return; // nothing to put on the undo stack
-    run(ldoc::SetBus{std::move(next)});
+    if (gesture.empty()) {
+        run(ldoc::SetBus{std::move(next)});
+        return;
+    }
+    const auto r = session_->run(ldoc::SetBus{std::move(next)}, gesture);
+    if (!r)
+        emit notice(qstr(r.error()));
 }
 
 void Document::renameBus(const QString& id, const QString& name) {
@@ -626,8 +635,16 @@ void Document::renameBus(const QString& id, const QString& name) {
     edit_bus(id, [&](ldoc::Bus& b) { b.name = to_std(name); });
 }
 
-void Document::setBusGain(const QString& id, double gainDb) {
-    edit_bus(id, [gainDb](ldoc::Bus& b) { b.gain_db = gainDb; });
+void Document::setBusGain(const QString& id, double gainDb, bool dragging) {
+    // One gesture per fader, named by the bus, so dragging two of them in turn is two undo
+    // steps even if the operator never lets go in between.
+    const std::string gesture =
+        dragging ? std::format("bus.gain:{}", to_std(id)) : std::string{};
+    edit_bus(id, [gainDb](ldoc::Bus& b) { b.gain_db = gainDb; }, gesture);
+}
+
+void Document::endGesture() {
+    session_->end_gesture();
 }
 
 void Document::setBusPan(const QString& id, double pan) {

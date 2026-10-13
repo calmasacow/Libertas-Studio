@@ -84,7 +84,8 @@
       "name": "linux-tsan",
       "configurePreset": "linux-tsan",
       "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error" }
+      "execution": { "noTestsAction": "error" },
+      "filter": { "exclude": { "label": "needs-qt-threads" } }
     }
   ]
 }

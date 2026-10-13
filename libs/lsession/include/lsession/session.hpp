@@ -11,6 +11,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 /// The boundary between whoever is editing a document and whoever owns it.
@@ -90,6 +91,18 @@ public:
 
     /// Apply a command. Returns its description, or why it was refused.
     virtual std::expected<std::string, std::string> run(const Command& command) = 0;
+
+    /// Apply a command as part of a continuous gesture -- a dragged fader, a dragged handle --
+    /// so that the whole drag is one undo step landing back where the drag began. `gesture`
+    /// names the control being dragged and must be unique to it; `end_gesture()` closes it when
+    /// the operator lets go. See `ldoc::DocumentHistory::run` for what collapses and why.
+    ///
+    /// Each command is still notified and still journaled individually: a listener has to see
+    /// every intermediate value or the fader it draws will not follow the drag, and the journal
+    /// has to agree with what was actually applied. Coalescing is an undo-stack concern only.
+    virtual std::expected<std::string, std::string> run(const Command& command,
+                                                        std::string_view gesture) = 0;
+    virtual void end_gesture() = 0;
 
     virtual std::expected<void, std::string> undo() = 0;
     virtual std::expected<void, std::string> redo() = 0;

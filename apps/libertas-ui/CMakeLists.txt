@@ -97,5 +97,18 @@ if(LIBERTAS_BUILD_TESTS)
         # better than suppressing it.
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_IM_MODULE=none;QT_LOGGING_RULES=qt.qpa.*=false;LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tests/lsan.suppressions:print_suppressions=0"
         TIMEOUT 60
+        # Excluded from the TSan preset by this label.
+        #
+        # Not a judgement about this test: Qt here is a distribution build with no TSan, and
+        # starting the QQmlThread makes TSan's *own* thread registry fail an internal CHECK --
+        # "live_.try_emplace(user_id, tid).second != 0" -- which is a crash of the tool rather
+        # than a report that could be suppressed. Suppressing the races underneath it was tried
+        # first and worked; the CHECK failure is what remains, and nothing in this project can
+        # fix it short of a TSan build of Qt.
+        #
+        # What the TSan preset is for is our own threaded code, and that is still covered: the
+        # ULID generator across eight threads, and lsession's listeners. The shell has one
+        # thread of its own.
+        LABELS "needs-qt-threads"
     )
 endif()

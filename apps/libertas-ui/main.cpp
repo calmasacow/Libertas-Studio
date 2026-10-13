@@ -664,6 +664,26 @@ int main(int argc, char** argv) {
         report(bus_at(buses_before, 6).toBool(), "it can be muted");
         report(qFuzzyCompare(bus_at(buses_before, 5).toDouble(), -0.5), "and panned");
 
+        // A dragged fader: many commands, one undo step, landing where the drag began.
+        {
+            const double start = bus_at(buses_before, 4).toDouble();
+            const QString was = document.undoDescription();
+            for (int i = 0; i < 40; ++i)
+                document.setBusGain(new_bus, -20.0 + i * 0.25, true);
+            settle();
+            report(qFuzzyCompare(bus_at(buses_before, 4).toDouble(), -20.0 + 39 * 0.25),
+                   "a dragged fader follows the drag");
+            document.endGesture();
+            document.undo();
+            settle();
+            report(qFuzzyCompare(bus_at(buses_before, 4).toDouble(), start),
+                   "and one undo puts it back where the drag started");
+            report(document.undoDescription() == was,
+                   "having used exactly one undo step for the whole drag");
+            document.redo();
+            settle();
+        }
+
         // Setting a value it already has must not land on the undo stack: a fader released
         // without moving is not an edit.
         const QString before_noop = document.undoDescription();

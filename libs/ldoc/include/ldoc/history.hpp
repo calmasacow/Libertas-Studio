@@ -7,6 +7,7 @@
 #include <deque>
 #include <expected>
 #include <string>
+#include <string_view>
 
 namespace ldoc {
 
@@ -29,6 +30,33 @@ public:
     /// Apply a command and record it. On failure nothing changed and nothing was recorded.
     /// Returns the description, for the undo menu and the status line.
     std::expected<std::string, std::string> run(const Command& command);
+
+    /// Apply a command as part of a continuous gesture, so that a whole drag is one undo step.
+    ///
+    /// A fader dragged across a panel produces a command per frame. Recorded one per step, a
+    /// single drag buries every other edit the operator made under four hundred entries; and
+    /// "undo" then means "move the fader back one pixel", which is not what they asked for.
+    ///
+    /// `gesture` names the thing being dragged -- "bus.gain:<id>" -- and must be specific enough
+    /// that two different controls never share it. When this command's gesture matches the one
+    /// at the top of the stack, the two collapse: the *newer* effect is kept, and the *older*
+    /// inverse, which is the state before the gesture began. One step, one undo, back to where
+    /// the drag started.
+    ///
+    /// `end_gesture()` closes it. Two separate drags of the same fader are two undo steps, and
+    /// what separates them is the operator letting go -- not a timeout, which would merge or
+    /// split a gesture depending on how fast they moved.
+    ///
+    /// The journal is not coalesced. Every command is still recorded as it was applied, because
+    /// replaying them in order reaches the same project either way, and a journal that dropped
+    /// the intermediate steps would be a journal that disagreed with what was fsynced.
+    std::expected<std::string, std::string> run(const Command& command,
+                                                std::string_view gesture);
+
+    /// Close the current gesture, so the next command starts a new undo step even if it names
+    /// the same one. Harmless when no gesture is open.
+    void end_gesture() { gesture_.clear(); }
+    [[nodiscard]] std::string_view open_gesture() const { return gesture_; }
 
     [[nodiscard]] bool can_undo() const { return !past_.empty(); }
     [[nodiscard]] bool can_redo() const { return !future_.empty(); }
@@ -63,12 +91,20 @@ private:
     struct Step {
         Command undo;
         std::string description;
+        /// Which continuous gesture produced this step, empty for an ordinary command. Kept on
+        /// the step rather than only in `gesture_` so that an undo of a coalesced step cannot
+        /// be merged into by whatever comes next.
+        std::string gesture;
     };
 
     Project project_;
     std::deque<Step> past_;
     std::deque<Step> future_;
     std::size_t limit_;
+    /// The gesture currently open, if any. Cleared by `end_gesture()`, and by anything that
+    /// makes merging into the top of the stack wrong: an ordinary command, an undo, a redo, a
+    /// replay or a reset.
+    std::string gesture_;
 };
 
 } // namespace ldoc

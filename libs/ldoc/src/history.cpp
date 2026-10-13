@@ -13,11 +13,30 @@ DocumentHistory::DocumentHistory(Project project, std::size_t limit)
     : project_(std::move(project)), limit_(std::max<std::size_t>(limit, 1)) {}
 
 std::expected<std::string, std::string> DocumentHistory::run(const Command& command) {
+    // An ordinary command ends whatever gesture was open: letting a drag merge with the edit
+    // that followed it would put two unrelated things on one undo step.
+    gesture_.clear();
+    return run(command, std::string_view{});
+}
+
+std::expected<std::string, std::string> DocumentHistory::run(const Command& command,
+                                                             std::string_view gesture) {
     auto applied = apply(project_, command);
     if (!applied)
         return std::unexpected(applied.error());
 
-    past_.push_back(Step{std::move(applied->inverse), applied->description});
+    // Collapse into the step already on top when this continues the same gesture. The inverse
+    // kept is the older one -- the state before the drag started -- and the description is the
+    // newer one, since it describes where the fader has actually ended up.
+    const bool continues = !gesture.empty() && gesture_ == gesture && !past_.empty() &&
+                           past_.back().gesture == gesture;
+    if (continues) {
+        past_.back().description = applied->description;
+    } else {
+        past_.push_back(Step{std::move(applied->inverse), applied->description,
+                             std::string{gesture}});
+        gesture_ = gesture;
+    }
     // A new action makes the redo tail unreachable: the operator has chosen a different branch.
     future_.clear();
     while (past_.size() > limit_)
@@ -26,6 +45,7 @@ std::expected<std::string, std::string> DocumentHistory::run(const Command& comm
 }
 
 std::expected<void, std::string> DocumentHistory::replay(const Command& command) {
+    gesture_.clear();
     auto applied = apply(project_, command);
     if (!applied)
         return std::unexpected(applied.error());
@@ -54,7 +74,9 @@ std::expected<Command, std::string> DocumentHistory::undo() {
             std::format("'{}' could not be undone: {}", step.description, applied.error()));
     }
     past_.pop_back();
-    future_.push_front(Step{std::move(applied->inverse), step.description});
+    // Undoing closes any open gesture: the step it would have merged into is gone.
+    gesture_.clear();
+    future_.push_front(Step{std::move(applied->inverse), step.description, step.gesture});
     while (future_.size() > limit_)
         future_.pop_back();
     return step.undo;
@@ -70,7 +92,8 @@ std::expected<Command, std::string> DocumentHistory::redo() {
         return std::unexpected(
             std::format("'{}' could not be redone: {}", step.description, applied.error()));
     future_.pop_front();
-    past_.push_back(Step{std::move(applied->inverse), step.description});
+    gesture_.clear();
+    past_.push_back(Step{std::move(applied->inverse), step.description, step.gesture});
     while (past_.size() > limit_)
         past_.pop_front();
     return step.undo;
@@ -84,6 +107,7 @@ void DocumentHistory::reset(Project project) {
     project_ = std::move(project);
     past_.clear();
     future_.clear();
+    gesture_.clear();
 }
 
 } // namespace ldoc

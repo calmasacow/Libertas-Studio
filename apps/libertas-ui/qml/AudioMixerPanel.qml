@@ -15,9 +15,10 @@ import Libertas
 /// layer feeds, and the count of layers feeding each bus. All of it is commands, so all of it
 /// undoes.
 ///
-/// Faders commit on release, not continuously. A drag across a fader is one gesture and belongs
-/// on the undo stack once; running a command per pixel would bury every other edit under four
-/// hundred "Change bus level" entries.
+/// A dragged fader runs a command per move and the session collapses the run into one undo
+/// step, landing back where the drag began. That is what `Document.setBusGain(..., dragging)`
+/// and `endGesture()` are for; without the collapsing, one drag would bury every other edit
+/// under four hundred "Change bus level" entries.
 Item {
     id: panel
 
@@ -270,17 +271,25 @@ Item {
                         onPressed: (mouse) => {
                             strip.dragging = true;
                             strip.shownGain = dbAt(mouse.y);
+                            Document.setBusGain(strip.busId, strip.shownGain, true);
                         }
                         onPositionChanged: (mouse) => {
-                            if (strip.dragging)
-                                strip.shownGain = dbAt(mouse.y);
+                            if (!strip.dragging)
+                                return;
+                            strip.shownGain = dbAt(mouse.y);
+                            Document.setBusGain(strip.busId, strip.shownGain, true);
                         }
                         onReleased: {
                             strip.dragging = false;
-                            Document.setBusGain(strip.busId, strip.shownGain);
+                            Document.setBusGain(strip.busId, strip.shownGain, true);
+                            // Letting go is what separates one drag from the next.
+                            Document.endGesture();
                         }
                         onCanceled: {
+                            // Grab stolen mid-drag: close the gesture and go back to following
+                            // the document, which already holds wherever the drag got to.
                             strip.dragging = false;
+                            Document.endGesture();
                             strip.shownGain = strip.gainDb;
                         }
                         // A wheel is the keyboard-adjacent way to trim a fader, and one notch is
