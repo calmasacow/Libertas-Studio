@@ -12,9 +12,7 @@ import Libertas
 Window {
     id: root
 
-    // False only under --check, where the shell is driven headlessly and must not
-    // put anything on screen.
-    visible: !Workspace.headless
+    visible: true
     width: 1600
     height: 950
     minimumWidth: 960
@@ -146,24 +144,24 @@ Window {
 
         // The dividers themselves, drawn but not interactive.
         Repeater {
-            model: Workspace.dividerCount
+            model: Workspace.dividers
 
             delegate: Rectangle {
                 id: dividerVisual
 
                 required property int index
-                // Touching `revision` is what makes this binding re-evaluate when the layout
-                // changes; the engine's geometry is not itself a notifying property.
-                readonly property var handle: {
-                    Workspace.revision;
-                    return Workspace.dividerAt(index);
-                }
+                required property bool horizontal
+                required property real rectX
+                required property real rectY
+                required property real rectW
+                required property real rectH
+
                 readonly property bool hovered: resizeArea.hoverIndex === index
 
-                x: handle.x !== undefined ? handle.x : 0
-                y: handle.y !== undefined ? handle.y : 0
-                width: handle.w !== undefined ? handle.w : 0
-                height: handle.h !== undefined ? handle.h : 0
+                x: rectX
+                y: rectY
+                width: rectW
+                height: rectH
                 color: hovered ? Theme.c.dividerHover : Theme.c.divider
 
                 Behavior on color {
@@ -174,7 +172,7 @@ Window {
 
                 // Three dots, the universal "this is draggable".
                 Row {
-                    visible: dividerVisual.handle.horizontal === true
+                    visible: dividerVisual.horizontal
                     anchors.centerIn: parent
                     spacing: 0
 
@@ -198,7 +196,7 @@ Window {
                 }
 
                 Column {
-                    visible: dividerVisual.handle.horizontal === false
+                    visible: !dividerVisual.horizontal
                     anchors.centerIn: parent
                     spacing: 0
 
@@ -223,20 +221,16 @@ Window {
             }
         }
 
-        // The panels. `revision` in the binding is what makes these update in place instead of
-        // being torn down and rebuilt on every layout change.
+        // The panels. The model updates rows in place when the count has not changed, so a
+        // divider drag re-evaluates geometry without tearing down and rebuilding every delegate
+        // sixty times a second.
         Repeater {
-            model: Workspace.panelCount
+            model: Workspace.panels
 
             delegate: PanelFrame {
-                required property int index
-
-                panel: {
-                    Workspace.revision;
-                    return Workspace.panelAt(index);
-                }
                 surface: workArea
             }
+
         }
 
         DropOverlay {

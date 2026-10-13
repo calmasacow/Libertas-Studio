@@ -43,20 +43,16 @@ std::string to_std(const QString& s) {
 
 /// Set by configure() before the QML engine instantiates the singleton.
 std::filesystem::path g_config_path;
-bool g_headless = false;
 
 } // namespace
 
-void Workspace::configure(std::filesystem::path config_path, bool headless) {
+void Workspace::configure(std::filesystem::path config_path) {
     g_config_path = std::move(config_path);
-    g_headless = headless;
 }
 
 Workspace* Workspace::create(QQmlEngine*, QJSEngine*) {
     // The engine takes ownership of what it is handed here.
-    auto* w = new Workspace{g_config_path};
-    w->headless_ = g_headless;
-    return w;
+    return new Workspace{g_config_path};
 }
 
 Workspace::Workspace(std::filesystem::path config_path, QObject* parent)
@@ -81,6 +77,8 @@ Workspace::Workspace(std::filesystem::path config_path, QObject* parent)
     save_timer_.setSingleShot(true);
     save_timer_.setInterval(600);
     connect(&save_timer_, &QTimer::timeout, this, &Workspace::saveNow);
+
+    refresh_models();
 }
 
 Workspace::~Workspace() {
@@ -92,8 +90,50 @@ const llayout::Layout& Workspace::layout() const {
     return working_ ? *working_ : history_.current();
 }
 
+void Workspace::refresh_models() {
+    const llayout::Layout& l = layout();
+
+    std::vector<PanelModel::Row> panels;
+    for (const llayout::LeafRect& lf : l.leaves(vp_, constraints_)) {
+        const llayout::Node* n = l.find(lf.node);
+        if (!n)
+            continue;
+        PanelModel::Row r;
+        r.node = static_cast<int>(lf.node);
+        r.x = lf.rect.x;
+        r.y = lf.rect.y;
+        r.w = lf.rect.w;
+        r.h = lf.rect.h;
+        for (const std::string& t : n->tabs) {
+            r.tabs << QString::fromStdString(t);
+            r.titles << title(QString::fromStdString(t));
+        }
+        r.active = static_cast<int>(n->active);
+        r.activeId = n->active < n->tabs.size()
+                         ? QString::fromStdString(n->tabs[n->active])
+                         : QString{};
+        panels.push_back(std::move(r));
+    }
+    panels_.set_rows(std::move(panels));
+
+    std::vector<DividerModel::Row> dividers;
+    for (const llayout::DividerHandle& d : l.dividers(vp_, constraints_)) {
+        DividerModel::Row r;
+        r.split = static_cast<int>(d.split);
+        r.handle_index = static_cast<int>(d.index);
+        r.horizontal = d.axis == llayout::Axis::Horizontal;
+        r.x = d.rect.x;
+        r.y = d.rect.y;
+        r.w = d.rect.w;
+        r.h = d.rect.h;
+        dividers.push_back(r);
+    }
+    dividers_.set_rows(std::move(dividers));
+}
+
 void Workspace::touch() {
     ++revision_;
+    refresh_models();
     emit layoutChanged();
     scheduleSave();
 }
@@ -200,6 +240,7 @@ void Workspace::setViewport(qreal w, qreal h) {
     // A resize is not a layout change: the tree holds proportions, so nothing to save and nothing
     // to undo. Only the derived geometry moved.
     ++revision_;
+    refresh_models();
     emit layoutChanged();
 }
 
@@ -376,6 +417,7 @@ void Workspace::dragDividerTo(qreal x, qreal y) {
         // the pointer has returned all the way past where it stopped.
         divider_drag_->last = QPointF{x, y};
         ++revision_;
+        refresh_models();
         emit layoutChanged();
     }
 }
@@ -391,10 +433,12 @@ void Workspace::endDividerDrag() {
     divider_drag_.reset();
 
     // One undo step for the whole drag, not one per mouse move.
-    if (history_.commit(std::move(final_layout)))
+    if (history_.commit(std::move(final_layout))) {
         touch();
-    else
+    } else {
+        refresh_models();
         emit layoutChanged();
+    }
 }
 
 // ---- panels --------------------------------------------------------------------------------

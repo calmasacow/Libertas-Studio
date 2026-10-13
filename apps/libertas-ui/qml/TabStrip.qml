@@ -11,10 +11,12 @@ import Libertas
 Item {
     id: strip
 
-    required property var panel
+    required property var tabs
+    required property var titles
+    required property int activeTab
     required property Item surface
 
-    readonly property int tabCount: panel && panel.tabs ? panel.tabs.length : 0
+    readonly property int tabCount: tabs ? tabs.length : 0
 
     height: 28
 
@@ -47,9 +49,9 @@ Item {
 
                 required property int index
 
-                readonly property string panelId: strip.panel.tabs[index]
-                readonly property string label: strip.panel.titles[index]
-                readonly property bool isActive: index === strip.panel.active
+                readonly property string panelId: strip.tabs[index]
+                readonly property string label: strip.titles[index]
+                readonly property bool isActive: index === strip.activeTab
 
                 width: labelText.implicitWidth + (isActive ? 36 : 18)
                 height: 22

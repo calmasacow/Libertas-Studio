@@ -11,18 +11,27 @@ import Libertas
 Rectangle {
     id: frame
 
-    required property var panel
+    // The self-check looks for these by name to prove the layout actually reached the screen.
+    objectName: "panelFrame"
+
+    // Filled in from the model's roles.
+    required property real rectX
+    required property real rectY
+    required property real rectW
+    required property real rectH
+    required property var tabs
+    required property var titles
+    required property int activeTab
+    required property string activeId
+
     /// The coordinate space drag positions are reported in -- the whole workspace, so a drag
     /// that leaves this panel is still measured against the same origin the engine hit-tests in.
     required property Item surface
 
-    readonly property bool hasPanel: panel && panel.w !== undefined
-
-    x: hasPanel ? panel.x : 0
-    y: hasPanel ? panel.y : 0
-    width: hasPanel ? panel.w : 0
-    height: hasPanel ? panel.h : 0
-    visible: hasPanel
+    x: rectX
+    y: rectY
+    width: rectW
+    height: rectH
     color: Theme.c.panelBackground
     border.width: 1
     border.color: Theme.c.border
@@ -36,7 +45,9 @@ Rectangle {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: 1
-        panel: frame.panel
+        tabs: frame.tabs
+        titles: frame.titles
+        activeTab: frame.activeTab
         surface: frame.surface
     }
 
@@ -46,6 +57,6 @@ Rectangle {
         anchors.top: strip.bottom
         anchors.bottom: parent.bottom
         anchors.margins: 1
-        panelId: frame.hasPanel && frame.panel.activeId !== undefined ? frame.panel.activeId : ""
+        panelId: frame.activeId
     }
 }

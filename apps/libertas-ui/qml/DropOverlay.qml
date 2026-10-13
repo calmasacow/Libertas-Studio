@@ -96,6 +96,14 @@ Item {
     Rectangle {
         id: previewRect
 
+        // Gliding between zones is what makes the gesture feel like it tracks the pointer rather
+        // than snapping between states -- but only *between* zones. On first appearance the
+        // animation would grow the highlight out of a zero-size rect at the origin, which reads
+        // as a glitch and, for the first seventy milliseconds, shows the operator nothing at all
+        // where the panel is going to land. So animations are off until one frame after the
+        // highlight appears.
+        property bool settled: false
+
         visible: overlay.preview.width > 0 && overlay.preview.height > 0
         x: overlay.preview.x
         y: overlay.preview.y
@@ -106,27 +114,47 @@ Item {
         border.color: Theme.c.dropBorder
         radius: 2
 
-        // Gliding between zones is what makes the gesture feel like it is tracking the pointer
-        // rather than snapping between states.
+        onVisibleChanged: {
+            if (visible)
+                settleTimer.restart();
+            else
+                settled = false;
+        }
+
+        Timer {
+            id: settleTimer
+
+            interval: 1
+            onTriggered: previewRect.settled = true
+        }
+
         Behavior on x {
+            enabled: previewRect.settled
+
             NumberAnimation {
                 duration: 70
                 easing.type: Easing.OutQuad
             }
         }
         Behavior on y {
+            enabled: previewRect.settled
+
             NumberAnimation {
                 duration: 70
                 easing.type: Easing.OutQuad
             }
         }
         Behavior on width {
+            enabled: previewRect.settled
+
             NumberAnimation {
                 duration: 70
                 easing.type: Easing.OutQuad
             }
         }
         Behavior on height {
+            enabled: previewRect.settled
+
             NumberAnimation {
                 duration: 70
                 easing.type: Easing.OutQuad

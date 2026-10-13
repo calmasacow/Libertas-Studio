@@ -11,10 +11,19 @@
 #include <QGuiApplication>
 #include <QObject>
 #include <QQmlApplicationEngine>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QImage>
+#include <QQuickItem>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QImage>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QTimer>
 #include <QUrl>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -37,7 +46,16 @@ std::filesystem::path config_dir() {
 /// one ends up debugging an X11 application believing it to be native. Libertas asks for wayland
 /// and refuses to run on xcb, so that failure is loud on the first launch rather than subtle for
 /// a year.
-void insist_on_wayland() {
+void insist_on_wayland(bool check_mode) {
+    if (check_mode) {
+        // --check always runs on the offscreen platform, overriding anything in the environment.
+        // The window has to be *shown* for QML to lay it out -- a never-shown window has a
+        // zero-size content item, which is how the first version of this check managed to assert
+        // everything about a blank rectangle -- and "shown" must not mean "on the operator's
+        // screen".
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        return;
+    }
     if (const char* existing = std::getenv("QT_QPA_PLATFORM"); existing && *existing) {
         // An explicit choice is honoured -- "offscreen" is how this binary is tested without a
         // window appearing on anybody's screen -- but a fallback list is not a choice.
@@ -56,7 +74,12 @@ int fail(const char* msg) {
 } // namespace
 
 int main(int argc, char** argv) {
-    insist_on_wayland();
+    // Read before QGuiApplication: the platform plugin is chosen during its construction, long
+    // before QCommandLineParser gets a look at argv.
+    bool check = false;
+    for (int i = 1; i < argc; ++i)
+        check = check || std::string_view{argv[i]} == "--check";
+    insist_on_wayland(check);
 
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("libertas"));
@@ -79,11 +102,17 @@ int main(int argc, char** argv) {
         QStringList{QStringLiteral("check")},
         QStringLiteral("Load the shell, exercise the gestures headlessly, report, and exit "
                        "without showing a window.")};
+    const QCommandLineOption shot_opt{
+        QStringList{QStringLiteral("check-shots")},
+        QStringLiteral("With --check, write the grabbed frames into this directory."),
+        QStringLiteral("dir")};
     parser.addOption(layout_opt);
     parser.addOption(check_opt);
+    parser.addOption(shot_opt);
     parser.process(app);
 
-    const bool check = parser.isSet(check_opt);
+    if (parser.isSet(check_opt) != check)
+        return fail("internal: --check was not detected before the platform was chosen");
     if (!check && QGuiApplication::platformName() == QLatin1String("xcb")) {
         return fail("running on XWayland (xcb). Libertas is Wayland-native by design (ADR-0003); "
                     "it will not run as an X11 client. Start it from a Wayland session.");
@@ -95,9 +124,8 @@ int main(int argc, char** argv) {
             : config_dir() / "layout.toml";
 
     // The singletons are constructed by the QML engine, so everything they need that QML cannot
-    // supply is handed over first. `headless` is how --check keeps the window off screen: on a
-    // live Wayland session a self-test has no business putting one there.
-    libertas::ui::Workspace::configure(layout_path, check);
+    // supply is handed over first.
+    libertas::ui::Workspace::configure(layout_path);
 
     QQmlApplicationEngine engine;
 
@@ -137,15 +165,57 @@ int main(int argc, char** argv) {
         report(window != nullptr, "the root object is a window");
         if (!window)
             return 1;
-        report(!window->isVisible(), "the window is not shown in --check mode");
+        report(QGuiApplication::platformName() == QLatin1String("offscreen"),
+               "--check runs on the offscreen platform, so nothing reaches a display");
 
-        workspace.setViewport(2560, 1400);
         // Start from the default rather than from whatever a previous run saved. The check runs
         // against the real config path by default, and persistence working is precisely why the
         // assertions below would otherwise depend on the last run.
         workspace.resetLayout();
+        // The viewport is set by QML binding workArea's size, not by this function: using the
+        // real path means the check fails if that binding ever stops firing.
+        QCoreApplication::processEvents();
         report(workspace.panelCount() == 6, "the default layout resolves to six panel groups");
         report(workspace.dividerCount() == 5, "and five dividers");
+
+        // Did any of it reach the scene graph?
+        //
+        // An earlier version of this check asserted everything below and passed while the window
+        // rendered an empty rectangle: it drove the C++ API directly and never asked what QML had
+        // actually drawn. The delegates had been created once at a zero-size viewport and never
+        // updated, because the dependency meant to refresh them was a bare statement with no
+        // side effect, and the QML compiler had removed it. Every number was right and the window
+        // was blank.
+        // Walked over childItems(), not findChildren(). A Repeater gives its delegates a visual
+        // parent but no QObject parent -- they belong to the delegate model -- so findChildren()
+        // on the window returns none of them and would have reported an empty scene graph for a
+        // window that was drawing correctly.
+        const auto collect = [](QQuickItem* from, const QString& name) {
+            QList<QQuickItem*> found;
+            QList<QQuickItem*> stack{from};
+            while (!stack.isEmpty()) {
+                QQuickItem* item = stack.takeLast();
+                if (item->objectName() == name)
+                    found.append(item);
+                stack.append(item->childItems());
+            }
+            return found;
+        };
+        const QList<QQuickItem*> frames =
+            collect(window->contentItem(), QStringLiteral("panelFrame"));
+        report(frames.size() == 6, "six panel items exist in the scene graph");
+        int drawn = 0;
+        double covered = 0.0;
+        for (const QQuickItem* item : frames) {
+            if (item->width() > 1.0 && item->height() > 1.0) {
+                ++drawn;
+                covered += item->width() * item->height();
+            }
+        }
+        report(drawn == frames.size(), "and every one of them has a real size on screen");
+        const double area = window->contentItem()->width() * window->contentItem()->height();
+        report(area > 0.0 && covered > area * 0.5,
+               "and together they cover most of the window");
 
         const QVariantMap first = workspace.panelAt(0);
         report(!first.isEmpty() && first["w"].toDouble() > 0.0,
@@ -163,6 +233,25 @@ int main(int argc, char** argv) {
 
         const qreal px = program["x"].toDouble() + 6.0;
         const qreal py = program["y"].toDouble() + program["h"].toDouble() / 2.0;
+
+        // Grab the window before and during the drag. Everything else here asks the engine what
+        // it thinks; this asks the scene graph what it drew. The whole gesture is a visual
+        // affordance, so "the engine says the preview is at these coordinates" is only half the
+        // claim -- the other half is that something is painted there.
+        const auto grab = [window] {
+            QImage img = window->grabWindow();
+            return img.convertToFormat(QImage::Format_ARGB32);
+        };
+        // Let queued work and short animations finish, so a grab shows a settled frame.
+        const auto settle = [] {
+            QEventLoop loop;
+            QTimer::singleShot(160, &loop, &QEventLoop::quit);
+            loop.exec();
+        };
+        settle();
+        const QImage resting = grab();
+        report(!resting.isNull() && resting.width() > 0, "the window renders a frame at rest");
+
         workspace.beginDrag(QStringLiteral("log"));
         workspace.updateDrag(px, py);
         report(workspace.dragging(), "a drag is in flight");
@@ -171,6 +260,74 @@ int main(int argc, char** argv) {
                "and says what it would do");
         report(!workspace.dropPreview().isEmpty(), "with a preview region to highlight");
         report(!workspace.dropTargetRect().isEmpty(), "and a target rect for the wireframe");
+
+        settle();
+        const QImage dragging = grab();
+
+        // Counted over a region rather than probed at a point: the wireframe is two one-pixel
+        // diagonals, and asking whether one chosen pixel happens to sit on a line is a test of
+        // the arithmetic in the test.
+        const auto changed_fraction = [&](const QRectF& r) {
+            const qreal dpr = window->devicePixelRatio();
+            const int x0 = std::max(0, static_cast<int>(r.left() * dpr));
+            const int y0 = std::max(0, static_cast<int>(r.top() * dpr));
+            const int x1 = std::min(resting.width(), static_cast<int>(r.right() * dpr));
+            const int y1 = std::min(resting.height(), static_cast<int>(r.bottom() * dpr));
+            if (x1 <= x0 || y1 <= y0)
+                return 0.0;
+            long long differing = 0;
+            long long total = 0;
+            for (int y = y0; y < y1; ++y) {
+                for (int x = x0; x < x1; ++x) {
+                    ++total;
+                    if (resting.pixel(x, y) != dragging.pixel(x, y))
+                        ++differing;
+                }
+            }
+            return total ? static_cast<double>(differing) / static_cast<double>(total) : 0.0;
+        };
+
+        const double in_preview = changed_fraction(workspace.dropPreview());
+        const double in_target = changed_fraction(workspace.dropTargetRect());
+        std::fprintf(stderr, "       (repainted: %.0f%% of the preview, %.0f%% of the target)\n",
+                     in_preview * 100.0, in_target * 100.0);
+        report(in_preview > 0.8,
+               "the highlight fills the region the engine said the panel would land in");
+        report(in_target > in_preview * 0.4,
+               "and the five-zone wireframe reaches the rest of the target");
+
+        // Nothing outside the target panel is touched. The wireframe is two full-length
+        // diagonals drawn inside a Shape that fills the whole workspace, so "it is clipped to the
+        // panel it belongs to" is a claim worth checking rather than assuming -- a drag overlay
+        // that bleeds onto the neighbours would make the gesture ambiguous at exactly the moment
+        // it has to be clear. (The status bar does change; it is saying what the drop would do.)
+        double worst_spill = 0.0;
+        QString worst_panel;
+        for (int i = 0; i < workspace.panelCount(); ++i) {
+            const QVariantMap p = workspace.panelAt(i);
+            if (p["node"].toInt() == static_cast<int>(program["node"].toInt()))
+                continue;
+            const QRectF r{p["x"].toDouble(), p["y"].toDouble(), p["w"].toDouble(),
+                           p["h"].toDouble()};
+            const double f = changed_fraction(r);
+            if (f > worst_spill) {
+                worst_spill = f;
+                worst_panel = p["activeId"].toString();
+            }
+        }
+        std::fprintf(stderr, "       (worst spill onto another panel: %.2f%% (%s))\n",
+                     worst_spill * 100.0, qPrintable(worst_panel.isEmpty()
+                                                         ? QStringLiteral("none")
+                                                         : worst_panel));
+        report(worst_spill < 0.005, "and no other panel is repainted at all");
+
+        if (parser.isSet(shot_opt)) {
+            const QString dir = parser.value(shot_opt);
+            resting.save(dir + QStringLiteral("/resting.png"));
+            dragging.save(dir + QStringLiteral("/dragging.png"));
+            std::fprintf(stderr, "       (frames written to %s)\n", qPrintable(dir));
+        }
+
         report(workspace.endDrag(), "the drop applied");
         report(!workspace.dragging(), "and the drag is over");
 

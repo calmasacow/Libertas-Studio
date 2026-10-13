@@ -113,6 +113,49 @@ nobody reads rather than a build failure.
 Declaring both as `QML_ELEMENT QML_SINGLETON` types makes the whole shell statically checked and
 compilable. `qmllint` now reports nothing at all, which means it will be worth running again.
 
+## 8. The self-check has to look at pixels, because two bugs lived where it was not looking
+
+The first version of the shell's `--check` drove every gesture through the real engine, asserted
+thirty-two things, and passed. The window it was checking rendered an empty rectangle.
+
+**The first bug.** Panels reached QML as a count plus an indexed accessor, with each delegate's
+binding written as
+
+```qml
+panel: {
+    Workspace.revision;              // intended: a dependency, so this re-evaluates
+    return Workspace.panelAt(index);
+}
+```
+
+`Workspace.revision;` is a statement with no effect, so it is exactly the kind of thing a compiler
+may delete — and the QML compiler deleted it. The delegates were created once, at a viewport of
+0x0 (a zero-size window still has six panel groups; they are all zero-size), and never updated.
+Every number the check asked for was right, because the engine was right; nothing had told the
+scene graph.
+
+The fix is not a cleverer way to spell the dependency. It is `QAbstractListModel`, which does not
+depend on a side effect surviving optimisation. It resets only when the row *count* changes, and
+otherwise emits `dataChanged` for the rows that actually moved — so a divider drag updates
+geometry in place and the delegates stay alive, which was the requirement that produced the hack
+in the first place.
+
+**The second bug**, found by the same check once it was grabbing frames: the drop highlight has
+`Behavior` animations on its geometry so it glides between zones. On *first* appearance those
+animations grew it out of a zero-size rectangle at the origin — so for the first seventy
+milliseconds of every drag, the operator was shown nothing at all where the panel was going to
+land. Animations are now disabled until one frame after the highlight appears.
+
+So `--check` now grabs the window and counts repainted pixels: the highlight must fill the region
+the engine named, the wireframe must reach the rest of the target, and **no other panel may be
+repainted at all** — measured at 0.00%, which matters because the wireframe is two full-length
+diagonals drawn in a Shape that fills the whole workspace, and a drag overlay bleeding onto the
+neighbours would make the gesture ambiguous exactly when it has to be clear.
+
+The general lesson is the one ADR-0019 already recorded about instrumentation, in a new costume:
+a test that only asks the component under test what it thinks will agree with it. Something has to
+look at the output.
+
 ## What this bought, measured
 
 - `llayout` is 4 source files and has no dependency on Qt, a compositor, or a window.
@@ -123,8 +166,11 @@ compilable. `qmllint` now reports nothing at all, which means it will be worth r
   the same as nothing changed, and a UI trusting that status would have skipped both the repaint
   and the undo entry.
 - The shell has a `--check` mode that loads the real QML tree, drives the real gestures through
-  the real engine and writes a real layout file, without showing a window. It runs in CI, and on
-  a live session it stays off the operator's screen.
+  the real engine, grabs the rendered frames and writes a real layout file, without showing a
+  window. It forces the offscreen platform, so on a live session it cannot reach a display even
+  by accident.
+- Verified on both machines: the dev box and `argus`, the reference target (ADR-0008), which
+  builds with Makefiles and has no ninja. Six tests, no warnings, on both.
 
 ## Still open
 
@@ -133,10 +179,6 @@ compilable. `qmllint` now reports nothing at all, which means it will be worth r
   gesture and the `xdg_toplevel_tag_manager_v1` tagging.
 - **Panel contents.** Everything inside a panel is a placeholder that says so. Drawing convincing
   fake meters would make it impossible to tell later which parts actually work.
-- **A real list model.** Panels and dividers reach QML as a count plus an indexed accessor, with a
-  revision counter driving the bindings. It keeps delegates alive across a divider drag, which is
-  the requirement, but a `QAbstractListModel` would update only the rows that changed instead of
-  re-evaluating all of them.
 - **Keyboard-only docking.** The whole gesture is pointer-driven. An operator who cannot use a
   pointer precisely cannot currently rearrange the workspace at all, and "the layout engine has to
   be good" (ADR-0015) has to include that.

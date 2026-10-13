@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "layoutmodels.hpp"
+
 #include "llayout/history.hpp"
 #include "llayout/layout.hpp"
 
+#include <QAbstractItemModel>
 #include <QObject>
 #include <QPointF>
 #include <QtQml/qqmlregistration.h>
@@ -42,6 +45,8 @@ class Workspace : public QObject {
     QML_ELEMENT
     QML_SINGLETON
 
+    Q_PROPERTY(QAbstractItemModel* panels READ panelsModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* dividers READ dividersModel CONSTANT)
     Q_PROPERTY(int revision READ revision NOTIFY layoutChanged)
     Q_PROPERTY(int panelCount READ panelCount NOTIFY layoutChanged)
     Q_PROPERTY(int dividerCount READ dividerCount NOTIFY layoutChanged)
@@ -63,21 +68,17 @@ class Workspace : public QObject {
     /// Plain words for what releasing here would do, or why it would not work.
     Q_PROPERTY(QString dropDescription READ dropDescription NOTIFY dragChanged)
 
-    /// True under --check, where the shell is driven headlessly and the window must never be
-    /// shown. Set before the QML engine instantiates the singleton, so it is constant thereafter.
-    Q_PROPERTY(bool headless READ headless CONSTANT)
-
 public:
     explicit Workspace(std::filesystem::path config_path, QObject* parent = nullptr);
     ~Workspace() override;
 
-    /// Configuration the singleton needs at construction, which QML cannot supply. Call both
-    /// before the engine loads any QML.
-    static void configure(std::filesystem::path config_path, bool headless);
+    /// Configuration the singleton needs at construction, which QML cannot supply. Call before
+    /// the engine loads any QML.
+    static void configure(std::filesystem::path config_path);
     static Workspace* create(QQmlEngine*, QJSEngine*);
 
-    [[nodiscard]] bool headless() const { return headless_; }
-
+    [[nodiscard]] QAbstractItemModel* panelsModel() { return &panels_; }
+    [[nodiscard]] QAbstractItemModel* dividersModel() { return &dividers_; }
     [[nodiscard]] int revision() const { return revision_; }
     [[nodiscard]] int panelCount() const;
     [[nodiscard]] int dividerCount() const;
@@ -149,8 +150,13 @@ private:
 
     [[nodiscard]] const llayout::Layout& layout() const;
     void touch();
+    /// Rebuild the QML-facing rows from the current layout and viewport.
+    void refresh_models();
     void scheduleSave();
     void recompute_drag_target();
+
+    PanelModel panels_;
+    DividerModel dividers_;
 
     llayout::History history_;
     /// Held only while a divider is being dragged, so the whole drag is one undo step.
@@ -170,7 +176,6 @@ private:
     std::optional<DividerDrag> divider_drag_;
 
     std::filesystem::path config_path_;
-    bool headless_ = false;
     QString layout_source_;
     QTimer save_timer_;
     int revision_ = 0;

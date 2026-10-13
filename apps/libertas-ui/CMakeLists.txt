@@ -13,6 +13,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick QuickShapes)
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(libertas-ui
+    layoutmodels.cpp
+    layoutmodels.hpp
     main.cpp
     theme.cpp
     theme.hpp
@@ -61,7 +63,10 @@ if(LIBERTAS_BUILD_TESTS)
     # one-time state on every run. The suppression file names libraries, never functions of ours,
     # so this cannot hide a leak we introduce.
     set_tests_properties(shell_self_check PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_LOGGING_RULES=qt.qpa.*=false;LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tests/lsan.suppressions:print_suppressions=0"
+        # QT_IM_MODULE=none keeps the input-method plugin out: a headless check has nothing to
+        # type into, and loading fcitx leaks 1.7 KB through D-Bus on every run. Not loading it is
+        # better than suppressing it.
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_IM_MODULE=none;QT_LOGGING_RULES=qt.qpa.*=false;LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tests/lsan.suppressions:print_suppressions=0"
         TIMEOUT 60
     )
 endif()
