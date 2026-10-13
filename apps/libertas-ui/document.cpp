@@ -176,6 +176,24 @@ QVariantMap Document::layerProperties() const {
 void Document::rebuild() {
     const ldoc::Project& p = session_->project();
 
+    // Repair the selection *before* building anything from it.
+    //
+    // A selected thing can be deleted by a command or brought back by an undo, so selection is
+    // validated on every change rather than trusted. Doing it afterwards left the layer list
+    // built from a scene that had just been removed -- empty, while a different scene was
+    // selected -- and nothing triggered another rebuild, so the panel stayed empty until the
+    // operator clicked something.
+    // Two directions, not one. Losing the selected scene has to move the selection, and so does
+    // *gaining* a scene when there is none selected -- which happens when an undo brings back
+    // everything that was deleted. Without the second case the panels stay on "no scene
+    // selected" with a full scene list beside them, and nothing but a click gets out of it.
+    if (!current_scene()) {
+        selected_scene_ = p.scenes.empty() ? QString{} : id_str(p.scenes.front().id);
+        selected_layer_.clear();
+    }
+    if (!selected_layer_.isEmpty() && !current_layer())
+        selected_layer_.clear();
+
     std::vector<SceneRow> scenes;
     for (const ldoc::Scene& s : p.scenes) {
         SceneRow row;
@@ -244,17 +262,6 @@ void Document::rebuild() {
         sources.push_back(std::move(row));
     }
     sources_.set_rows(std::move(sources));
-
-    // A selected thing can be deleted by an undo, so selection is validated on every change
-    // rather than trusted.
-    if (!selected_scene_.isEmpty() && !current_scene()) {
-        selected_scene_ = p.scenes.empty() ? QString{} : id_str(p.scenes.front().id);
-        selected_layer_.clear();
-        emit selectionChanged();
-    } else if (!selected_layer_.isEmpty() && !current_layer()) {
-        selected_layer_.clear();
-        emit selectionChanged();
-    }
 
     emit changed();
     emit selectionChanged();

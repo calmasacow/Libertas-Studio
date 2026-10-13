@@ -67,6 +67,8 @@ Shortcuts* Shortcuts::create(QQmlEngine* engine, QJSEngine*) {
         // singletons are first touched in does not matter.
         s->document_ = engine->singletonInstance<Document*>("Libertas", "Document");
         s->workspace_ = engine->singletonInstance<Workspace*>("Libertas", "Workspace");
+        if (s->document_)
+            connect(s->document_, &Document::changed, s, &Shortcuts::refresh_if_actions_changed);
     }
     s->rebuild();
     return s;
@@ -92,6 +94,18 @@ Shortcuts::Shortcuts(QObject* parent) : QObject(parent), file_(g_bindings_file) 
 }
 
 Shortcuts::~Shortcuts() = default;
+
+void Shortcuts::refresh_if_actions_changed() {
+    if (!document_)
+        return;
+    std::vector<QString> now;
+    for (const lsession::ActionRef& ref :
+         lsession::available_actions(document_->projectForBindings()))
+        now.push_back(qstr(ref.to_string()));
+    if (now == known_actions_)
+        return;
+    rebuild();
+}
 
 void Shortcuts::rebuild() {
     std::vector<BindingRow> rows;
@@ -119,6 +133,10 @@ void Shortcuts::rebuild() {
         }
         rows.push_back(std::move(row));
     }
+    known_actions_.clear();
+    known_actions_.reserve(rows.size());
+    for (const BindingRow& r : rows)
+        known_actions_.push_back(r.ref);
     bindings_model_.set_rows(std::move(rows));
     emit changed();
 }

@@ -505,6 +505,19 @@ int main(int argc, char** argv) {
         report(!document.selectedScene().isEmpty(),
                "and the selection moves to one that still exists");
         report(document.selectedLayer().isEmpty(), "with the layer selection cleared");
+        // And the layer list has to be rebuilt for the scene that is *now* selected, not left
+        // empty from the one that was removed.
+        report(document.layersModel()->rowCount() ==
+                   [&] {
+                       int n = 0;
+                       for (const ldoc::Scene& s : document.projectForBindings().scenes)
+                           if (ldoc::Id::parse(
+                                   document.selectedScene().toStdString()).value_or(
+                                   ldoc::Id::nil()) == s.id)
+                               ldoc::visit(s.roots, [&n](const ldoc::Node&) { ++n; });
+                       return n;
+                   }(),
+               "and the layer list follows the scene that is now selected");
 
         if (!document.projectPath().startsWith(QLatin1Char('('))) {
             document.save();
@@ -611,10 +624,55 @@ int main(int argc, char** argv) {
                    .toInt() == 0,
                "unbinding it again releases the input");
 
+        // ---- the edges: no scenes at all, and undo back out of it ------------------------
+        //
+        // A project with nothing in it is reachable in two keystrokes, and every panel has to
+        // survive it rather than assuming there is always something selected.
+        {
+            int guard = 0;
+            while (document.scenesModel()->rowCount() > 0 && guard++ < 50)
+                document.removeScene(document.selectedScene());
+            settle();
+            report(document.scenesModel()->rowCount() == 0, "every scene can be removed");
+            report(document.selectedScene().isEmpty(), "leaving nothing selected");
+            report(document.layersModel()->rowCount() == 0, "and no layers");
+            report(document.layerProperties().isEmpty(), "and no properties to show");
+            // Adding one again has to work from empty.
+            document.addLayer(QStringLiteral("orphan"));
+            settle();
+            report(document.layersModel()->rowCount() == 0,
+                   "a layer cannot be added when there is no scene to add it to");
+
+            document.addScene(QStringLiteral("Recovered"));
+            settle();
+            report(document.scenesModel()->rowCount() == 1, "and a scene can be added from empty");
+            report(!document.selectedScene().isEmpty(), "which becomes the selection");
+
+            while (document.canUndo() && guard++ < 200)
+                document.undo();
+            settle();
+            report(document.scenesModel()->rowCount() > 0,
+                   "undoing all the way back restores the scenes");
+            report(!document.selectedScene().isEmpty(),
+                   "and the selection lands on one of them");
+        }
+
         // ---- actions and bindings -----------------------------------------------------------
         report(shortcuts.bindingsModel()->rowCount() > 10, "the bindings table is populated");
         report(!shortcuts.applicationBindings().isEmpty(),
                "and the application ones are instantiated as shortcuts");
+
+        // A new scene must become bindable without a restart: the table carries one row per
+        // scene, and it was previously frozen at whatever existed when the singleton was built.
+        const int bindings_before = shortcuts.bindingsModel()->rowCount();
+        document.addScene(QStringLiteral("Bindable"));
+        settle();
+        report(shortcuts.bindingsModel()->rowCount() == bindings_before + 1,
+               "a new scene gains a row in the bindings table");
+        document.removeScene(document.selectedScene());
+        settle();
+        report(shortcuts.bindingsModel()->rowCount() == bindings_before,
+               "and loses it again when the scene goes");
 
         // Ctrl+Z reaches the document, not the layout: with one stack there is no choice, only a
         // gamble about which thing a keystroke reaches.

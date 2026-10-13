@@ -13,6 +13,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <filesystem>
+#include <vector>
 
 class QJSEngine;
 class QQmlEngine;
@@ -107,6 +108,15 @@ signals:
     void notice(const QString& text);
 
 private:
+    /// Rebuild if, and only if, the set of bindable actions has changed.
+    ///
+    /// The parameterised ones -- one row per scene -- change whenever a scene is added or
+    /// removed, and without this the table was frozen at whatever existed when the singleton was
+    /// built: a new scene could not be given a hotkey until the application was restarted. The
+    /// guard is because the document changes on nearly every keystroke and rebuilding the whole
+    /// model each time would churn a table nobody is looking at.
+    void refresh_if_actions_changed();
+
     /// Private so that `create` is the only way in.
     ///
     /// A QML singleton with a public default constructor gets default-constructed, and the
@@ -122,6 +132,7 @@ private:
     Document* document_ = nullptr;
     Workspace* workspace_ = nullptr;
     std::filesystem::path file_;
+    std::vector<QString> known_actions_;
 };
 
 } // namespace libertas::ui
