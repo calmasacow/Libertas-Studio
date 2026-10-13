@@ -135,10 +135,20 @@ public:
     /// Put a new source of this type into the current scene: make the source, make the layer,
     /// bind them. One `Batch`, so it is one undo step -- nobody pressing Ctrl+Z after adding a
     /// camera wants the layer back without its source.
-    Q_INVOKABLE void addSourceAsLayer(const QString& name, const QString& type);
+    Q_INVOKABLE void addSourceAsLayer(const QString& name, const QString& type,
+                                      bool visible = true);
     /// Put a source the project already has into the current scene. Also one step, and
     /// deliberately does not create a second source: one camera, opened once, in six scenes.
-    Q_INVOKABLE void addExistingSourceAsLayer(const QString& sourceId);
+    Q_INVOKABLE void addExistingSourceAsLayer(const QString& sourceId, bool visible = true);
+
+    /// Every source of one type, for the add dialog's right-hand grid. Each entry carries what
+    /// the tile needs to draw itself: `id`, `name`, `typeTitle`, `useCount`, `selfContained`,
+    /// and `swatch` -- a colour string when the source is one we can honestly preview without a
+    /// renderer, empty otherwise, in which case the tile falls back to the type's glyph.
+    Q_INVOKABLE [[nodiscard]] QVariantList sourcesOfType(const QString& type) const;
+    /// The most recently created sources, newest first, whatever their type. Sources are
+    /// appended to the project, so this is the tail reversed -- the real order, not a guess.
+    Q_INVOKABLE [[nodiscard]] QVariantList recentSources(int limit) const;
 
     Q_INVOKABLE void addSource(const QString& name, const QString& type);
     Q_INVOKABLE void removeSource(const QString& id);
@@ -277,6 +287,9 @@ private:
     void edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>& change,
                   std::string_view gesture = {});
     void edit_selected_audio(const std::function<void(ldoc::AudioRouting&)>& change);
+    /// One entry for the add dialog's grid, built the same way wherever it is listed from.
+    [[nodiscard]] QVariantMap source_tile(const ldoc::Source& src) const;
+
     void edit_deck(const QString& id, const std::function<void(ldoc::Deck&)>& change);
     void edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change);
 

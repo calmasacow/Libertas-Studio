@@ -43,6 +43,7 @@ qt_add_qml_module(libertas-ui
     URI Libertas
     VERSION 1.0
     QML_FILES
+        qml/AddSourceDialog.qml
         qml/AudioMixerPanel.qml
         qml/BroadcastStatsPanel.qml
         qml/CheckLabel.qml

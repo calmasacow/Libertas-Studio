@@ -40,7 +40,7 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.bottom: picker.visible ? picker.top : footer.top
+        anchors.bottom: footer.top
         clip: true
         visible: Document.selectedScene !== ""
         model: Document.layers
@@ -218,225 +218,19 @@ Item {
         }
     }
 
-    // Adding a source, drawn in the panel rather than as a popup window: ADR-0015 keeps the
-    // workspace to one surface, so there is nothing here for a compositor to place elsewhere.
+    // Choosing what to add is a browse, not a menu: ten types, each with its own set of
+    // sources you already made. So it is the dialog in AddSourceDialog.qml.
     //
-    // Two halves, which is the whole of the Inputs panel this replaced. A *new* source is one
-    // the project does not have yet. An *existing* one is already configured, and picking it
-    // puts a second layer on the same camera rather than opening the device twice -- which is
-    // the reason sources live at project level at all.
-    Rectangle {
-        id: picker
+    // Parented to the window's content item, like ToolTipText, so it is not clipped by this
+    // panel -- and still inside the one surface, so ADR-0015 holds and it cannot end up on
+    // another monitor or behind the application.
+    AddSourceDialog {
+        id: addDialog
 
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: footer.top
-        height: visible ? Math.min(pickerColumn.height + 8, panel.height * 0.7) : 0
-        visible: panel.adding
-        color: Theme.c.panelHeader
-        clip: true
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            height: 1
-            color: Theme.c.accent
-        }
-
-        Flickable {
-            anchors.fill: parent
-            anchors.topMargin: 4
-            anchors.bottomMargin: 4
-            contentHeight: pickerColumn.height
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-
-            Column {
-                id: pickerColumn
-
-                width: picker.width
-                spacing: 0
-
-                Text {
-                    x: 10
-                    text: qsTr("New source")
-                    font.pixelSize: 10
-                    font.weight: Font.DemiBold
-                    color: Theme.c.accent
-                    bottomPadding: 2
-                }
-
-                Repeater {
-                    model: Document.sourceTypes
-
-                    delegate: Rectangle {
-                        id: typeRow
-
-                        required property var modelData
-
-                        width: pickerColumn.width
-                        height: 20
-                        color: typeMouse.containsMouse ? Theme.c.accent : "transparent"
-
-                        Text {
-                            anchors.left: parent.left
-                            anchors.leftMargin: 16
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: typeRow.modelData.title
-                            font.pixelSize: 11
-                            color: typeMouse.containsMouse ? Theme.c.window : Theme.c.text
-                        }
-
-                        // ADR-0025: nothing it depends on can fault, so it is allowed in an
-                        // emergency scene.
-                        Text {
-                            anchors.right: parent.right
-                            anchors.rightMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: typeRow.modelData.selfContained
-                            text: "⛨"
-                            font.pixelSize: 10
-                            color: typeMouse.containsMouse ? Theme.c.window : Theme.c.good
-                            opacity: 0.8
-                        }
-
-                        MouseArea {
-                            id: typeMouse
-
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            onClicked: {
-                                Document.addSourceAsLayer(typeRow.modelData.title,
-                                                          typeRow.modelData.id);
-                                panel.adding = false;
-                            }
-                        }
-                    }
-                }
-
-                Item {
-                    width: 1
-                    height: 6
-                    visible: Document.sources.rowCount() > 0
-                }
-
-                Text {
-                    x: 10
-                    visible: Document.sources.rowCount() > 0
-                    text: qsTr("Existing source")
-                    font.pixelSize: 10
-                    font.weight: Font.DemiBold
-                    color: Theme.c.accent
-                    bottomPadding: 2
-                }
-
-                Repeater {
-                    model: Document.sources
-
-                    delegate: Rectangle {
-                        id: existingRow
-
-                        required property string sourceId
-                        required property string name
-                        required property string type
-                        required property int useCount
-                        required property bool selfContained
-
-                        objectName: "existingSourceRow"
-                        width: pickerColumn.width
-                        height: 20
-                        color: existingMouse.containsMouse ? Theme.c.accent : "transparent"
-
-                        Text {
-                            anchors.left: parent.left
-                            anchors.leftMargin: 16
-                            anchors.right: existingMarks.left
-                            anchors.rightMargin: 4
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: existingRow.name
-                            font.pixelSize: 11
-                            color: existingMouse.containsMouse ? Theme.c.window : Theme.c.text
-                            elide: Text.ElideRight
-                        }
-
-                        Row {
-                            id: existingMarks
-
-                            anchors.right: parent.right
-                            anchors.rightMargin: 8
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 5
-
-                            // How many layers across the project use it, which is the number
-                            // that says whether removing it is safe.
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: existingRow.useCount === 0
-                                    ? qsTr("unused")
-                                    : qsTr("used by %1").arg(existingRow.useCount)
-                                font.pixelSize: 9
-                                color: existingMouse.containsMouse ? Theme.c.window
-                                     : existingRow.useCount === 0 ? Theme.c.warning
-                                     : Theme.c.textMuted
-                                opacity: 0.85
-                            }
-
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                visible: existingRow.selfContained
-                                text: "⛨"
-                                font.pixelSize: 10
-                                color: existingMouse.containsMouse ? Theme.c.window
-                                                                   : Theme.c.good
-                                opacity: 0.8
-                            }
-
-                            // Only offered for one nothing is using. Removing a source that
-                            // layers still point at is allowed by the model -- it is a warning,
-                            // not an error -- but doing it from a menu, by accident, is not.
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                visible: existingRow.useCount === 0
-                                text: "−"
-                                font.pixelSize: 13
-                                color: dropMouse.containsMouse ? Theme.c.error
-                                     : existingMouse.containsMouse ? Theme.c.window
-                                     : Theme.c.textMuted
-
-                                MouseArea {
-                                    id: dropMouse
-
-                                    anchors.fill: parent
-                                    anchors.margins: -4
-                                    hoverEnabled: true
-                                    onClicked: Document.removeSource(existingRow.sourceId)
-                                }
-
-                                ToolTipText {
-                                    text: qsTr("Delete this source from the project")
-                                    visible: dropMouse.containsMouse
-                                    hoverArea: dropMouse
-                                }
-                            }
-                        }
-
-                        MouseArea {
-                            id: existingMouse
-
-                            anchors.fill: parent
-                            anchors.rightMargin: existingMarks.width + 12
-                            hoverEnabled: true
-                            onClicked: {
-                                Document.addExistingSourceAsLayer(existingRow.sourceId);
-                                panel.adding = false;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        parent: panel.Window.contentItem
+        onClosed: panel.adding = false
     }
+
 
     Rectangle {
         id: footer
@@ -462,10 +256,13 @@ Item {
             spacing: 4
 
             ToolButton {
-                label: panel.adding ? "×" : "+"
-                tip: panel.adding ? qsTr("Cancel") : qsTr("Add a source")
+                label: "+"
+                tip: qsTr("Add a source")
                 enabled: Document.selectedScene !== ""
-                onClicked: panel.adding = !panel.adding
+                onClicked: {
+                    panel.adding = true;
+                    addDialog.open();
+                }
             }
 
             // Remove sits next to add, and the group button on the far side: the two that

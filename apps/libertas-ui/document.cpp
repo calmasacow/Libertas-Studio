@@ -502,22 +502,30 @@ QVariantList Document::sourceTypes() const {
     struct Entry {
         const char* id;
         const char* title;
+        /// One glyph, drawn where OBS draws an icon. Chosen from what DejaVu and Noto both
+        /// carry, so a missing font does not leave a row of empty boxes.
+        const char* icon;
     };
     // Ordered so the ones that are safe in an emergency scene come first, since that is the
     // list an operator is reading when it matters most (ADR-0025).
     static constexpr Entry kTypes[] = {
-        {"source.media", "Media File"},   {"source.image", "Image"},
-        {"source.text", "Text"},          {"source.color", "Colour"},
-        {"source.screen", "Screen"},      {"source.window", "Window"},
-        {"source.v4l2", "Camera"},        {"source.browser", "Browser"},
-        {"source.audio-input", "Audio Input"},
-        {"source.audio-output", "Audio Output"},
+        {"source.media", "Media File", "\u25B6"},
+        {"source.image", "Image", "\u25A8"},
+        {"source.text", "Text", "T"},
+        {"source.color", "Colour", "\u25A0"},
+        {"source.screen", "Screen", "\u25AD"},
+        {"source.window", "Window", "\u2750"},
+        {"source.v4l2", "Camera", "\u25C9"},
+        {"source.browser", "Browser", "\u25CD"},
+        {"source.audio-input", "Audio Input", "\u266A"},
+        {"source.audio-output", "Audio Output", "\u266B"},
     };
     QVariantList out;
     for (const Entry& e : kTypes) {
         QVariantMap m;
         m["id"] = QString::fromLatin1(e.id);
         m["title"] = QString::fromLatin1(e.title);
+        m["icon"] = QString::fromUtf8(e.icon);
         m["selfContained"] = ldoc::is_self_contained(e.id);
         out.append(m);
     }
@@ -534,7 +542,7 @@ struct Placement {
 
 } // namespace
 
-void Document::addSourceAsLayer(const QString& name, const QString& type) {
+void Document::addSourceAsLayer(const QString& name, const QString& type, bool visible) {
     const ldoc::Scene* scene = current_scene();
     if (!scene) {
         emit notice(QStringLiteral("There is no scene to add a source to."));
@@ -555,7 +563,13 @@ void Document::addSourceAsLayer(const QString& name, const QString& type) {
         src.settings.emplace("loop", true);
     const ldoc::Id source_id = src.id;
 
+    // A colour is the one source we can draw honestly with no renderer, so it is given one and
+    // the add dialog shows the real swatch rather than a stand-in.
+    if (src.type == "source.color")
+        src.settings.emplace("color", ldoc::Rgba::from_srgb8(0x3b, 0x82, 0xf6));
+
     ldoc::Node layer = ldoc::make_node(ldoc::NodeKind::Layer, src.name);
+    layer.visible = visible;
     const ldoc::Id layer_id = layer.id;
 
     Placement where;
@@ -570,7 +584,7 @@ void Document::addSourceAsLayer(const QString& name, const QString& type) {
     selectLayer(id_str(layer_id));
 }
 
-void Document::addExistingSourceAsLayer(const QString& sourceId) {
+void Document::addExistingSourceAsLayer(const QString& sourceId, bool visible) {
     const ldoc::Scene* scene = current_scene();
     const auto parsed = parse_id(sourceId);
     if (!scene || !parsed)
@@ -582,6 +596,7 @@ void Document::addExistingSourceAsLayer(const QString& sourceId) {
     }
 
     ldoc::Node layer = ldoc::make_node(ldoc::NodeKind::Layer, existing->name);
+    layer.visible = visible;
     const ldoc::Id layer_id = layer.id;
 
     Placement where;
@@ -592,6 +607,79 @@ void Document::addExistingSourceAsLayer(const QString& sourceId) {
                           ldoc::SetLayerSource{scene->id, layer_id, *parsed}},
                          std::format("Add {}", existing->name)));
     selectLayer(id_str(layer_id));
+}
+
+namespace {
+
+QString swatch_of(const ldoc::Source& src) {
+    const auto it = src.settings.find("color");
+    if (it == src.settings.end())
+        return {};
+    const auto* rgba = std::get_if<ldoc::Rgba>(&it->second);
+    if (!rgba)
+        return {};
+    const auto c = rgba->to_srgb8();
+    return QStringLiteral("#%1%2%3")
+        .arg(c[0], 2, 16, QLatin1Char('0'))
+        .arg(c[1], 2, 16, QLatin1Char('0'))
+        .arg(c[2], 2, 16, QLatin1Char('0'));
+}
+
+} // namespace
+
+QVariantMap Document::source_tile(const ldoc::Source& src) const {
+    const ldoc::Project& p = session_->project();
+    QVariantMap m;
+    m["id"] = id_str(src.id);
+    m["name"] = qstr(src.name);
+    m["type"] = qstr(src.type);
+    m["selfContained"] = ldoc::is_self_contained(src.type);
+    m["swatch"] = swatch_of(src);
+
+    QString icon;
+    QString type_title = qstr(src.type);
+    for (const QVariant& v : sourceTypes()) {
+        const QVariantMap entry = v.toMap();
+        if (entry.value("id").toString() == qstr(src.type)) {
+            icon = entry.value("icon").toString();
+            type_title = entry.value("title").toString();
+        }
+    }
+    m["icon"] = icon;
+    m["typeTitle"] = type_title;
+
+    int uses = 0;
+    for (const ldoc::Scene& sc : p.scenes) {
+        ldoc::visit(sc.roots, [&](const ldoc::Node& n) {
+            const auto* layer = std::get_if<ldoc::LayerData>(&n.data);
+            if (layer && layer->source && *layer->source == src.id)
+                ++uses;
+        });
+    }
+    m["useCount"] = uses;
+    return m;
+}
+
+QVariantList Document::sourcesOfType(const QString& type) const {
+    QVariantList out;
+    for (const ldoc::Source& src : session_->project().sources) {
+        if (qstr(src.type) == type)
+            out.append(source_tile(src));
+    }
+    return out;
+}
+
+QVariantList Document::recentSources(int limit) const {
+    const auto& sources = session_->project().sources;
+    QVariantList out;
+    // Newest first. Sources are appended, so the tail reversed is the real creation order
+    // rather than a guess at one.
+    for (auto it = sources.rbegin(); it != sources.rend(); ++it) {
+        if (limit > 0 && out.size() >= limit)
+            break;
+        out.append(source_tile(*it));
+    }
+    return out;
 }
 
 void Document::addSource(const QString& name, const QString& type) {

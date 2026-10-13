@@ -729,6 +729,27 @@ int main(int argc, char** argv) {
         };
         report(!document.sourceTypes().isEmpty(), "the source types are listed");
 
+        // The add dialog's listings, which are what the grid draws from. Checked empty first:
+        // an empty project must report nothing rather than everything, since the dialog shows
+        // this list before anything has been made.
+        report(document.recentSources(24).size() == document.sourcesModel()->rowCount(),
+               "the recently-created list matches what the project holds");
+        report(document.sourcesOfType(QStringLiteral("source.browser")).isEmpty(),
+               "a type with no sources reports none rather than everything");
+        for (const QVariant& v : document.sourceTypes()) {
+            if (v.toMap().value("icon").toString().isEmpty()) {
+                report(false, "a source type has no icon for the dialog to draw");
+                break;
+            }
+        }
+        report(true, "every source type carries an icon");
+
+        // Relative, like every other count here: --check may run against a project it has run
+        // against before, and a check that only passes on a clean slate stops being run.
+        const int cams_before =
+            static_cast<int>(document.sourcesOfType(QStringLiteral("source.v4l2")).size());
+        const int colours_before =
+            static_cast<int>(document.sourcesOfType(QStringLiteral("source.color")).size());
         const int layers_before_source = document.layersModel()->rowCount();
         const QString undo_before_source = document.undoDescription();
         document.addSourceAsLayer(QStringLiteral("Desk Cam"), QStringLiteral("source.v4l2"));
@@ -743,6 +764,14 @@ int main(int argc, char** argv) {
                "with the new one selected");
         report(source_at(sources_before, 4).toInt() == 1,
                "bound to it, which the use count reflects");
+        report(!document.recentSources(24).isEmpty(),
+               "and the recently-created list now has it");
+        report(document.recentSources(24).front().toMap().value("name").toString() ==
+                   QLatin1String("Desk Cam"),
+               "newest first, so the one just made is at the front");
+        report(static_cast<int>(document.sourcesOfType(QStringLiteral("source.v4l2")).size()) ==
+                   cams_before + 1,
+               "and it is listed under its own type");
         report(document.undoDescription() != undo_before_source &&
                    document.undoDescription().contains(QLatin1String("Desk Cam")),
                "as one undo step named for what it did");
@@ -779,6 +808,36 @@ int main(int argc, char** argv) {
                "unbinding the layer releases the source");
         report(source_at(sources_before, 5).toBool() == false,
                "a camera is not safe for an emergency scene");
+
+        // A colour is the one source this build can preview honestly, so the dialog shows its
+        // real swatch; everything else falls back to the type glyph and says so by having none.
+        document.addSourceAsLayer(QStringLiteral("Backdrop"), QStringLiteral("source.color"));
+        settle();
+        {
+            const QVariantList colours = document.sourcesOfType(QStringLiteral("source.color"));
+            report(static_cast<int>(colours.size()) == colours_before + 1,
+                   "a colour source can be added");
+            if (!colours.isEmpty()) {
+                report(colours.front().toMap().value("swatch").toString().startsWith('#'),
+                       "and carries a real colour for the dialog to draw");
+                report(colours.front().toMap().value("selfContained").toBool(),
+                       "and is safe for an emergency scene");
+            }
+            const QVariantList cams = document.sourcesOfType(QStringLiteral("source.v4l2"));
+            if (!cams.isEmpty()) {
+                report(cams.front().toMap().value("swatch").toString().isEmpty(),
+                       "a camera has no swatch, so the tile falls back to its glyph");
+            }
+        }
+
+        // A source added with the visibility box cleared arrives hidden.
+        document.addSourceAsLayer(QStringLiteral("Hidden"), QStringLiteral("source.color"), false);
+        settle();
+        report(!document.layerProperties().value("visible").toBool(),
+               "a source added with 'make visible' cleared arrives hidden");
+        document.undo();
+        document.undo();
+        settle();
 
         // ---- the audio mixer -------------------------------------------------------------
         //
