@@ -7,8 +7,26 @@ SPDX-License-Identifier: GPL-3.0-or-later
 A live streaming and recording studio for Linux, built clean-sheet. Omarchy (Arch + Hyprland) is the
 bedrock target; the rest of Linux follows, then macOS and Windows.
 
-**Status: pre-alpha.** Nothing streams yet. What exists today is the build foundation, the
-architectural decision record, and `libertas probe`.
+**Status: pre-alpha.** Nothing streams yet, and the program canvas says so on its face.
+
+What exists is a workspace you can use and a document you can edit:
+
+- **`libertas-ui`** — one window holding the whole workspace, with Adobe-style drop-zone docking,
+  dividers, tab groups, live Omarchy theme following, and a layout that survives being saved and
+  restored at any resolution.
+- **A document model** — scenes as trees, groups, adjustment and reference nodes, canvases, buses,
+  per-canvas overrides. Scene list, layer tree, properties and inputs panels drive it.
+- **A command bus** — every change is a validated, journaled, undoable command. Unsaved work
+  survives the process being killed.
+- **A project on disk** — a git-diffable directory of JSON, saved as a transaction. A corrupt scene
+  costs one scene, not the collection.
+- **Keyboard and hotkeys** — one bindings table covering application and global scopes, with the
+  workspace fully reachable without a pointer.
+
+What does not exist yet: the compositor, capture, encode and output. Those live in `tools/` as
+measured spikes and have not been made product code. See
+[`docs/adr/`](docs/adr/) — twenty-five decisions, each recording what was measured and what was
+rejected.
 
 ## Why
 
@@ -35,6 +53,8 @@ rejected alternatives.
 | **Vulkan, explicit sync** | Composite in scene-linear RGBA16F. Encode on the same `VkDevice` via `VK_KHR_video_encode_queue` where available. ([ADR-0006](docs/adr/0006-nvenc-interop-path.md)) |
 | **Multi-GPU encode** | Concurrent encode across different GPUs at different resolutions is a first-class requirement, not a bolt-on. ([ADR-0007](docs/adr/0007-dual-gpu-concurrent-encode.md)) |
 | **Theme-aware** | Follows the live Omarchy theme; ships a token fallback so other platforms are theme-driven too. |
+| **The UI owns its layout** | Wayland cannot restore a client's window geometry, so Libertas lays panels out inside one surface and persists proportions, never pixels. The program canvas is never a separate window and cannot be lost. ([ADR-0015](docs/adr/0015-ui-owns-its-layout.md), [ADR-0016](docs/adr/0016-panel-docking-drop-zones.md)) |
+| **A safe state** | When the show cannot be supervised — a crash, a wedged frontend, or a panic button — the render process cuts to an emergency scene rather than broadcasting whatever happened to be on screen. ([ADR-0025](docs/adr/0025-the-safe-state.md)) |
 
 The honest trade-off is recorded too: clean sheet is the harder road, 1-2 years to real parity, and
 the first six months will feel worse than OBS.
@@ -49,14 +69,46 @@ sudo pacman -S --needed base-devel cmake ninja vulkan-headers vulkan-icd-loader 
                         libdrm pipewire glib2 ffmpeg
 ```
 
+Plus Qt 6.5+, jsoncpp and tomlplusplus for the shell and the document model:
+
+```sh
+sudo pacman -S --needed qt6-base qt6-declarative qt6-wayland jsoncpp tomlplusplus
+```
+
 ```sh
 cmake --preset linux
 cmake --build --preset linux
-./build/linux/apps/libertas/libertas probe
+ctest --preset linux
 ```
 
 Presets: `linux`, `linux-debug`, `linux-ci` (warnings are errors), `linux-asan`, `linux-tsan`.
-Without `ninja`, configure manually with `-G "Unix Makefiles"`.
+Without `ninja`, configure manually with `-G "Unix Makefiles"` — the reference machine has no
+ninja, so this path is kept working.
+
+## Running it
+
+```sh
+./build/linux/apps/libertas-ui/libertas-ui --project ~/Shows/MyShow.libertas
+./build/linux/apps/libertas/libertas probe
+```
+
+Without `--project` the shell opens an unsaved document. `--check` drives the whole shell
+headlessly — loading the real QML, running the real gestures, grabbing frames and asserting what
+was drawn — and forces the offscreen platform, so it cannot reach a display even by accident.
+
+## Testing
+
+```sh
+ctest --preset linux          # fourteen binaries
+ctest --preset linux-asan     # the same, under ASan + UBSan
+```
+
+The layout engine, the document model and the command bus carry property tests: random docking
+gestures asserting every invariant after each one, random command sequences asserting that undo
+and redo return the project byte-for-byte, and serialise-parse-serialise as a fixed point. Three of
+the sharper bugs in this repository were found by those rather than by reading the code, and each
+has a named case beside the random one — a property test tells you *that* something is wrong, a
+named case tells you *what*.
 
 ## `libertas probe`
 
