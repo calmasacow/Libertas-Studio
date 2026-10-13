@@ -47,6 +47,7 @@ if(LIBERTAS_BUILD_TESTS)
 endif()
 
 add_subdirectory(libs/lcore)
+add_subdirectory(libs/lipc)
 add_subdirectory(libs/llayout)
 add_subdirectory(libs/ldoc)
 add_subdirectory(libs/lsession)

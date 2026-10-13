@@ -23,6 +23,7 @@ libertas_unit_test(test_fuzz             libertas::ldoc libertas::llayout libert
 libertas_unit_test(test_golden           libertas::ldoc libertas::lcore)
 target_compile_definitions(test_golden PRIVATE
     LIBERTAS_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+libertas_unit_test(test_ipc              libertas::lipc)
 libertas_unit_test(test_json             libertas::ldoc)
 libertas_unit_test(test_project_io       libertas::ldoc libertas::lcore)
 libertas_unit_test(test_layout          libertas::llayout)

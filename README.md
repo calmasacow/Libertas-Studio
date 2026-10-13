@@ -30,7 +30,7 @@ measured spikes and have not been made product code. The panels that will drive 
 their faces — the audio mixer draws no meters, the controls panel has no Go Live button, and the
 program canvas reads "no pipeline attached" — because a panel that looks finished while being
 incapable is a panel nobody can tell the truth about later. See [`docs/adr/`](docs/adr/) —
-twenty-five decisions, each recording what was measured and what was rejected.
+twenty-six decisions, each recording what was measured and what was rejected.
 
 ## Why
 
@@ -58,6 +58,7 @@ rejected alternatives.
 | **Multi-GPU encode** | Concurrent encode across different GPUs at different resolutions is a first-class requirement, not a bolt-on. ([ADR-0007](docs/adr/0007-dual-gpu-concurrent-encode.md)) |
 | **Theme-aware** | Follows the live Omarchy theme; ships a token fallback so other platforms are theme-driven too. |
 | **The UI owns its layout** | Wayland cannot restore a client's window geometry, so Libertas lays panels out inside one surface and persists proportions, never pixels. The program canvas is never a separate window and cannot be lost. ([ADR-0015](docs/adr/0015-ui-owns-its-layout.md), [ADR-0016](docs/adr/0016-panel-docking-drop-zones.md)) |
+| **One transport** | Our processes talk over `SOCK_SEQPACKET` carrying whole messages and file descriptors, and nothing in it knows what a message means. An empty message is refused, because the kernel reports one exactly as it reports a dead peer. ([ADR-0026](docs/adr/0026-the-process-transport.md)) |
 | **A safe state** | When the show cannot be supervised — a crash, a wedged frontend, or a panic button — the render process cuts to an emergency scene rather than broadcasting whatever happened to be on screen. ([ADR-0025](docs/adr/0025-the-safe-state.md)) |
 
 The honest trade-off is recorded too: clean sheet is the harder road, 1-2 years to real parity, and
