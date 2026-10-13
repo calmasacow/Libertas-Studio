@@ -33,23 +33,19 @@ std::expected<NodeId, std::string> to_node_id(std::int64_t v, std::string_view w
 
 } // namespace
 
-std::string to_toml(const Layout& l) {
+namespace {
+
+/// The tree itself, with `[[node]]` written under `table_prefix` so that the same emitter serves
+/// both a bare layout file and one workspace inside a set.
+std::string layout_body(const Layout& l, std::string_view table_prefix) {
     std::string out;
-    out += "# Libertas-Studio workspace layout.\n";
-    out += "#\n";
-    out += "# Proportions only. No pixel geometry is stored here (ADR-0015 rule 4), so this file\n";
-    out += "# restores correctly at any resolution and on any monitor arrangement. It is safe to\n";
-    out += "# edit by hand: anything that fails to parse or fails validation is replaced by the\n";
-    out += "# built-in default layout, and the application says so rather than restoring\n";
-    out += "# something incoherent.\n\n";
-    out += std::format("version = {}\n", kLayoutFormatVersion);
     out += std::format("root = {}\n", l.root());
 
     for (const NodeId id : l.node_ids()) {
         const Node* n = l.find(id);
         if (!n)
             continue;
-        out += "\n[[node]]\n";
+        out += std::format("\n[[{}node]]\n", table_prefix);
         out += std::format("id = {}\n", id);
         if (n->is_split()) {
             out += "kind = \"split\"\n";
@@ -74,6 +70,26 @@ std::string to_toml(const Layout& l) {
     return out;
 }
 
+} // namespace
+
+std::string to_toml(const Layout& l) {
+    std::string out;
+    out += "# Libertas-Studio workspace layout.\n";
+    out += "#\n";
+    out += "# Proportions only. No pixel geometry is stored here (ADR-0015 rule 4), so this file\n";
+    out += "# restores correctly at any resolution and on any monitor arrangement. It is safe to\n";
+    out += "# edit by hand: anything that fails to parse or fails validation is replaced by the\n";
+    out += "# built-in default layout, and the application says so rather than restoring\n";
+    out += "# something incoherent.\n\n";
+    out += std::format("version = {}\n", kLayoutFormatVersion);
+    out += layout_body(l, "");
+    return out;
+}
+
+namespace {
+std::expected<Layout, std::string> layout_from_table(const toml::table& tbl);
+} // namespace
+
 std::expected<Layout, std::string> from_toml(std::string_view text) {
     toml::table tbl;
     try {
@@ -96,6 +112,12 @@ std::expected<Layout, std::string> from_toml(std::string_view text) {
                                            "reads version {})",
                                            *version, kLayoutFormatVersion));
 
+    return layout_from_table(tbl);
+}
+
+namespace {
+
+std::expected<Layout, std::string> layout_from_table(const toml::table& tbl) {
     const auto root_raw = tbl["root"].value<std::int64_t>();
     if (!root_raw)
         return std::unexpected("missing 'root'");
@@ -196,6 +218,121 @@ std::expected<Layout, std::string> from_toml(std::string_view text) {
     if (!l.adopt(std::move(nodes), *root))
         return std::unexpected("the nodes do not form a single valid tree rooted at 'root'");
     return l;
+}
+
+} // namespace
+
+std::string to_toml(const Workspaces& w) {
+    std::string out;
+    out += "# Libertas-Studio saved workspaces.\n";
+    out += "#\n";
+    out += "# Each [[workspace]] is one saved arrangement -- which panels are on screen and how\n";
+    out += "# they are divided. These are not compositor workspaces: nothing here is an OS\n";
+    out += "# window (ADR-0015).\n";
+    out += "#\n";
+    out += "# Proportions only. No pixel geometry is stored (ADR-0015 rule 4), so this restores\n";
+    out += "# correctly at any resolution and on any monitor arrangement. Safe to edit by hand:\n";
+    out += "# anything that fails to parse or validate is replaced by the defaults, and the\n";
+    out += "# application says so rather than restoring something incoherent.\n\n";
+    out += std::format("version = {}\n", kLayoutFormatVersion);
+    out += std::format("active = {}\n", w.active());
+
+    for (const Workspace& item : w.items()) {
+        out += "\n[[workspace]]\n";
+        out += std::format("name = {}\n", quote(item.name));
+        out += std::format("builtin = {}\n", item.builtin ? "true" : "false");
+        out += layout_body(item.layout, "workspace.");
+    }
+    return out;
+}
+
+std::expected<Workspaces, std::string> workspaces_from_toml(std::string_view text) {
+    toml::table tbl;
+    try {
+        tbl = toml::parse(text);
+    } catch (const toml::parse_error& e) {
+        return std::unexpected(std::format("line {}: {}", e.source().begin.line,
+                                           std::string_view{e.description()}));
+    } catch (const std::exception& e) {
+        return std::unexpected(e.what());
+    } catch (...) {
+        return std::unexpected("the file could not be parsed");
+    }
+
+    const auto version = tbl["version"].value<std::int64_t>();
+    if (!version)
+        return std::unexpected("missing 'version'");
+    if (*version != kLayoutFormatVersion)
+        return std::unexpected(std::format("unsupported layout format version {} (this build "
+                                           "reads version {})",
+                                           *version, kLayoutFormatVersion));
+
+    const toml::array* arr = tbl["workspace"].as_array();
+    if (!arr || arr->empty()) {
+        // The older format: one layout at the top level, no workspaces. Adopt it as Build rather
+        // than throwing away an arrangement someone had set up.
+        auto single = layout_from_table(tbl);
+        if (!single)
+            return std::unexpected(single.error());
+        Workspaces w = Workspaces::defaults();
+        if (const auto r = w.set_layout(0, std::move(*single)); !r)
+            return std::unexpected(r.error());
+        return w;
+    }
+
+    Workspaces w;
+    for (std::size_t i = 0; i < arr->size(); ++i) {
+        const toml::table* t = arr->get(i)->as_table();
+        if (!t)
+            return std::unexpected(std::format("workspace #{} is not a table", i));
+        const auto name = (*t)["name"].value<std::string>();
+        if (!name || name->empty())
+            return std::unexpected(std::format("workspace #{} has no 'name'", i));
+        auto layout = layout_from_table(*t);
+        if (!layout)
+            return std::unexpected(std::format("'{}': {}", *name, layout.error()));
+
+        // `builtin` is taken from the name rather than from the file. A hand-edited file that
+        // marked every workspace as removable, or marked a new one as built in, would otherwise
+        // be able to leave no known arrangement to return to.
+        const bool builtin = (*name == Workspaces::kBuild) || (*name == Workspaces::kLive);
+        if (builtin) {
+            if (const auto r = w.add(*name, std::move(*layout)); !r)
+                return std::unexpected(r.error());
+            w.make_builtin(w.size() - 1);
+        } else if (const auto r = w.add(*name, std::move(*layout)); !r) {
+            return std::unexpected(r.error());
+        }
+    }
+
+    // An out-of-range index in a hand-edited file just leaves the first one active, which is
+    // why the result is deliberately ignored rather than treated as a parse failure.
+    const auto active = tbl["active"].value<std::int64_t>();
+    if (active && *active >= 0)
+        static_cast<void>(w.set_active(static_cast<std::size_t>(*active)));
+
+    if (const auto bad = w.validate())
+        return std::unexpected(*bad);
+    return w;
+}
+
+std::expected<void, std::string> save(const Workspaces& w, const std::filesystem::path& path) {
+    return lc::write_atomic(path, to_toml(w));
+}
+
+WorkspacesLoadOutcome load_workspaces_or_default(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec))
+        return WorkspacesLoadOutcome{Workspaces::defaults(), {}, true};
+
+    const auto text = lc::read_file(path);
+    if (!text)
+        return WorkspacesLoadOutcome{Workspaces::defaults(), text.error(), true};
+
+    auto w = workspaces_from_toml(*text);
+    if (!w)
+        return WorkspacesLoadOutcome{Workspaces::defaults(), w.error(), true};
+    return WorkspacesLoadOutcome{std::move(*w), {}, false};
 }
 
 std::expected<void, std::string> save(const Layout& l, const std::filesystem::path& path) {

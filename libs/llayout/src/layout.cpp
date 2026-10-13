@@ -75,7 +75,7 @@ Layout::Layout() {
     root_ = alloc(std::move(n));
 }
 
-Layout Layout::default_studio() {
+Layout Layout::default_build() {
     Layout l;
 
     auto tabs = [&l](std::initializer_list<const char*> names) {
@@ -97,12 +97,9 @@ Layout Layout::default_studio() {
     const NodeId scenes = tabs({"scenes"});
     const NodeId sources = tabs({"sources"});
     const NodeId program = tabs({"program"});
-    const NodeId inspect = tabs({"properties", "info", "broadcast-stats", "log"});
+    const NodeId inspect = tabs({"properties", "inputs", "info", "log"});
     const NodeId mixer = tabs({"audio-mixer"});
-    // Controls and Outputs share a group: one is touched constantly during a show and the other
-    // is set up once and then wanted out of the way, so they are the same space at different
-    // times rather than two columns competing for it.
-    const NodeId controls = tabs({"controls", "outputs"});
+    const NodeId controls = tabs({"controls"});
 
     const NodeId left = split(Axis::Vertical, {scenes, sources}, {0.5, 0.5});
     const NodeId upper = split(Axis::Horizontal, {left, program, inspect}, {0.18, 0.64, 0.18});
@@ -110,6 +107,44 @@ Layout Layout::default_studio() {
     const NodeId root = split(Axis::Vertical, {upper, lower}, {0.76, 0.24});
 
     // Drop the empty root the default constructor made; this tree replaces it.
+    l.erase_subtree(l.root_);
+    l.root_ = root;
+    l.normalize();
+    return l;
+}
+
+Layout Layout::default_live() {
+    Layout l;
+
+    auto tabs = [&l](std::initializer_list<const char*> names) {
+        Node n;
+        n.kind = NodeKind::Tabs;
+        for (const char* s : names)
+            n.tabs.emplace_back(s);
+        return l.alloc(std::move(n));
+    };
+    auto split = [&l](Axis axis, std::vector<NodeId> kids, std::vector<double> fr) {
+        Node n;
+        n.kind = NodeKind::Split;
+        n.axis = axis;
+        n.children = std::move(kids);
+        n.fractions = std::move(fr);
+        return l.alloc(std::move(n));
+    };
+
+    // Favourites rather than the scene and source lists: during a show the useful set is small
+    // and known in advance, and every row that is not going on air is a row to mis-click.
+    const NodeId favourites = tabs({"favourites"});
+    const NodeId program = tabs({"program"});
+    const NodeId controls = tabs({"controls", "outputs"});
+    const NodeId mixer = tabs({"audio-mixer"});
+    const NodeId stats = tabs({"broadcast-stats"});
+
+    const NodeId upper = split(Axis::Horizontal, {favourites, program, controls},
+                               {0.16, 0.64, 0.20});
+    const NodeId lower = split(Axis::Horizontal, {mixer, stats}, {0.58, 0.42});
+    const NodeId root = split(Axis::Vertical, {upper, lower}, {0.74, 0.26});
+
     l.erase_subtree(l.root_);
     l.root_ = root;
     l.normalize();

@@ -87,12 +87,24 @@ Window {
         }
     }
 
-    Item {
-        id: workArea
+    WorkspaceTabs {
+        id: workspaceTabs
 
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
+    }
+
+    Item {
+        id: workArea
+
+        // Named so the headless check can ask where it actually is. Panel rects are in this
+        // item's coordinates, not the window's, and the chrome above it is not fixed.
+        objectName: "workArea"
+
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: workspaceTabs.bottom
         anchors.bottom: statusBar.top
 
         onWidthChanged: Workspace.setViewport(width, height)

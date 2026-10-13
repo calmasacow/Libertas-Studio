@@ -22,6 +22,7 @@ qt_add_executable(libertas-ui
     layoutmodels.cpp
     layoutmodels.hpp
     main.cpp
+    rowmodel.hpp
     telemetry.cpp
     theme.cpp
     theme.hpp
@@ -68,6 +69,7 @@ qt_add_qml_module(libertas-ui
         qml/TabStrip.qml
         qml/ToolButton.qml
         qml/ToolTipText.qml
+        qml/WorkspaceTabs.qml
 )
 
 target_link_libraries(libertas-ui PRIVATE

@@ -64,16 +64,17 @@ Workspace* Workspace::create(QQmlEngine*, QJSEngine*) {
 Workspace::Workspace(std::filesystem::path config_path, QObject* parent)
     : QObject(parent), history_(llayout::Layout::default_studio()),
       config_path_(std::move(config_path)) {
-    llayout::LoadOutcome outcome = llayout::load_or_default(config_path_);
-    history_.reset(std::move(outcome.layout));
+    llayout::WorkspacesLoadOutcome outcome = llayout::load_workspaces_or_default(config_path_);
+    workspaces_ = std::move(outcome.workspaces);
+    history_.reset(workspaces_.active_layout());
     if (!outcome.complaint.empty()) {
         // ADR-0015 rule 5: fall back to the default *and say so*. A silent fallback is
         // indistinguishable from the bug it is covering for.
-        layout_source_ = QStringLiteral("default layout (%1 could not be read: %2)")
+        layout_source_ = QStringLiteral("default workspaces (%1 could not be read: %2)")
                              .arg(QString::fromStdString(config_path_.string()),
                                   QString::fromStdString(outcome.complaint));
     } else if (outcome.used_default) {
-        layout_source_ = QStringLiteral("default layout");
+        layout_source_ = QStringLiteral("default workspaces");
     } else {
         layout_source_ = QString::fromStdString(config_path_.string());
     }
@@ -85,6 +86,7 @@ Workspace::Workspace(std::filesystem::path config_path, QObject* parent)
     connect(&save_timer_, &QTimer::timeout, this, &Workspace::saveNow);
 
     refresh_models();
+    refresh_workspace_tabs();
     validate_focus();
 }
 
@@ -277,11 +279,129 @@ void Workspace::scheduleSave() {
     save_timer_.start();
 }
 
+void Workspace::sync_active() {
+    // history_ is where every drag, divider move and undo actually lands, so the set is stale
+    // until this runs. Everything that reads or writes workspaces_ calls it first.
+    static_cast<void>(workspaces_.set_layout(workspaces_.active(), history_.current()));
+}
+
+void Workspace::refresh_workspace_tabs() {
+    std::vector<WorkspaceTabRow> rows;
+    for (std::size_t i = 0; i < workspaces_.size(); ++i) {
+        const llayout::Workspace& item = workspaces_.items()[i];
+        rows.push_back(WorkspaceTabRow{QString::fromStdString(item.name), item.builtin,
+                                       i == workspaces_.active()});
+    }
+    workspace_tabs_.set_rows(std::move(rows));
+    emit workspacesChanged();
+}
+
+int Workspace::workspaceCount() const {
+    return static_cast<int>(workspaces_.size());
+}
+
+int Workspace::activeWorkspace() const {
+    return static_cast<int>(workspaces_.active());
+}
+
+QString Workspace::activeWorkspaceName() const {
+    return QString::fromStdString(workspaces_.items()[workspaces_.active()].name);
+}
+
+bool Workspace::workspaceIsBuiltin(int index) const {
+    if (index < 0 || static_cast<std::size_t>(index) >= workspaces_.size())
+        return false;
+    return workspaces_.items()[static_cast<std::size_t>(index)].builtin;
+}
+
+void Workspace::selectWorkspace(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= workspaces_.size())
+        return;
+    if (static_cast<std::size_t>(index) == workspaces_.active())
+        return;
+    // A drag or a divider drag in flight belongs to the arrangement being left.
+    cancelDrag();
+    endDividerDrag();
+    sync_active();
+    static_cast<void>(workspaces_.set_active(static_cast<std::size_t>(index)));
+    // The undo stack does not follow. Switching workspaces is not a layout edit -- undoing
+    // after a switch should undo something done *here*, not silently rearrange the one just
+    // left, which is not even on screen to see it happen.
+    history_.reset(workspaces_.active_layout());
+    refresh_models();
+    refresh_workspace_tabs();
+    validate_focus();
+    touch();
+    scheduleSave();
+}
+
+void Workspace::addWorkspace(const QString& name) {
+    sync_active();
+    // Starting from what is on screen: someone adding a workspace has almost always just
+    // finished arranging the thing they want to keep.
+    const auto added = workspaces_.add(name.trimmed().toStdString(), history_.current());
+    if (!added) {
+        emit notice(QString::fromStdString(added.error()));
+        return;
+    }
+    refresh_workspace_tabs();
+    selectWorkspace(static_cast<int>(*added));
+    scheduleSave();
+}
+
+void Workspace::removeWorkspace(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= workspaces_.size())
+        return;
+    sync_active();
+    if (const auto r = workspaces_.remove(static_cast<std::size_t>(index)); !r) {
+        emit notice(QString::fromStdString(r.error()));
+        return;
+    }
+    history_.reset(workspaces_.active_layout());
+    refresh_models();
+    refresh_workspace_tabs();
+    validate_focus();
+    touch();
+    scheduleSave();
+}
+
+void Workspace::renameWorkspace(int index, const QString& name) {
+    if (index < 0 || static_cast<std::size_t>(index) >= workspaces_.size())
+        return;
+    if (const auto r = workspaces_.rename(static_cast<std::size_t>(index),
+                                          name.trimmed().toStdString());
+        !r) {
+        emit notice(QString::fromStdString(r.error()));
+        return;
+    }
+    refresh_workspace_tabs();
+    scheduleSave();
+}
+
+void Workspace::resetWorkspace(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= workspaces_.size())
+        return;
+    sync_active();
+    if (const auto r = workspaces_.reset(static_cast<std::size_t>(index)); !r) {
+        emit notice(QString::fromStdString(r.error()));
+        return;
+    }
+    if (static_cast<std::size_t>(index) == workspaces_.active()) {
+        history_.reset(workspaces_.active_layout());
+        refresh_models();
+        validate_focus();
+        touch();
+    }
+    refresh_workspace_tabs();
+    scheduleSave();
+}
+
 void Workspace::saveNow() {
     save_timer_.stop();
-    const auto r = llayout::save(history_.current(), config_path_);
+    sync_active();
+    const auto r = llayout::save(workspaces_, config_path_);
     if (!r) {
-        emit notice(QStringLiteral("Could not save the layout: %1")
+        emit notice(QStringLiteral("Could not save the workspaces: %1")
                         .arg(QString::fromStdString(r.error())));
     }
 }
@@ -635,8 +755,15 @@ void Workspace::redo() {
 }
 
 void Workspace::resetLayout() {
-    llayout::Layout next = llayout::Layout::default_studio();
-    if (history_.commit(std::move(next))) {
+    // The arrangement on screen, back to how that workspace shipped -- Build's default for
+    // Build, Live's for Live. Committed through the history so it is one undo away.
+    const std::size_t active = workspaces_.active();
+    llayout::Workspaces probe = workspaces_;
+    if (const auto r = probe.reset(active); !r) {
+        emit notice(QString::fromStdString(r.error()));
+        return;
+    }
+    if (history_.commit(probe.items()[active].layout)) {
         layout_source_ = QStringLiteral("default layout");
         touch();
     }

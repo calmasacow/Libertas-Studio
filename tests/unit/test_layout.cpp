@@ -57,16 +57,15 @@ LTEST_CASE(the_default_layout_is_valid_and_holds_the_expected_panels) {
     CHECK_MSG(!bad.has_value(), "{}", bad.value_or(""));
 
     CHECK_EQ(sorted_panels(l),
-             (std::vector<std::string>{"audio-mixer", "broadcast-stats", "controls", "info",
-                                       "log", "outputs", "program", "properties", "scenes",
-                                       "sources"}));
+             (std::vector<std::string>{"audio-mixer", "controls", "info", "inputs", "log",
+                                       "program", "properties", "scenes", "sources"}));
 
     // The program canvas is a region of the workspace, not a window (ADR-0015 rule 2).
     CHECK(l.has_panel("program"));
     CHECK(l.node_of_panel("program") != kInvalidNode);
 
-    // properties, info, broadcast-stats and log ship as one tabbed group, so the tab path is
-    // exercised by the default layout.
+    // properties, inputs, info and log ship as one tabbed group, so the tab path is exercised
+    // by the default layout.
     CHECK_EQ(l.node_of_panel("info"), l.node_of_panel("log"));
     CHECK_EQ(l.node_of_panel("properties"), l.node_of_panel("log"));
 }
@@ -177,7 +176,7 @@ LTEST_CASE(a_centre_drop_makes_a_tabbed_group) {
     const Node* n = l.find(target);
     REQUIRE(n != nullptr);
     CHECK_EQ(n->active, std::size_t{4});
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{10});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{9});
 }
 
 LTEST_CASE(an_outer_drop_splits_the_target_on_the_right_axis_and_side) {
@@ -373,7 +372,7 @@ LTEST_CASE(a_panel_not_yet_in_the_tree_can_be_docked) {
     const DockResult r = l.dock("chat", l.node_of_panel("audio-mixer"), Zone::Right, vp, cs);
     REQUIRE(r.applied());
     CHECK(l.has_panel("chat"));
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{11});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{10});
     CHECK(!l.validate().has_value());
 }
 
@@ -565,7 +564,7 @@ LTEST_CASE(activating_a_tab_selects_it) {
     CHECK(l.activate("log"));
     CHECK_EQ(l.find(l.node_of_panel("log"))->active, std::size_t{3});
     CHECK(l.activate("info"));
-    CHECK_EQ(l.find(l.node_of_panel("info"))->active, std::size_t{1});
+    CHECK_EQ(l.find(l.node_of_panel("info"))->active, std::size_t{2});
     CHECK(!l.activate("nope"));
 }
 
@@ -699,10 +698,13 @@ LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
     // Two window sizes, because they exercise different code: the large one applies nearly every
     // dock and hammers the tree surgery, while the small one spends most of its time refusing
     // drops and so tests that a refusal really does leave the layout alone.
+    // Must contain every panel default_studio() starts with, plus the ones a gesture may add:
+    // the walk asserts that nothing appears in the tree that was not asked for, so a panel in
+    // the starting layout but missing here fails on the first step.
     const std::vector<std::string> pool = {"program",  "scenes",   "sources",     "info",
                                            "log",      "controls", "audio-mixer", "properties",
-                                           "outputs",  "chat",     "browser",     "replay",
-                                           "broadcast-stats"};
+                                           "inputs",   "outputs",  "chat",        "browser",
+                                           "replay",   "broadcast-stats", "favourites"};
     const Constraints cs = Constraints::studio_defaults();
 
     for (const Viewport& vp : {vp_of(3840.0, 2160.0), vp_of(1366.0, 768.0)}) {
@@ -798,9 +800,9 @@ LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
 LTEST_CASE(a_tight_window_refuses_drops_without_corrupting_anything) {
     // The same loop as above, but small enough that refusals are the common case. The point is
     // the refusal path, so assert it was actually taken.
-    const std::vector<std::string> pool = {"program", "scenes", "sources",    "info",
-                                           "log",     "chat",   "browser",    "replay",
-                                           "properties"};
+    const std::vector<std::string> pool = {"program", "scenes",  "sources", "info",
+                                           "log",     "chat",    "browser", "replay",
+                                           "properties", "inputs", "audio-mixer", "controls"};
     const Constraints cs = Constraints::studio_defaults();
     const Viewport vp = vp_of(1366.0, 768.0);
 

@@ -24,6 +24,7 @@
 #include <QSet>
 #include <QVariantMap>
 #include <QQuickWindow>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 
@@ -303,7 +304,21 @@ int main(int argc, char** argv) {
         // Counted over a region rather than probed at a point: the wireframe is two one-pixel
         // diagonals, and asking whether one chosen pixel happens to sit on a line is a test of
         // the arithmetic in the test.
-        const auto changed_fraction = [&](const QRectF& r) {
+        // Panel rects come from the layout engine in the work area's coordinates, and the work
+        // area is not the window: the workspace tab strip sits above it. Grabbing the window and
+        // indexing it by a panel rect was correct only while that offset was zero, and the drag
+        // overlay check started reporting spill onto a neighbouring panel the moment it was not.
+        // Asked of the item rather than hard-coded, so that changing the chrome cannot silently
+        // invalidate every geometric assertion below.
+        const QList<QQuickItem*> work_items =
+            collect(window->contentItem(), QStringLiteral("workArea"));
+        report(work_items.size() == 1, "the work area is findable in the scene graph");
+        const QPointF work_origin =
+            work_items.isEmpty() ? QPointF{0, 0}
+                                 : work_items.front()->mapToScene(QPointF{0, 0});
+
+        const auto changed_fraction = [&](const QRectF& in) {
+            const QRectF r = in.translated(work_origin);
             const qreal dpr = window->devicePixelRatio();
             const int x0 = std::max(0, static_cast<int>(r.left() * dpr));
             const int y0 = std::max(0, static_cast<int>(r.top() * dpr));
@@ -427,10 +442,108 @@ int main(int argc, char** argv) {
 
         // Persistence, through the real atomic writer and the real parser.
         workspace.saveNow();
-        const auto reloaded = llayout::load(layout_path);
-        report(reloaded.has_value(), "the layout saved and parses back");
-        if (reloaded)
-            report(!reloaded->validate().has_value(), "and what was written is valid");
+        const auto reloaded = llayout::load_workspaces_or_default(layout_path);
+        report(!reloaded.used_default && reloaded.complaint.empty(),
+               "the workspaces saved and parse back");
+        report(!reloaded.workspaces.validate().has_value(), "and what was written is valid");
+        report(static_cast<int>(reloaded.workspaces.size()) == workspace.workspaceCount(),
+               "with every workspace still in it");
+        report(static_cast<int>(reloaded.workspaces.active()) == workspace.activeWorkspace(),
+               "and the one that was on screen still marked active");
+
+        // ---- the saved workspaces -----------------------------------------------------------
+        //
+        // Build and Live exist, hold different panels, and cannot be renamed away. The point of
+        // the pair is that there is always a known arrangement to get back to after one has been
+        // wrecked, so what matters is that the built-in ones survive being misused.
+        report(workspace.workspaceCount() >= 2, "there are at least two workspaces");
+        report(workspace.workspaceIsBuiltin(0) && workspace.workspaceIsBuiltin(1),
+               "the first two are built in");
+
+        const QString started_on = workspace.activeWorkspaceName();
+        workspace.renameWorkspace(0, QStringLiteral("Nope"));
+        settle();
+        report(workspace.activeWorkspaceName() == started_on ||
+                   workspace.workspaceIsBuiltin(0),
+               "a built-in workspace cannot be renamed");
+
+        const int before_remove = workspace.workspaceCount();
+        workspace.removeWorkspace(0);
+        settle();
+        report(workspace.workspaceCount() == before_remove,
+               "and cannot be removed");
+
+        // Switching changes what is on screen, which is the entire feature.
+        workspace.selectWorkspace(1);
+        settle();
+        // A leaf is a tab *group*, so the panels are its "tabs" -- a group holding three
+        // tabs is one leaf with three panels in it.
+        const auto panels_on_screen = [&workspace] {
+            QStringList out;
+            for (int i = 0; i < workspace.panelCount(); ++i)
+                out << workspace.panelAt(i).value("tabs").toStringList();
+            return out;
+        };
+        const QStringList live_panels = panels_on_screen();
+        workspace.selectWorkspace(0);
+        settle();
+        const QStringList build_panels = panels_on_screen();
+        report(live_panels != build_panels,
+               "Build and Live put different panels on screen");
+        report(build_panels.contains(QStringLiteral("scenes")),
+               "the build arrangement has the scene list");
+        report(!build_panels.contains(QStringLiteral("broadcast-stats")),
+               "and not the broadcast statistics, which are in the way while building");
+        report(live_panels.contains(QStringLiteral("broadcast-stats")),
+               "the live arrangement has them");
+        report(!live_panels.contains(QStringLiteral("sources")),
+               "and not the source list, which is a mis-click waiting to happen");
+
+        // An arrangement follows the workspace it was made in, rather than leaking to the other.
+        workspace.closePanel(QStringLiteral("log"));
+        settle();
+        report(workspace.closedPanels().contains(QStringLiteral("log")),
+               "a panel can be closed in one workspace");
+        workspace.selectWorkspace(1);
+        settle();
+        workspace.selectWorkspace(0);
+        settle();
+        report(workspace.closedPanels().contains(QStringLiteral("log")),
+               "and is still closed after switching away and back");
+        workspace.openPanel(QStringLiteral("log"));
+        settle();
+
+        // A new one starts from what is on screen, and can be renamed and removed.
+        const int before_add = workspace.workspaceCount();
+        workspace.addWorkspace(QStringLiteral("Editing"));
+        settle();
+        report(workspace.workspaceCount() == before_add + 1, "a workspace can be added");
+        report(workspace.activeWorkspaceName() == QLatin1String("Editing"),
+               "and becomes the one on screen");
+        report(!workspace.workspaceIsBuiltin(before_add), "and is not built in");
+        workspace.renameWorkspace(before_add, QStringLiteral("Edit Bay"));
+        settle();
+        report(workspace.activeWorkspaceName() == QLatin1String("Edit Bay"),
+               "an added workspace can be renamed");
+        workspace.removeWorkspace(before_add);
+        settle();
+        report(workspace.workspaceCount() == before_add, "and removed");
+        report(workspace.activeWorkspace() < workspace.workspaceCount(),
+               "leaving a real one active");
+
+        // Resetting is the only thing that can be done to a built-in besides rearranging it.
+        workspace.selectWorkspace(1);
+        settle();
+        workspace.closePanel(QStringLiteral("audio-mixer"));
+        settle();
+        report(workspace.closedPanels().contains(QStringLiteral("audio-mixer")),
+               "a built-in workspace can be rearranged");
+        workspace.resetWorkspace(1);
+        settle();
+        report(!workspace.closedPanels().contains(QStringLiteral("audio-mixer")),
+               "and reset to how it shipped");
+        workspace.selectWorkspace(0);
+        settle();
 
         report(!theme.colors().isEmpty(), "the theme exposes colours");
         report(theme.colors().contains(QStringLiteral("dropFill")), "including the drop overlay fill");
@@ -877,6 +990,10 @@ int main(int argc, char** argv) {
             // reason the first one must not claim to be a reading.
             report(!telemetry.cpuAvailable(),
                    "the first CPU sample reports as unavailable rather than as zero");
+            // Far enough apart to have an interval: two samples in the same millisecond
+            // divide by zero elapsed time, and read_cpu declines to report rather than
+            // inventing a number -- which is the behaviour being checked here.
+            QThread::msleep(20);
             telemetry.sample();
             report(telemetry.cpuAvailable() && telemetry.cpuPercent() >= 0.0,
                    "and the second has an interval to measure against");
@@ -982,6 +1099,10 @@ int main(int argc, char** argv) {
         // background tab must not be instantiated at all.
         report(collect(window->contentItem(), QStringLiteral("outputBlock")).isEmpty(),
                "a background tab is not built while it is hidden");
+        // The build arrangement does not show the output list at all -- that is the point of
+        // having two arrangements -- so it is opened here before being brought forward.
+        workspace.openPanel(QStringLiteral("outputs"));
+        settle();
         workspace.activate(QStringLiteral("outputs"));
         settle();
         report(collect(window->contentItem(), QStringLiteral("outputBlock")).size() ==

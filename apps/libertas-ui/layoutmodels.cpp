@@ -101,4 +101,30 @@ void DividerModel::set_rows(std::vector<Row> rows) {
     }
 }
 
+int WorkspaceTabModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+}
+
+QVariant WorkspaceTabModel::data(const QModelIndex& index, int role) const {
+    const WorkspaceTabRow* r = at(rows_, index);
+    if (!r)
+        return {};
+    switch (role) {
+    case NameRole:    return r->name;
+    case BuiltinRole: return r->builtin;
+    case ActiveRole:  return r->active;
+    default:          return {};
+    }
+}
+
+QHash<int, QByteArray> WorkspaceTabModel::roleNames() const {
+    return {
+        {NameRole, "name"},
+        {BuiltinRole, "builtin"},
+        // Not "active": that would be fine, but "isActive" keeps it clear of the tab-group
+        // sense of the word used elsewhere in the layout engine.
+        {ActiveRole, "isActive"},
+    };
+}
+
 } // namespace libertas::ui

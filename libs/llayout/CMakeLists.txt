@@ -14,6 +14,7 @@ add_library(llayout STATIC
     src/history.cpp
     src/layout.cpp
     src/serialize.cpp
+    src/workspaces.cpp
 )
 add_library(libertas::llayout ALIAS llayout)
 

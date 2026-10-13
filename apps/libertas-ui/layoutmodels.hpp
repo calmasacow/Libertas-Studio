@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <QAbstractListModel>
+#include "rowmodel.hpp"
+
 #include <QString>
 #include <QStringList>
 
@@ -102,6 +103,38 @@ public:
 
 private:
     std::vector<Row> rows_;
+};
+
+struct WorkspaceTabRow {
+    QString name;
+    /// Build and Live: renaming and removing are refused, resetting is not.
+    bool builtin = false;
+    bool active = false;
+
+    friend bool operator==(const WorkspaceTabRow&, const WorkspaceTabRow&) = default;
+};
+
+class WorkspaceTabModel : public RowModelBase {
+    Q_OBJECT
+
+public:
+    enum Role {
+        NameRole = Qt::UserRole + 1,
+        BuiltinRole,
+        ActiveRole,
+    };
+
+    using RowModelBase::RowModelBase;
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+
+    void set_rows(std::vector<WorkspaceTabRow> rows) { sync(rows_, std::move(rows)); }
+    [[nodiscard]] const std::vector<WorkspaceTabRow>& rows() const { return rows_; }
+
+private:
+    std::vector<WorkspaceTabRow> rows_;
 };
 
 } // namespace libertas::ui

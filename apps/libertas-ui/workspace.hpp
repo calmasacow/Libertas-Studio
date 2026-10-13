@@ -6,6 +6,7 @@
 
 #include "llayout/history.hpp"
 #include "llayout/layout.hpp"
+#include "llayout/workspaces.hpp"
 
 #include <QAbstractItemModel>
 #include <QObject>
@@ -54,6 +55,17 @@ class Workspace : public QObject {
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY layoutChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY layoutChanged)
     Q_PROPERTY(QString layoutSource READ layoutSource NOTIFY layoutChanged)
+
+    // --- saved workspaces: Build, Live, and whatever the operator adds -----------------------
+    //
+    // Not compositor workspaces. These are saved arrangements of *this* surface (ADR-0015):
+    // which panels are on screen and how the space is divided. Building a show and running one
+    // want different things visible, and switching by hand every time is what leaves the wrong
+    // one up when it matters.
+    Q_PROPERTY(QAbstractItemModel* workspaces READ workspacesModel CONSTANT)
+    Q_PROPERTY(int workspaceCount READ workspaceCount NOTIFY workspacesChanged)
+    Q_PROPERTY(int activeWorkspace READ activeWorkspace NOTIFY workspacesChanged)
+    Q_PROPERTY(QString activeWorkspaceName READ activeWorkspaceName NOTIFY workspacesChanged)
 
     /// The panel the keyboard acts on. ADR-0016's gesture is entirely pointer-driven, and an
     /// operator who cannot aim a pointer precisely could not rearrange the workspace at all.
@@ -152,6 +164,24 @@ public:
     Q_INVOKABLE void openPanel(const QString& panel);
     Q_INVOKABLE [[nodiscard]] QString title(const QString& panel) const;
 
+    // --- saved workspaces ---
+    [[nodiscard]] QAbstractItemModel* workspacesModel() { return &workspace_tabs_; }
+    [[nodiscard]] int workspaceCount() const;
+    [[nodiscard]] int activeWorkspace() const;
+    [[nodiscard]] QString activeWorkspaceName() const;
+
+    /// Switch to a saved arrangement. The one being left keeps the arrangement it had.
+    Q_INVOKABLE void selectWorkspace(int index);
+    /// Add one, starting from the arrangement currently on screen, which is almost always what
+    /// someone adding one has just finished setting up.
+    Q_INVOKABLE void addWorkspace(const QString& name);
+    Q_INVOKABLE void removeWorkspace(int index);
+    Q_INVOKABLE void renameWorkspace(int index, const QString& name);
+    /// Back to how it shipped. The only thing that can be done to Build and Live besides
+    /// rearranging them.
+    Q_INVOKABLE void resetWorkspace(int index);
+    Q_INVOKABLE [[nodiscard]] bool workspaceIsBuiltin(int index) const;
+
     // --- history and persistence ---
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
@@ -160,6 +190,7 @@ public:
 
 signals:
     void layoutChanged();
+    void workspacesChanged();
     void focusChanged();
     void dragChanged();
     /// Something the status line should say: a refused drop, a failed save, a fallback on load.
@@ -181,10 +212,19 @@ private:
     void validate_focus();
     [[nodiscard]] std::optional<llayout::Edge> direction_from(const QString& name) const;
     void scheduleSave();
+    /// Copy the live layout back into the active workspace. Called before anything reads or
+    /// writes the set, because `history_` is where edits actually land.
+    void sync_active();
+    void refresh_workspace_tabs();
     void recompute_drag_target();
 
     PanelModel panels_;
     DividerModel dividers_;
+
+    /// Every saved arrangement. The active one's layout is mirrored into `history_` so that
+    /// undo works on it; `sync_active()` writes it back before anything reads the set.
+    llayout::Workspaces workspaces_;
+    WorkspaceTabModel workspace_tabs_;
 
     llayout::History history_;
     /// Held only while a divider is being dragged, so the whole drag is one undo step.

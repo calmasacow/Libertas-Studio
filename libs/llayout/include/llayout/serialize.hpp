@@ -3,6 +3,7 @@
 #pragma once
 
 #include "llayout/layout.hpp"
+#include "llayout/workspaces.hpp"
 
 #include <expected>
 #include <filesystem>
@@ -39,5 +40,25 @@ struct LoadOutcome {
 
 /// What the application calls at startup. Never fails.
 [[nodiscard]] LoadOutcome load_or_default(const std::filesystem::path& path);
+
+// ---- the whole set of saved workspaces ------------------------------------------------------
+
+[[nodiscard]] std::string to_toml(const Workspaces& w);
+[[nodiscard]] std::expected<Workspaces, std::string> workspaces_from_toml(std::string_view text);
+
+[[nodiscard]] std::expected<void, std::string> save(const Workspaces& w,
+                                                    const std::filesystem::path& path);
+
+struct WorkspacesLoadOutcome {
+    Workspaces workspaces;
+    /// Empty when the file loaded; otherwise what was wrong with it.
+    std::string complaint;
+    bool used_default = false;
+};
+
+/// Never fails. A file that will not parse, or that parses into something structurally wrong,
+/// is replaced by the defaults *and said so* -- ADR-0015 rule 5. A file in the older
+/// single-layout format is adopted as the Build workspace rather than discarded.
+[[nodiscard]] WorkspacesLoadOutcome load_workspaces_or_default(const std::filesystem::path& path);
 
 } // namespace llayout
