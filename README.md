@@ -14,16 +14,23 @@ What exists is a workspace you can use and a document you can edit:
 - **`libertas-ui`** — one window holding the whole workspace, with Adobe-style drop-zone docking,
   dividers, tab groups, live Omarchy theme following, and a layout that survives being saved and
   restored at any resolution.
+- **Saved workspaces** — `Build` and `Live` across the top, plus any you add. Building a show and
+  running one want different panels up; these are arrangements of the one surface, never OS
+  windows. The built-in pair can be rearranged and reset but not renamed away, so there is always
+  a known arrangement to get back to.
 - **A document model** — scenes as trees, groups, adjustment and reference nodes, canvases, buses,
   decks, outputs, per-canvas overrides. Every panel in the workspace drives it: scenes, layers,
   properties, inputs, the audio mixer, and program/preview with the output list.
-- **A command bus** — every change is one of thirty-eight validated, journaled, undoable
+- **A command bus** — every change is one of thirty-nine validated, journaled, undoable
   commands. A dragged fader is one undo step, not four hundred. Unsaved work survives the process
   being killed.
 - **A project on disk** — a git-diffable directory of JSON, saved as a transaction. A corrupt scene
   costs one scene, not the collection.
 - **Keyboard and hotkeys** — one bindings table covering application and global scopes, with the
   workspace fully reachable without a pointer.
+- **Machine telemetry** — CPU, memory, free disk, and GPU, VRAM and *encoder* load read live from
+  NVML. The broadcast figures beside them read "—" rather than zero, because zero dropped frames
+  is a claim about a running show.
 
 What does not exist yet: the compositor, capture, encode and output. Those live in `tools/` as
 measured spikes and have not been made product code. The panels that will drive them say so on
@@ -104,15 +111,15 @@ was drawn — and forces the offscreen platform, so it cannot reach a display ev
 ## Testing
 
 ```sh
-ctest --preset linux          # eighteen tests
+ctest --preset linux          # twenty tests
 ctest --preset linux-ci       # the same, with warnings as errors
 ctest --preset linux-asan     # the same, under ASan + UBSan
 ctest --preset linux-tsan     # the threaded code, under TSan
 ```
 
-The shell's own check is one of those eighteen: `libertas-ui --check` loads the real QML, drives
+The shell's own check is one of those twenty: `libertas-ui --check` loads the real QML, drives
 the real gestures through the same API the panels use, grabs frames and asserts what was drawn —
-161 assertions, on the offscreen platform, so it cannot reach a display even by accident. It is
+192 assertions, on the offscreen platform, so it cannot reach a display even by accident. It is
 excluded from the TSan preset, because Qt here is built without TSan and starting its QML thread
 makes the tool itself fail an internal check; the reason is recorded beside the exclusion.
 
