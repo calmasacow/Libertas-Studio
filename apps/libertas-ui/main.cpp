@@ -8,17 +8,13 @@
 
 #include "llayout/serialize.hpp"
 
+#include "ldoc/json.hpp"
+
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QGuiApplication>
 #include <QObject>
 #include <QQmlApplicationEngine>
-#include <QCoreApplication>
-#include <QEventLoop>
-#include <QImage>
-#include <QQuickItem>
-#include <QSet>
-#include <QVariantMap>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QImage>
@@ -752,6 +748,126 @@ int main(int argc, char** argv) {
             QObject::disconnect(gc);
             report(!refusal.isEmpty(), "and routing one says so rather than failing quietly");
         }
+
+        // ---- the controls panel: decks and outputs ---------------------------------------
+        //
+        // Nothing broadcasts yet, so what is asserted is the document state the renderer will
+        // read: what is on program, what is staged, and what each output would send where.
+        const auto deck_at = [&](int row, int role) {
+            return document.decksModel()->data(document.decksModel()->index(row, 0),
+                                               Qt::UserRole + role);
+        };
+        const auto out_at = [&](int row, int role) {
+            return document.outputsModel()->data(document.outputsModel()->index(row, 0),
+                                                 Qt::UserRole + role);
+        };
+        settle();
+        report(document.decksModel()->rowCount() >= 1, "the document has a deck");
+        report(collect(window->contentItem(), QStringLiteral("deckBlock")).size() ==
+                   document.decksModel()->rowCount(),
+               "and the controls panel drew one block for it");
+        report(!document.transitions().isEmpty(), "the transitions are listed");
+        report(!document.codecs().isEmpty(), "and the encoders");
+
+        const QString deck_id = deck_at(0, 1).toString();
+        report(!deck_id.isEmpty(), "with an id to drive it by");
+
+        // Nothing staged: a take has to say so rather than quietly doing nothing.
+        document.setDeckPreview(deck_id, QString{});
+        settle();
+        QString take_complaint;
+        QMetaObject::Connection tc = QObject::connect(
+            &document, &libertas::ui::Document::notice,
+            [&take_complaint](const QString& t) { take_complaint = t; });
+        document.takeDeck(deck_id);
+        settle();
+        QObject::disconnect(tc);
+        report(!take_complaint.isEmpty(), "a take with nothing on preview says so");
+
+        document.setDeckPreview(deck_id, document.selectedScene());
+        settle();
+        report(deck_at(0, 7).toString() == document.selectedScene(),
+               "a scene can be staged on preview");
+        document.takeDeck(deck_id);
+        settle();
+        report(deck_at(0, 4).toString() == deck_at(0, 5).toString(),
+               "and a take puts it on program");
+        const QString after_take = document.undoDescription();
+        document.takeDeck(deck_id);
+        settle();
+        report(document.undoDescription() == after_take,
+               "taking what is already on air changes nothing");
+
+        document.setDeckStudioMode(deck_id, true);
+        document.setDeckTransition(deck_id, QStringLiteral("transition.fade"), 450);
+        settle();
+        report(deck_at(0, 8).toBool(), "studio mode is a document setting");
+        report(deck_at(0, 9).toString() == QLatin1String("transition.fade") &&
+                   deck_at(0, 10).toInt() == 450,
+               "and so is the transition and its duration");
+        document.undo();
+        document.undo();
+        settle();
+        report(!deck_at(0, 8).toBool(), "both of which undo");
+
+        const int outputs_before = document.outputsModel()->rowCount();
+        document.addOutput(QStringLiteral("YouTube"));
+        settle();
+        report(document.outputsModel()->rowCount() == outputs_before + 1,
+               "an output can be added");
+        report(collect(window->contentItem(), QStringLiteral("outputBlock")).size() ==
+                   outputs_before + 1,
+               "and the panel drew it");
+        report(!out_at(outputs_before, 10).toBool(),
+               "disabled, because an enabled one would be a keystroke from going live");
+
+        const QString out_id = out_at(outputs_before, 1).toString();
+        document.setOutputEncoder(out_id, QStringLiteral("hevc"), QStringLiteral("nvenc"));
+        document.setOutputBitrate(out_id, 12000);
+        document.setOutputDestination(out_id, QStringLiteral("rtmps"),
+                                      QStringLiteral("rtmps://a.example/live"));
+        document.setOutputCredentialRef(out_id, QStringLiteral("youtube-main"));
+        settle();
+        report(out_at(outputs_before, 4).toString() == QLatin1String("hevc") &&
+                   out_at(outputs_before, 5).toString() == QLatin1String("nvenc"),
+               "its encoder can be changed");
+        report(out_at(outputs_before, 6).toInt() == 12000, "and its bitrate");
+        report(out_at(outputs_before, 9).toString() == QLatin1String("youtube-main"),
+               "and the *name* of its credential");
+
+        // Enabled with nowhere to send to is an error the panel has to show, not swallow.
+        document.setOutputDestination(out_id, QStringLiteral("rtmps"), QString{});
+        document.setOutputEnabled(out_id, true);
+        settle();
+        report(!out_at(outputs_before, 10).toBool() || out_at(outputs_before, 11).toBool(),
+               "an output enabled with no destination is either refused or flagged");
+
+        // Nothing in the whole project may serialise a credential. Asserted here as well as in
+        // the format tests, because this is the panel that has a text box next to the word key.
+        {
+            const std::string text = ldoc::project_to_json(document.projectForBindings());
+            report(text.find("youtube-main") != std::string::npos,
+                   "the credential reference is written to the project");
+            for (const char* banned : {"\"stream_key\"", "\"key\"", "\"secret\"",
+                                       "\"password\"", "\"token\""}) {
+                if (text.find(banned) != std::string::npos) {
+                    report(false, "a field that could hold a credential was serialised");
+                    break;
+                }
+            }
+            report(true, "and no field that could hold the credential itself exists");
+        }
+
+        document.removeOutput(out_id);
+        settle();
+        report(document.outputsModel()->rowCount() == outputs_before,
+               "an output can be removed");
+        document.undo();
+        settle();
+        report(document.outputsModel()->rowCount() == outputs_before + 1,
+               "and undo brings it back");
+        document.removeOutput(out_id);
+        settle();
 
         // Scenes can be reordered, which the scene list is the order of.
         document.addScene(QStringLiteral("Second"));

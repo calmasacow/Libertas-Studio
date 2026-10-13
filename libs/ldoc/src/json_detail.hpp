@@ -37,6 +37,7 @@ Jv enc(const Blend& b);
 Jv enc(const Effect& e);
 Jv enc(const Send& s);
 Jv enc(const AudioRouting& a);
+Jv enc(const Deck& d);
 Jv enc(const CanvasOverride& ov);
 Jv enc(const Node& n);
 Jv enc_scene(const Scene& scene);
@@ -115,6 +116,7 @@ Scene dec_scene(Rd& rd, const Jv& o, std::string_view path);
 Canvas dec_canvas(Rd& rd, const Jv& o, std::string_view path);
 Source dec_source(Rd& rd, const Jv& o, std::string_view path);
 Bus dec_bus(Rd& rd, const Jv& o, std::string_view path);
+Deck dec_deck(Rd& rd, const Jv& o, std::string_view path);
 Output dec_output(Rd& rd, const Jv& o, std::string_view path);
 Settings dec_settings(Rd& rd, const Jv& o, std::string_view path);
 

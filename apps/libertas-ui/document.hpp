@@ -43,6 +43,8 @@ class Document : public QObject {
     Q_PROPERTY(QAbstractItemModel* layers READ layersModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* sources READ sourcesModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* buses READ busesModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* decks READ decksModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* outputs READ outputsModel CONSTANT)
 
     Q_PROPERTY(QString projectName READ projectName NOTIFY changed)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY changed)
@@ -76,6 +78,8 @@ public:
     [[nodiscard]] QAbstractItemModel* layersModel() { return &layers_; }
     [[nodiscard]] QAbstractItemModel* sourcesModel() { return &sources_; }
     [[nodiscard]] QAbstractItemModel* busesModel() { return &buses_; }
+    [[nodiscard]] QAbstractItemModel* decksModel() { return &decks_; }
+    [[nodiscard]] QAbstractItemModel* outputsModel() { return &outputs_; }
 
     [[nodiscard]] QString projectName() const;
     [[nodiscard]] QString projectPath() const;
@@ -150,6 +154,44 @@ public:
     Q_INVOKABLE void setSelectedLayerGain(double gainDb);
     Q_INVOKABLE void setSelectedLayerMute(bool mute);
 
+    // ---- decks and outputs (the controls panel) ---------------------------------------------
+    //
+    // Nothing here starts a broadcast: there is no render process yet, and the panel says so.
+    // What these edit is the document -- which scene is on program, which is staged on preview,
+    // what each output would encode and where it would send it. That is the state the render
+    // process will read when it exists, so getting it right now is not a placeholder.
+
+    /// Transitions this build can name, as {id, title}. One of them is a cut, which is the only
+    /// one that needs no renderer to be honest about.
+    Q_PROPERTY(QVariantList transitions READ transitions CONSTANT)
+    [[nodiscard]] QVariantList transitions() const;
+    Q_PROPERTY(QVariantList destinationKinds READ destinationKinds CONSTANT)
+    [[nodiscard]] QVariantList destinationKinds() const;
+    Q_PROPERTY(QVariantList codecs READ codecs CONSTANT)
+    [[nodiscard]] QVariantList codecs() const;
+
+    Q_INVOKABLE void setDeckProgram(const QString& deckId, const QString& sceneId);
+    Q_INVOKABLE void setDeckPreview(const QString& deckId, const QString& sceneId);
+    /// Put what is on preview onto program. The transition itself is the renderer's job; what
+    /// this does is move the pointer, which is the part that lives in the document.
+    Q_INVOKABLE void takeDeck(const QString& deckId);
+    Q_INVOKABLE void setDeckStudioMode(const QString& deckId, bool studio);
+    Q_INVOKABLE void setDeckTransition(const QString& deckId, const QString& transition,
+                                       int durationMs);
+
+    Q_INVOKABLE void addOutput(const QString& name);
+    Q_INVOKABLE void removeOutput(const QString& id);
+    Q_INVOKABLE void renameOutput(const QString& id, const QString& name);
+    Q_INVOKABLE void setOutputEnabled(const QString& id, bool enabled);
+    Q_INVOKABLE void setOutputBitrate(const QString& id, int kbps);
+    Q_INVOKABLE void setOutputEncoder(const QString& id, const QString& codec,
+                                      const QString& implementation);
+    /// The destination's kind and URL. There is deliberately no setter for a credential here:
+    /// the project file has no field that can hold one (ADR-0022), only a name for one.
+    Q_INVOKABLE void setOutputDestination(const QString& id, const QString& kind,
+                                          const QString& url);
+    Q_INVOKABLE void setOutputCredentialRef(const QString& id, const QString& ref);
+
     // ---- layers -----------------------------------------------------------------------------
 
     Q_INVOKABLE void addLayer(const QString& name);
@@ -213,12 +255,16 @@ private:
     /// stops a setter that forgot a field from quietly resetting it.
     void edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>& change);
     void edit_selected_audio(const std::function<void(ldoc::AudioRouting&)>& change);
+    void edit_deck(const QString& id, const std::function<void(ldoc::Deck&)>& change);
+    void edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change);
 
     std::unique_ptr<lsession::Session> session_;
     SceneModel scenes_;
     LayerModel layers_;
     SourceModel sources_;
     BusModel buses_;
+    DeckModel decks_;
+    OutputModel outputs_;
 
     QString selected_scene_;
     QString selected_layer_;

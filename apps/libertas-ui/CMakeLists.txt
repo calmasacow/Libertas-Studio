@@ -44,6 +44,7 @@ qt_add_qml_module(libertas-ui
         qml/AudioMixerPanel.qml
         qml/CheckLabel.qml
         qml/ChoiceField.qml
+        qml/ControlsPanel.qml
         qml/DragGhost.qml
         qml/DropOverlay.qml
         qml/InputsPanel.qml

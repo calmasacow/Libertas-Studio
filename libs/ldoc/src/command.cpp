@@ -133,6 +133,7 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetNodeLayout>) return "node.set-layout";
             else if constexpr (std::is_same_v<T, SetNodeBlend>) return "node.set-blend";
             else if constexpr (std::is_same_v<T, SetNodeAudio>) return "node.set-audio";
+            else if constexpr (std::is_same_v<T, SetDeck>) return "deck.set";
             else if constexpr (std::is_same_v<T, SetCanvasOverride>)
                 return "node.set-canvas-override";
             else if constexpr (std::is_same_v<T, AddEffect>) return "effect.add";
@@ -195,6 +196,8 @@ std::string describe(const Command& command) {
                 return "Change blending";
             else if constexpr (std::is_same_v<T, SetNodeAudio>)
                 return c.audio.bus ? "Route layer audio" : "Unroute layer audio";
+            else if constexpr (std::is_same_v<T, SetDeck>)
+                return std::format("Configure deck {}", quoted(c.value.name));
             else if constexpr (std::is_same_v<T, SetCanvasOverride>)
                 return c.value ? "Set per-canvas override" : "Clear per-canvas override";
             else if constexpr (std::is_same_v<T, AddEffect>)
@@ -834,6 +837,23 @@ struct Apply {
             return std::unexpected("the render queue needs at least one frame");
         Applied out{SetProjectSettings{p.settings}, describe(c)};
         p.settings = c.value;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetDeck& c) const {
+        auto d = find_deck(p, c.value.id);
+        if (!d)
+            return std::unexpected(d.error());
+        // Unlike the scenes it points at, the canvas is a precondition: a deck with no canvas
+        // has nowhere to put a program, which validate() calls an error rather than a warning.
+        if (!p.canvas(c.value.canvas))
+            return std::unexpected(
+                std::format("there is no canvas {}", c.value.canvas.to_string()));
+        if (c.value.transition_ms < 0)
+            return std::unexpected(
+                std::format("a transition cannot last {} ms", c.value.transition_ms));
+        Applied out{SetDeck{**d}, describe(c)};
+        **d = c.value;
         return out;
     }
 

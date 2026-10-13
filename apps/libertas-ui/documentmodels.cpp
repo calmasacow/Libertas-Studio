@@ -125,4 +125,86 @@ QHash<int, QByteArray> BusModel::roleNames() const {
     };
 }
 
+int DeckModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+}
+
+QVariant DeckModel::data(const QModelIndex& index, int role) const {
+    const DeckRow* r = at(rows_, index);
+    if (!r)
+        return {};
+    switch (role) {
+    case IdRole:                return r->id;
+    case NameRole:              return r->name;
+    case CanvasNameRole:        return r->canvasName;
+    case ProgramSceneRole:      return r->programScene;
+    case PreviewSceneRole:      return r->previewScene;
+    case ProgramSceneIdRole:    return r->programSceneId;
+    case PreviewSceneIdRole:    return r->previewSceneId;
+    case StudioModeRole:        return r->studioMode;
+    case TransitionRole:        return r->transition;
+    case TransitionMsRole:      return r->transitionMs;
+    case HasEmergencySceneRole: return r->hasEmergencyScene;
+    default:                    return {};
+    }
+}
+
+QHash<int, QByteArray> DeckModel::roleNames() const {
+    return {
+        {IdRole, "deckId"},
+        {NameRole, "name"},
+        {CanvasNameRole, "canvasName"},
+        {ProgramSceneRole, "programScene"},
+        {PreviewSceneRole, "previewScene"},
+        {ProgramSceneIdRole, "programSceneId"},
+        {PreviewSceneIdRole, "previewSceneId"},
+        {StudioModeRole, "studioMode"},
+        {TransitionRole, "transition"},
+        {TransitionMsRole, "transitionMs"},
+        {HasEmergencySceneRole, "hasEmergencyScene"},
+    };
+}
+
+int OutputModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+}
+
+QVariant OutputModel::data(const QModelIndex& index, int role) const {
+    const OutputRow* r = at(rows_, index);
+    if (!r)
+        return {};
+    switch (role) {
+    case IdRole:              return r->id;
+    case NameRole:            return r->name;
+    case CanvasNameRole:      return r->canvasName;
+    case CodecRole:           return r->codec;
+    case ImplementationRole:  return r->implementation;
+    case BitrateRole:         return r->bitrateKbps;
+    case DestinationKindRole: return r->destinationKind;
+    case UrlRole:             return r->url;
+    case CredentialRefRole:   return r->credentialRef;
+    case EnabledRole:         return r->enabled;
+    case MisconfiguredRole:   return r->misconfigured;
+    default:                  return {};
+    }
+}
+
+QHash<int, QByteArray> OutputModel::roleNames() const {
+    return {
+        {IdRole, "outputId"},
+        {NameRole, "name"},
+        {CanvasNameRole, "canvasName"},
+        {CodecRole, "codec"},
+        {ImplementationRole, "implementation"},
+        {BitrateRole, "bitrateKbps"},
+        {DestinationKindRole, "destinationKind"},
+        {UrlRole, "url"},
+        {CredentialRefRole, "credentialRef"},
+        // Not "enabled": that is QQuickItem's own property, and a delegate exposing a role
+        // by that name would disable itself whenever the output was disabled.
+        {EnabledRole, "isEnabled"},
+        {MisconfiguredRole, "misconfigured"},
+    };
+}
+
 } // namespace libertas::ui

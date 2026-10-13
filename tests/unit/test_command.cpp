@@ -165,6 +165,11 @@ std::vector<Command> every_command_shape(const Fixture& f) {
     resized.width = 2560;
     resized.height = 1440;
 
+    Deck studio = f.project.decks.front();
+    studio.studio_mode = true;
+    studio.transition = "transition.fade";
+    studio.transition_ms = 500;
+
     AudioRouting routed;
     routed.bus = f.project.buses.front().id;
     routed.gain_db = -6.0;
@@ -222,6 +227,7 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         RemoveCanvas{f.spare_canvas},
         SetCanvas{resized},
         SetNodeAudio{f.scene, f.loose, routed},
+        SetDeck{studio},
         AddBus{submix, 0},
         RemoveBus{f.existing_bus},
         SetBus{louder},
@@ -252,7 +258,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
     // unlike a canvas or a deck there is not always one to route at.
     const Id bus = p.buses.empty() ? Id::generate() : p.buses[rng() % p.buses.size()].id;
 
-    switch (rng() % 26) {
+    switch (rng() % 27) {
     case 0:
         return SetProjectName{std::format("Show {}", rng() % 100)};
     case 1: {
@@ -315,6 +321,13 @@ Command random_command(std::mt19937& rng, const Project& p) {
     case 15:
         return SetCanvasEmergencyScene{canvas,
                                        (rng() % 3) ? std::optional<Id>{scene.id} : std::nullopt};
+    case 25: {
+        Deck d = p.decks[rng() % p.decks.size()];
+        d.studio_mode = (rng() % 2) == 0;
+        d.transition_ms = static_cast<std::int32_t>(rng() % 1000);
+        d.canvas = canvas;
+        return SetDeck{d};
+    }
     case 24: {
         AudioRouting a;
         if (rng() % 4)

@@ -315,6 +315,69 @@ void Document::rebuild() {
     }
     buses_.set_rows(std::move(buses));
 
+    // Scene and canvas names, so the deck and output rows can show what is on air rather than
+    // an id. Built once rather than searched per row.
+    const auto scene_name = [&p](const std::optional<ldoc::Id>& id) -> QString {
+        if (!id)
+            return {};
+        for (const ldoc::Scene& sc : p.scenes) {
+            if (sc.id == *id)
+                return qstr(sc.name);
+        }
+        return QStringLiteral("(missing scene)");
+    };
+    const auto canvas_name = [&p](const ldoc::Id& id) -> QString {
+        for (const ldoc::Canvas& c : p.canvases) {
+            if (c.id == id)
+                return qstr(c.name);
+        }
+        return QStringLiteral("(missing canvas)");
+    };
+
+    std::vector<DeckRow> decks;
+    for (const ldoc::Deck& d : p.decks) {
+        DeckRow row;
+        row.id = id_str(d.id);
+        row.name = qstr(d.name);
+        row.canvasName = canvas_name(d.canvas);
+        row.programScene = scene_name(d.program_scene);
+        row.previewScene = scene_name(d.preview_scene);
+        row.programSceneId = d.program_scene ? id_str(*d.program_scene) : QString{};
+        row.previewSceneId = d.preview_scene ? id_str(*d.preview_scene) : QString{};
+        row.studioMode = d.studio_mode;
+        row.transition = qstr(d.transition);
+        row.transitionMs = d.transition_ms;
+        for (const ldoc::Canvas& c : p.canvases) {
+            if (c.id == d.canvas)
+                row.hasEmergencyScene = c.emergency_scene.has_value();
+        }
+        decks.push_back(std::move(row));
+    }
+    decks_.set_rows(std::move(decks));
+
+    std::vector<OutputRow> outputs;
+    for (const ldoc::Output& o : p.outputs) {
+        OutputRow row;
+        row.id = id_str(o.id);
+        row.name = qstr(o.name);
+        row.canvasName = canvas_name(o.canvas);
+        row.codec = qstr(o.encoder.codec);
+        row.implementation = qstr(o.encoder.implementation);
+        row.bitrateKbps = o.encoder.bitrate_kbps;
+        const auto kind = ldoc::to_string(o.destination.kind);
+        row.destinationKind = QString::fromUtf8(kind.data(),
+                                                static_cast<qsizetype>(kind.size()));
+        row.url = qstr(o.destination.url);
+        // The *name* of a credential. The project format has no field for the credential
+        // itself, so there is nothing here to leak (ADR-0022).
+        row.credentialRef = qstr(o.destination.credential_ref);
+        row.enabled = o.enabled;
+        row.misconfigured = o.enabled && o.destination.url.empty() &&
+                            o.destination.kind != ldoc::DestinationKind::File;
+        outputs.push_back(std::move(row));
+    }
+    outputs_.set_rows(std::move(outputs));
+
     emit changed();
     emit selectionChanged();
     if (!session_->path().empty())
@@ -609,6 +672,219 @@ void Document::setSelectedLayerGain(double gainDb) {
 
 void Document::setSelectedLayerMute(bool mute) {
     edit_selected_audio([mute](ldoc::AudioRouting& a) { a.mute = mute; });
+}
+
+// ---- decks and outputs ------------------------------------------------------------------------
+
+QVariantList Document::transitions() const {
+    struct Entry {
+        const char* id;
+        const char* title;
+    };
+    static constexpr Entry kTransitions[] = {
+        {"transition.cut", "Cut"},
+        {"transition.fade", "Fade"},
+        {"transition.fade-to-black", "Fade to Black"},
+        {"transition.slide", "Slide"},
+    };
+    QVariantList out;
+    for (const Entry& e : kTransitions) {
+        QVariantMap m;
+        m["id"] = QString::fromLatin1(e.id);
+        m["title"] = QString::fromLatin1(e.title);
+        // A cut needs nothing from a renderer; the rest do, and the panel marks them so an
+        // operator is not told a fade works when nothing can draw one yet.
+        m["implemented"] = std::string_view{e.id} == "transition.cut";
+        out.append(m);
+    }
+    return out;
+}
+
+QVariantList Document::destinationKinds() const {
+    static constexpr ldoc::DestinationKind kKinds[] = {
+        ldoc::DestinationKind::Rtmps, ldoc::DestinationKind::Rtmp,
+        ldoc::DestinationKind::Srt,   ldoc::DestinationKind::Whip,
+        ldoc::DestinationKind::File,
+    };
+    QVariantList out;
+    for (const ldoc::DestinationKind k : kKinds) {
+        const auto id = ldoc::to_string(k);
+        QVariantMap m;
+        m["id"] = QString::fromUtf8(id.data(), static_cast<qsizetype>(id.size()));
+        m["title"] = m["id"].toString().toUpper();
+        out.append(m);
+    }
+    return out;
+}
+
+QVariantList Document::codecs() const {
+    // Deliberately not a capability list. What a machine can actually encode is `libertas probe`'s
+    // question and is answered at run time per device; this is only what the document may say.
+    struct Entry {
+        const char* codec;
+        const char* impl;
+        const char* title;
+    };
+    static constexpr Entry kCodecs[] = {
+        {"h264", "nvenc", "H.264 (NVENC)"},    {"h264", "qsv", "H.264 (QuickSync)"},
+        {"h264", "vaapi", "H.264 (VAAPI)"},    {"h264", "x264", "H.264 (x264)"},
+        {"hevc", "nvenc", "HEVC (NVENC)"},     {"hevc", "qsv", "HEVC (QuickSync)"},
+        {"av1", "nvenc", "AV1 (NVENC)"},       {"av1", "qsv", "AV1 (QuickSync)"},
+        {"av1", "svt-av1", "AV1 (SVT)"},
+    };
+    QVariantList out;
+    for (const Entry& e : kCodecs) {
+        QVariantMap m;
+        m["codec"] = QString::fromLatin1(e.codec);
+        m["implementation"] = QString::fromLatin1(e.impl);
+        m["title"] = QString::fromLatin1(e.title);
+        out.append(m);
+    }
+    return out;
+}
+
+void Document::edit_deck(const QString& id, const std::function<void(ldoc::Deck&)>& change) {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    const ldoc::Deck* existing = nullptr;
+    for (const ldoc::Deck& d : session_->project().decks) {
+        if (d.id == *parsed)
+            existing = &d;
+    }
+    if (!existing)
+        return;
+    ldoc::Deck next = *existing;
+    change(next);
+    if (next == *existing)
+        return;
+    run(ldoc::SetDeck{std::move(next)});
+}
+
+void Document::setDeckProgram(const QString& deckId, const QString& sceneId) {
+    const auto deck = parse_id(deckId);
+    if (!deck)
+        return;
+    run(ldoc::SetDeckProgram{*deck, sceneId.isEmpty() ? std::nullopt : parse_id(sceneId)});
+}
+
+void Document::setDeckPreview(const QString& deckId, const QString& sceneId) {
+    const auto deck = parse_id(deckId);
+    if (!deck)
+        return;
+    run(ldoc::SetDeckPreview{*deck, sceneId.isEmpty() ? std::nullopt : parse_id(sceneId)});
+}
+
+void Document::takeDeck(const QString& deckId) {
+    const auto parsed = parse_id(deckId);
+    if (!parsed)
+        return;
+    for (const ldoc::Deck& d : session_->project().decks) {
+        if (d.id != *parsed)
+            continue;
+        if (!d.preview_scene) {
+            emit notice(QStringLiteral("Nothing is staged on preview."));
+            return;
+        }
+        if (d.program_scene && *d.program_scene == *d.preview_scene)
+            return; // already on air; a take would be a no-op on the undo stack
+        run(ldoc::SetDeckProgram{d.id, d.preview_scene});
+        return;
+    }
+}
+
+void Document::setDeckStudioMode(const QString& deckId, bool studio) {
+    edit_deck(deckId, [studio](ldoc::Deck& d) { d.studio_mode = studio; });
+}
+
+void Document::setDeckTransition(const QString& deckId, const QString& transition,
+                                 int durationMs) {
+    edit_deck(deckId, [&](ldoc::Deck& d) {
+        if (!transition.isEmpty())
+            d.transition = to_std(transition);
+        if (durationMs >= 0)
+            d.transition_ms = durationMs;
+    });
+}
+
+void Document::addOutput(const QString& name) {
+    const ldoc::Project& p = session_->project();
+    if (p.canvases.empty()) {
+        emit notice(QStringLiteral("An output needs a canvas to encode."));
+        return;
+    }
+    ldoc::Output o;
+    o.id = ldoc::Id::generate();
+    o.name = name.isEmpty() ? std::string{"Output"} : to_std(name);
+    o.canvas = p.canvases.front().id;
+    // Disabled, with nowhere to send to. An output that arrived enabled and pointed at a URL
+    // would be one keystroke from going somewhere the operator did not choose.
+    o.enabled = false;
+    run(ldoc::AddOutput{std::move(o), p.outputs.size()});
+}
+
+void Document::removeOutput(const QString& id) {
+    const auto parsed = parse_id(id);
+    if (parsed)
+        run(ldoc::RemoveOutput{*parsed});
+}
+
+void Document::edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change) {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    const ldoc::Output* existing = nullptr;
+    for (const ldoc::Output& o : session_->project().outputs) {
+        if (o.id == *parsed)
+            existing = &o;
+    }
+    if (!existing)
+        return;
+    ldoc::Output next = *existing;
+    change(next);
+    if (next == *existing)
+        return;
+    run(ldoc::SetOutput{std::move(next)});
+}
+
+void Document::renameOutput(const QString& id, const QString& name) {
+    if (name.isEmpty())
+        return;
+    edit_output(id, [&](ldoc::Output& o) { o.name = to_std(name); });
+}
+
+void Document::setOutputEnabled(const QString& id, bool enabled) {
+    edit_output(id, [enabled](ldoc::Output& o) { o.enabled = enabled; });
+}
+
+void Document::setOutputBitrate(const QString& id, int kbps) {
+    edit_output(id, [kbps](ldoc::Output& o) { o.encoder.bitrate_kbps = kbps; });
+}
+
+void Document::setOutputEncoder(const QString& id, const QString& codec,
+                                const QString& implementation) {
+    edit_output(id, [&](ldoc::Output& o) {
+        o.encoder.codec = to_std(codec);
+        o.encoder.implementation = to_std(implementation);
+    });
+}
+
+void Document::setOutputDestination(const QString& id, const QString& kind, const QString& url) {
+    const auto parsed_kind = ldoc::destination_kind_from_string(to_std(kind));
+    if (!kind.isEmpty() && !parsed_kind) {
+        emit notice(QStringLiteral("'%1' is not a kind of destination this build knows.")
+                        .arg(kind));
+        return;
+    }
+    edit_output(id, [&](ldoc::Output& o) {
+        if (parsed_kind)
+            o.destination.kind = *parsed_kind;
+        o.destination.url = to_std(url);
+    });
+}
+
+void Document::setOutputCredentialRef(const QString& id, const QString& ref) {
+    edit_output(id, [&](ldoc::Output& o) { o.destination.credential_ref = to_std(ref); });
 }
 
 // ---- layers -----------------------------------------------------------------------------------

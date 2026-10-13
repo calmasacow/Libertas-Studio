@@ -28,6 +28,8 @@ Item {
     // panels in *every* panel frame, so a six-panel workspace held six scene lists and six
     // layer lists, each with its own ListView over the same model. Only one was ever visible.
     Loader {
+        id: panelLoader
+
         anchors.fill: parent
         active: sourceComponent !== null
         sourceComponent: {
@@ -48,6 +50,8 @@ Item {
                 return logComponent;
             case "audio-mixer":
                 return mixerComponent;
+            case "controls":
+                return controlsComponent;
             default:
                 return null;
             }
@@ -100,6 +104,12 @@ Item {
         id: mixerComponent
 
         AudioMixerPanel {}
+    }
+
+    Component {
+        id: controlsComponent
+
+        ControlsPanel {}
     }
 
     // The program canvas. ADR-0015 rule 2: it is a region of this surface, never a separate OS
@@ -171,13 +181,14 @@ Item {
         }
     }
 
-    // Every other panel: its name, and one honest line about what belongs there.
+    // A panel this build has no body for. Every panel in the default layout has one now, so
+    // this is reached only by a layout file naming something we do not know -- a layout saved by
+    // a newer build, or one hand-edited. Asked of the Loader rather than written out as a list
+    // of panel ids: the list would be the switch above copied, and the copy would be the one
+    // that went stale.
     Column {
-        visible: body.panelId !== "program" && body.panelId !== "" &&
-                 body.panelId !== "scenes" && body.panelId !== "sources" &&
-                 body.panelId !== "properties" && body.panelId !== "shortcuts" &&
-                 body.panelId !== "inputs" && body.panelId !== "stats" &&
-                 body.panelId !== "log" && body.panelId !== "audio-mixer"
+        visible: panelLoader.sourceComponent === null && body.panelId !== "" &&
+                 body.panelId !== "program"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -196,14 +207,8 @@ Item {
             wrapMode: Text.WordWrap
             font.pixelSize: 11
             color: Theme.c.textMuted
-            text: {
-                switch (body.panelId) {
-                case "controls":
-                    return qsTr("Stream, record, replay buffer and transitions.");
-                default:
-                    return qsTr("Panel.");
-                }
-            }
+            text: qsTr("This build has nothing to draw in a panel named '%1'.")
+                      .arg(body.panelId)
         }
     }
 

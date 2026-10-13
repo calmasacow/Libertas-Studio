@@ -864,6 +864,19 @@ Bus dec_bus(Rd& rd, const Jv& v, std::string_view path) {
     return b;
 }
 
+Deck dec_deck(Rd& rd, const Jv& v, std::string_view path) {
+    Deck d;
+    d.id = rd.id(v, "id", path);
+    d.name = rd.text(v, "name", path);
+    d.canvas = rd.id(v, "canvas", path);
+    d.program_scene = rd.id_opt(v, "program_scene", path);
+    d.preview_scene = rd.id_opt(v, "preview_scene", path);
+    d.studio_mode = rd.boolean(v, "studio_mode", path, false);
+    d.transition = rd.text(v, "transition", path, d.transition);
+    d.transition_ms = rd.integer32(v, "transition_ms", path, d.transition_ms);
+    return d;
+}
+
 Output dec_output(Rd& rd, const Jv& v, std::string_view path) {
     Output o;
     o.id = rd.id(v, "id", path);
@@ -1091,16 +1104,7 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
 
     if (const Jv* a = rd.array(*root, "decks", "project")) {
         for (const Jv& v : *a) {
-            Deck d;
-            d.id = rd.id(v, "id", "project.decks");
-            d.name = rd.text(v, "name", "project.decks");
-            d.canvas = rd.id(v, "canvas", "project.decks");
-            d.program_scene = rd.id_opt(v, "program_scene", "project.decks");
-            d.preview_scene = rd.id_opt(v, "preview_scene", "project.decks");
-            d.studio_mode = rd.boolean(v, "studio_mode", "project.decks", false);
-            d.transition = rd.text(v, "transition", "project.decks", d.transition);
-            d.transition_ms = rd.integer32(v, "transition_ms", "project.decks", d.transition_ms);
-            p.decks.push_back(std::move(d));
+            p.decks.push_back(dec_deck(rd, v, "project.decks"));
         }
     }
 

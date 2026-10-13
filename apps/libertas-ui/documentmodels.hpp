@@ -226,4 +226,104 @@ private:
     std::vector<BusRow> rows_;
 };
 
+struct DeckRow {
+    QString id;
+    QString name;
+    QString canvasName;
+    /// Names rather than ids, because what the controls panel shows is what is on air.
+    QString programScene;
+    QString previewScene;
+    QString programSceneId;
+    QString previewSceneId;
+    bool studioMode = false;
+    QString transition;
+    int transitionMs = 300;
+    /// The canvas has a safety net designated (ADR-0025). A deck whose canvas has none is a
+    /// pre-flight question, and this is where an operator would see it.
+    bool hasEmergencyScene = false;
+
+    friend bool operator==(const DeckRow&, const DeckRow&) = default;
+};
+
+class DeckModel : public RowModelBase {
+    Q_OBJECT
+
+public:
+    enum Role {
+        IdRole = Qt::UserRole + 1,
+        NameRole,
+        CanvasNameRole,
+        ProgramSceneRole,
+        PreviewSceneRole,
+        ProgramSceneIdRole,
+        PreviewSceneIdRole,
+        StudioModeRole,
+        TransitionRole,
+        TransitionMsRole,
+        HasEmergencySceneRole,
+    };
+
+    using RowModelBase::RowModelBase;
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+
+    void set_rows(std::vector<DeckRow> rows) { sync(rows_, std::move(rows)); }
+    [[nodiscard]] const std::vector<DeckRow>& rows() const { return rows_; }
+
+private:
+    std::vector<DeckRow> rows_;
+};
+
+struct OutputRow {
+    QString id;
+    QString name;
+    QString canvasName;
+    QString codec;
+    QString implementation;
+    int bitrateKbps = 0;
+    QString destinationKind;
+    QString url;
+    /// The *name* of a credential. There is no field anywhere in this program that holds the
+    /// credential itself (ADR-0022), and this row is one of the places that would be tempting.
+    QString credentialRef;
+    bool enabled = false;
+    /// Enabled and pointed at nothing, which validate() calls an error.
+    bool misconfigured = false;
+
+    friend bool operator==(const OutputRow&, const OutputRow&) = default;
+};
+
+class OutputModel : public RowModelBase {
+    Q_OBJECT
+
+public:
+    enum Role {
+        IdRole = Qt::UserRole + 1,
+        NameRole,
+        CanvasNameRole,
+        CodecRole,
+        ImplementationRole,
+        BitrateRole,
+        DestinationKindRole,
+        UrlRole,
+        CredentialRefRole,
+        EnabledRole,
+        MisconfiguredRole,
+    };
+
+    using RowModelBase::RowModelBase;
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+
+    void set_rows(std::vector<OutputRow> rows) { sync(rows_, std::move(rows)); }
+    [[nodiscard]] const std::vector<OutputRow>& rows() const { return rows_; }
+
+private:
+    std::vector<OutputRow> rows_;
+};
+
 } // namespace libertas::ui
