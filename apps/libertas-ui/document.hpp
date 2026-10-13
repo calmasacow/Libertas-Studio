@@ -99,6 +99,8 @@ public:
     Q_INVOKABLE void removeScene(const QString& id);
     Q_INVOKABLE void renameScene(const QString& id, const QString& name);
     Q_INVOKABLE void duplicateScene(const QString& id);
+    /// Negative moves it towards the top of the list.
+    Q_INVOKABLE void moveScene(const QString& id, int delta);
     /// Make a scene this canvas's safety net (ADR-0025). Checks suitability first and reports
     /// what is wrong rather than silently accepting a net that will not hold.
     Q_INVOKABLE void setEmergencyScene(const QString& id);

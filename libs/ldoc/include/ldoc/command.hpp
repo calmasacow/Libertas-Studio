@@ -48,6 +48,13 @@ struct RemoveScene {
     friend bool operator==(const RemoveScene&, const RemoveScene&) = default;
 };
 
+/// Reorder a scene within the project's list, which is the order the scene list shows.
+struct MoveScene {
+    Id scene;
+    std::size_t index = 0;
+    friend bool operator==(const MoveScene&, const MoveScene&) = default;
+};
+
 struct RenameScene {
     Id scene;
     std::string name;
@@ -245,7 +252,7 @@ struct SetCanvasEmergencyScene {
 };
 
 using Command =
-    std::variant<SetProjectName, AddScene, RemoveScene, RenameScene, AddNode, RemoveNode,
+    std::variant<SetProjectName, AddScene, RemoveScene, RenameScene, MoveScene, AddNode, RemoveNode,
                  MoveNode, RenameNode, SetNodeVisible, SetNodeLocked, SetNodeTransform,
                  SetNodeLayout, SetNodeBlend, SetCanvasOverride, AddEffect, RemoveEffect,
                  SetEffectParams, SetEffectEnabled, SetDeckProgram, SetDeckPreview,

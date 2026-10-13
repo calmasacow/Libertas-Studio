@@ -122,6 +122,7 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, AddScene>) return "scene.add";
             else if constexpr (std::is_same_v<T, RemoveScene>) return "scene.remove";
             else if constexpr (std::is_same_v<T, RenameScene>) return "scene.rename";
+            else if constexpr (std::is_same_v<T, MoveScene>) return "scene.move";
             else if constexpr (std::is_same_v<T, AddNode>) return "node.add";
             else if constexpr (std::is_same_v<T, RemoveNode>) return "node.remove";
             else if constexpr (std::is_same_v<T, MoveNode>) return "node.move";
@@ -164,6 +165,8 @@ std::string describe(const Command& command) {
                 return "Remove scene";
             else if constexpr (std::is_same_v<T, RenameScene>)
                 return std::format("Rename scene to {}", quoted(c.name));
+            else if constexpr (std::is_same_v<T, MoveScene>)
+                return "Reorder scene";
             else if constexpr (std::is_same_v<T, AddNode>)
                 return std::format("Add {}", quoted(c.node.name));
             else if constexpr (std::is_same_v<T, RemoveNode>)
@@ -266,6 +269,23 @@ struct Apply {
         const auto index = static_cast<std::size_t>(it - p.scenes.begin());
         Applied out{AddScene{*it, index}, std::format("Remove scene {}", quoted(it->name))};
         p.scenes.erase(it);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const MoveScene& c) const {
+        const auto it = std::find_if(p.scenes.begin(), p.scenes.end(),
+                                     [&c](const Scene& s) { return s.id == c.scene; });
+        if (it == p.scenes.end())
+            return std::unexpected(std::format("there is no scene {}", c.scene.to_string()));
+        const auto from = static_cast<std::size_t>(it - p.scenes.begin());
+        const std::size_t to = std::min(c.index, p.scenes.size() - 1);
+        if (from == to)
+            return Applied{MoveScene{c.scene, from}, describe(c)};
+
+        Applied out{MoveScene{c.scene, from}, describe(c)};
+        Scene moved = std::move(*it);
+        p.scenes.erase(it);
+        p.scenes.insert(p.scenes.begin() + static_cast<std::ptrdiff_t>(to), std::move(moved));
         return out;
     }
 

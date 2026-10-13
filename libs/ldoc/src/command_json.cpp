@@ -39,6 +39,13 @@ Jv body(const RemoveScene& c) {
     return o;
 }
 
+Jv body(const MoveScene& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
 Jv body(const RenameScene& c) {
     Jv o{Json::objectValue};
     o["scene"] = detail::enc(c.scene);
@@ -272,6 +279,8 @@ std::expected<Command, std::string> command_from_json(std::string_view text) {
         out = AddScene{detail::dec_scene(rd, *sv, path), dec_index(rd, o, "index", path)};
     } else if (name == "scene.remove") {
         out = RemoveScene{rd.id(o, "scene", path)};
+    } else if (name == "scene.move") {
+        out = MoveScene{rd.id(o, "scene", path), dec_index(rd, o, "index", path)};
     } else if (name == "scene.rename") {
         out = RenameScene{rd.id(o, "scene", path), rd.text(o, "name", path)};
     } else if (name == "node.add") {

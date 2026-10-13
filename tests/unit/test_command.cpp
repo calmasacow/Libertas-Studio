@@ -68,6 +68,13 @@ struct Fixture {
         existing_source = src.id;
         project.sources.push_back(std::move(src));
 
+        // A second scene, so reordering is a real move rather than a clamp to where it already
+        // is -- which check_reversible would rightly call "applying it changed nothing".
+        Scene spare_scene;
+        spare_scene.id = Id::generate();
+        spare_scene.name = "Second";
+        project.scenes.push_back(std::move(spare_scene));
+
         // A canvas nothing renders to, so the removal case has something it is allowed to take.
         Canvas spare;
         spare.id = Id::generate();
@@ -149,6 +156,7 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         AddScene{fresh, 1},
         RemoveScene{f.scene},
         RenameScene{f.scene, "Intro"},
+        MoveScene{f.scene, 1},
         AddNode{f.scene, f.group, 1, make_node(NodeKind::Layer, "New")},
         RemoveNode{f.scene, f.child_a},
         MoveNode{f.scene, f.child_a, std::nullopt, 0},
@@ -193,7 +201,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
     const Id canvas = p.canvases[rng() % p.canvases.size()].id;
     const Id deck = p.decks[rng() % p.decks.size()].id;
 
-    switch (rng() % 17) {
+    switch (rng() % 18) {
     case 0:
         return SetProjectName{std::format("Show {}", rng() % 100)};
     case 1: {
@@ -208,6 +216,8 @@ Command random_command(std::mt19937& rng, const Project& p) {
         return RemoveScene{scene.id};
     case 3:
         return RenameScene{scene.id, std::format("Scene {}", rng() % 100)};
+    case 16:
+        return MoveScene{scene.id, rng() % (p.scenes.size() + 2)};
     case 4: {
         const NodeKind kind = (rng() % 4 == 0) ? NodeKind::Group : NodeKind::Layer;
         return AddNode{scene.id, (rng() % 2) ? std::optional<Id>{node} : std::nullopt,

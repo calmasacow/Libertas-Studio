@@ -328,6 +328,22 @@ void Document::duplicateScene(const QString& id) {
     selectScene(new_id);
 }
 
+void Document::moveScene(const QString& id, int delta) {
+    const auto parsed = parse_id(id);
+    if (!parsed || delta == 0)
+        return;
+    const auto& scenes = session_->project().scenes;
+    const auto it = std::find_if(scenes.begin(), scenes.end(),
+                                 [&parsed](const ldoc::Scene& s) { return s.id == *parsed; });
+    if (it == scenes.end())
+        return;
+    const auto from = static_cast<std::ptrdiff_t>(it - scenes.begin());
+    const auto to = from + delta;
+    if (to < 0 || to >= static_cast<std::ptrdiff_t>(scenes.size()))
+        return; // already at the end, which is not an error
+    run(ldoc::MoveScene{*parsed, static_cast<std::size_t>(to)});
+}
+
 QStringList Document::emergencySceneProblems(const QString& id) const {
     QStringList out;
     const auto parsed = parse_id(id);

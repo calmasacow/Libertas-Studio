@@ -624,6 +624,43 @@ int main(int argc, char** argv) {
                    .toInt() == 0,
                "unbinding it again releases the input");
 
+        // Scenes can be reordered, which the scene list is the order of.
+        document.addScene(QStringLiteral("Second"));
+        settle();
+        if (document.scenesModel()->rowCount() >= 2) {
+            const auto name_at = [&](int i) {
+                return document.scenesModel()
+                    ->data(document.scenesModel()->index(i, 0), Qt::UserRole + 2)
+                    .toString();
+            };
+            const QString was_last = name_at(document.scenesModel()->rowCount() - 1);
+            document.moveScene(document.selectedScene(), -1);
+            settle();
+            report(name_at(document.scenesModel()->rowCount() - 1) != was_last,
+                   "a scene can be moved up the list");
+            document.moveScene(document.selectedScene(), 1);
+            settle();
+            report(name_at(document.scenesModel()->rowCount() - 1) == was_last,
+                   "and back down again");
+        }
+
+        // An input can be removed even while a layer still uses it.
+        const int inputs_now = document.sourcesModel()->rowCount();
+        if (inputs_now > 0) {
+            const QString doomed =
+                document.sourcesModel()
+                    ->data(document.sourcesModel()->index(0, 0), Qt::UserRole + 1)
+                    .toString();
+            document.removeSource(doomed);
+            settle();
+            report(document.sourcesModel()->rowCount() == inputs_now - 1,
+                   "an input can be removed");
+            document.undo();
+            settle();
+            report(document.sourcesModel()->rowCount() == inputs_now,
+                   "and undo brings it back");
+        }
+
         // ---- the edges: no scenes at all, and undo back out of it ------------------------
         //
         // A project with nothing in it is reachable in two keystrokes, and every panel has to
