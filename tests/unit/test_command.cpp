@@ -130,6 +130,7 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         SetEffectEnabled{f.scene, f.loose, f.effect, false},
         SetDeckProgram{f.deck, std::nullopt},
         SetDeckPreview{f.deck, f.scene},
+        SetCanvasEmergencyScene{f.canvas, f.scene},
     };
 }
 
@@ -150,7 +151,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
     const Id canvas = p.canvases[rng() % p.canvases.size()].id;
     const Id deck = p.decks[rng() % p.decks.size()].id;
 
-    switch (rng() % 16) {
+    switch (rng() % 17) {
     case 0:
         return SetProjectName{std::format("Show {}", rng() % 100)};
     case 1: {
@@ -208,6 +209,9 @@ Command random_command(std::mt19937& rng, const Project& p) {
     }
     case 14:
         return SetDeckProgram{deck, (rng() % 3) ? std::optional<Id>{scene.id} : std::nullopt};
+    case 15:
+        return SetCanvasEmergencyScene{canvas,
+                                       (rng() % 3) ? std::optional<Id>{scene.id} : std::nullopt};
     default:
         return SetDeckPreview{deck, (rng() % 3) ? std::optional<Id>{scene.id} : std::nullopt};
     }
@@ -572,6 +576,34 @@ LTEST_CASE(every_applied_command_survives_the_journal_shaped_round_trip) {
         REQUIRE_MSG(live == replayed, "step {}: replaying {} diverged", step, command_name(c));
     }
     CHECK(applied > 100);
+}
+
+LTEST_CASE(designating_an_emergency_scene_is_an_ordinary_undoable_command) {
+    Fixture f;
+    DocumentHistory h{f.project};
+    CHECK(!h.project().canvases[0].emergency_scene.has_value());
+
+    REQUIRE(h.run(SetCanvasEmergencyScene{f.canvas, f.scene}).has_value());
+    CHECK(h.project().canvases[0].emergency_scene.value() == f.scene);
+    CHECK_EQ(h.undo_description(), std::string("Set emergency scene"));
+
+    REQUIRE(h.undo().has_value());
+    CHECK_MSG(!h.project().canvases[0].emergency_scene.has_value(),
+              "undoing the designation did not clear it");
+    REQUIRE(h.redo().has_value());
+    CHECK(h.project().canvases[0].emergency_scene.value() == f.scene);
+
+    // Clearing it is the same command with nothing in it.
+    REQUIRE(h.run(SetCanvasEmergencyScene{f.canvas, std::nullopt}).has_value());
+    CHECK(!h.project().canvases[0].emergency_scene.has_value());
+    CHECK_EQ(h.undo_description(), std::string("Clear emergency scene"));
+
+    // The canvas is a precondition; the scene is not. ADR-0023: refusing a state the model
+    // permits would make an inverse unapplicable and break undo at an arbitrary depth. Judging
+    // whether a scene is a *suitable* safety net belongs to the designation flow, which runs
+    // check_emergency_scene before it ever issues this.
+    CHECK(!apply(f.project, SetCanvasEmergencyScene{Id::generate(), f.scene}).has_value());
+    CHECK(apply(f.project, SetCanvasEmergencyScene{f.canvas, Id::generate()}).has_value());
 }
 
 LTEST_MAIN("command")

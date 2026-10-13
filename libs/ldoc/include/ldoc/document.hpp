@@ -29,6 +29,14 @@ struct Canvas {
     Fps fps{};
     ColorSpace color_space = ColorSpace::Rec709;
 
+    /// What this canvas broadcasts when the show cannot be supervised (ADR-0025).
+    ///
+    /// Per canvas rather than shared, because a per-canvas override can reposition a card but
+    /// cannot swap the source binding -- and a vertical show wants a separately authored vertical
+    /// clip, not a letterboxed landscape one. Absent means the canvas falls back to black and
+    /// silence, which is safe but is not something anyone chose.
+    std::optional<Id> emergency_scene;
+
     friend bool operator==(const Canvas&, const Canvas&) = default;
 };
 
@@ -257,5 +265,23 @@ struct Problem {
 
 /// Convenience: true when `validate` returned no Error-severity problems.
 [[nodiscard]] bool is_valid(const Project& project);
+
+/// Whether a source of this type can be trusted to keep working when something else has already
+/// gone wrong: no device to be unplugged, no network, no browser engine, nothing to wedge.
+///
+/// Unknown types answer **false**. A safety net built from something we cannot vouch for is not
+/// one, and a conservative default is the only one that stays correct as source types are added.
+///
+/// A built-in table until source manifests exist (ADR-0004), where this belongs beside the rest
+/// of a source type's declaration.
+[[nodiscard]] bool is_self_contained(std::string_view source_type);
+
+/// Why `scene` is unsuitable as an emergency scene, or empty if it is suitable.
+///
+/// Reported as warnings by `validate`, and used by the designation flow to refuse and to offer
+/// the loop fix before the command is ever issued. The command itself permits whatever the model
+/// permits -- see ADR-0023 on why a command must not refuse a state the model allows.
+[[nodiscard]] std::vector<Problem> check_emergency_scene(const Project& project,
+                                                         const Id& scene);
 
 } // namespace ldoc

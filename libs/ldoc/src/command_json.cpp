@@ -170,6 +170,13 @@ Jv body(const SetDeckProgram& c) {
     return o;
 }
 
+Jv body(const SetCanvasEmergencyScene& c) {
+    Jv o{Json::objectValue};
+    o["canvas"] = detail::enc(c.canvas);
+    o["scene"] = enc_opt_id(c.scene);
+    return o;
+}
+
 Jv body(const SetDeckPreview& c) {
     Jv o{Json::objectValue};
     o["deck"] = detail::enc(c.deck);
@@ -276,6 +283,8 @@ std::expected<Command, std::string> command_from_json(std::string_view text) {
         out = SetDeckProgram{rd.id(o, "deck", path), rd.id_opt(o, "scene", path)};
     } else if (name == "deck.set-preview") {
         out = SetDeckPreview{rd.id(o, "deck", path), rd.id_opt(o, "scene", path)};
+    } else if (name == "canvas.set-emergency-scene") {
+        out = SetCanvasEmergencyScene{rd.id(o, "canvas", path), rd.id_opt(o, "scene", path)};
     } else {
         // Not a fallback: a command this build cannot perform must not be quietly skipped, or a
         // journal written by a newer build would replay as a different session than it recorded.

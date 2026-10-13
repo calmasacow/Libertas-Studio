@@ -42,6 +42,19 @@ constexpr std::array<std::pair<DestinationKind, std::string_view>, 5> kDestinati
     {DestinationKind::File, "file"},
 }};
 
+/// Source types that cannot fault at the moment they are needed.
+///
+/// Everything absent from this list -- a capture device, a window or screen grab, a browser
+/// engine, a network stream, anything unrecognised -- is treated as unsafe for an emergency
+/// scene. A browser source that wedged and took the frontend with it is precisely the thing not
+/// to put on the holding card.
+constexpr std::array<std::string_view, 4> kSelfContainedSources = {
+    "source.media",
+    "source.image",
+    "source.color",
+    "source.text",
+};
+
 std::string_view ref_kind_name(RefKind k) {
     switch (k) {
     case RefKind::Node:   return "node";
@@ -97,6 +110,83 @@ const Source* Project::source(const Id& wanted) const {
     const auto it = std::find_if(sources.begin(), sources.end(),
                                  [&wanted](const Source& s) { return s.id == wanted; });
     return it == sources.end() ? nullptr : &*it;
+}
+
+bool is_self_contained(std::string_view source_type) {
+    return std::find(kSelfContainedSources.begin(), kSelfContainedSources.end(), source_type) !=
+           kSelfContainedSources.end();
+}
+
+std::vector<Problem> check_emergency_scene(const Project& project, const Id& scene_id) {
+    std::vector<Problem> out;
+    const Scene* scene = project.scene(scene_id);
+    if (!scene) {
+        out.push_back(Problem{Severity::Warning,
+                              std::format("the emergency scene {} does not exist, so this canvas "
+                                          "would fall back to black and silence",
+                                          scene_id.to_string()),
+                              scene_id});
+        return out;
+    }
+
+    std::size_t media_layers = 0;
+    std::size_t total_layers = 0;
+    visit(scene->roots, [&](const Node& n) {
+        const auto* layer = std::get_if<LayerData>(&n.data);
+        if (!layer)
+            return;
+        ++total_layers;
+        if (!layer->source)
+            return;
+        const Source* src = project.source(*layer->source);
+        if (!src) {
+            out.push_back(Problem{Severity::Warning,
+                                  std::format("'{}' in the emergency scene has no source", n.name),
+                                  n.id});
+            return;
+        }
+        if (!is_self_contained(src->type)) {
+            out.push_back(
+                Problem{Severity::Warning,
+                        std::format("the emergency scene uses '{}', which is a {} -- it can fail "
+                                    "at exactly the moment the emergency scene is needed",
+                                    src->name, src->type),
+                        n.id});
+            return;
+        }
+        if (src->type != "source.media")
+            return;
+        ++media_layers;
+
+        // The safe state can last minutes. A clip that plays once and cuts to black is a net
+        // that expires, usually just as it is finally doing its job.
+        const auto loop = src->settings.find("loop");
+        const bool loops = loop != src->settings.end() &&
+                           std::holds_alternative<bool>(loop->second) &&
+                           std::get<bool>(loop->second);
+        if (!loops)
+            out.push_back(Problem{Severity::Warning,
+                                  std::format("'{}' is not set to loop, so the emergency scene "
+                                              "would cut to black when the clip ends",
+                                              src->name),
+                                  n.id});
+    });
+
+    if (total_layers == 0) {
+        out.push_back(Problem{Severity::Warning,
+                              std::format("the emergency scene '{}' has nothing in it",
+                                          scene->name),
+                              scene->id});
+    } else if (media_layers > 1 || total_layers > 1) {
+        // Not an error: a logo over a clip is reasonable. But the net is reliable in proportion
+        // to how little it depends on, and one pre-rendered clip can carry any branding wanted.
+        out.push_back(Problem{Severity::Warning,
+                              std::format("the emergency scene '{}' has {} layers; one looping "
+                                          "clip is the most reliable shape for it",
+                                          scene->name, total_layers),
+                              scene->id});
+    }
+    return out;
 }
 
 Project make_default_project(std::string name) {
@@ -249,6 +339,15 @@ private:
             if (!c.fps.valid())
                 err(c.id, std::format("canvas '{}' has frame rate {}/{}", c.name, c.fps.num,
                                       c.fps.den));
+            // An emergency scene that is set but unsuitable is a property of the document, so
+            // it belongs here. One that is simply *absent* is not: a project at rest is not
+            // wrong for lacking a safety net, and warning about it would mean every new project
+            // is born complaining. "Does every canvas have one?" is a pre-flight question, asked
+            // when the operator is about to go live and it actually matters (ADR-0025).
+            if (c.emergency_scene) {
+                for (Problem& problem : check_emergency_scene(p_, *c.emergency_scene))
+                    problems_.push_back(std::move(problem));
+            }
         }
     }
 

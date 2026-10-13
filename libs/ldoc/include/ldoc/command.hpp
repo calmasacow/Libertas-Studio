@@ -178,11 +178,25 @@ struct SetDeckPreview {
     friend bool operator==(const SetDeckPreview&, const SetDeckPreview&) = default;
 };
 
+/// Absent clears it, so the canvas falls back to black and silence.
+///
+/// This permits any scene id, including one that does not exist or is unsuitable: see ADR-0023 on
+/// why a command may only refuse states the document model itself refuses. Checking suitability,
+/// explaining it and offering to fix the clip's loop setting is the designation flow's job, which
+/// runs `check_emergency_scene` before issuing this at all.
+struct SetCanvasEmergencyScene {
+    Id canvas;
+    std::optional<Id> scene;
+    friend bool operator==(const SetCanvasEmergencyScene&,
+                           const SetCanvasEmergencyScene&) = default;
+};
+
 using Command =
     std::variant<SetProjectName, AddScene, RemoveScene, RenameScene, AddNode, RemoveNode,
                  MoveNode, RenameNode, SetNodeVisible, SetNodeLocked, SetNodeTransform,
                  SetNodeLayout, SetNodeBlend, SetCanvasOverride, AddEffect, RemoveEffect,
-                 SetEffectParams, SetEffectEnabled, SetDeckProgram, SetDeckPreview>;
+                 SetEffectParams, SetEffectEnabled, SetDeckProgram, SetDeckPreview,
+                 SetCanvasEmergencyScene>;
 
 struct Applied {
     /// A command that, applied to the resulting project, restores the previous one.

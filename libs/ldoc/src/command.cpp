@@ -138,7 +138,8 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetEffectParams>) return "effect.set-params";
             else if constexpr (std::is_same_v<T, SetEffectEnabled>) return "effect.set-enabled";
             else if constexpr (std::is_same_v<T, SetDeckProgram>) return "deck.set-program";
-            else return "deck.set-preview";
+            else if constexpr (std::is_same_v<T, SetDeckPreview>) return "deck.set-preview";
+            else return "canvas.set-emergency-scene";
         },
         command);
 }
@@ -185,8 +186,10 @@ std::string describe(const Command& command) {
                 return c.enabled ? "Enable effect" : "Disable effect";
             else if constexpr (std::is_same_v<T, SetDeckProgram>)
                 return c.scene ? "Switch program scene" : "Clear program scene";
-            else
+            else if constexpr (std::is_same_v<T, SetDeckPreview>)
                 return c.scene ? "Set preview scene" : "Clear preview scene";
+            else
+                return c.scene ? "Set emergency scene" : "Clear emergency scene";
         },
         command);
 }
@@ -524,6 +527,17 @@ struct Apply {
         // The scene is a reference, not a precondition: see the note on Apply.
         Applied out{SetDeckProgram{c.deck, (*d)->program_scene}, describe(c)};
         (*d)->program_scene = c.scene;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetCanvasEmergencyScene& c) const {
+        const auto it = std::find_if(p.canvases.begin(), p.canvases.end(),
+                                     [&c](const Canvas& x) { return x.id == c.canvas; });
+        if (it == p.canvases.end())
+            return std::unexpected(std::format("there is no canvas {}", c.canvas.to_string()));
+        // The scene is a reference, not a precondition: see the note on Apply.
+        Applied out{SetCanvasEmergencyScene{c.canvas, it->emergency_scene}, describe(c)};
+        it->emergency_scene = c.scene;
         return out;
     }
 

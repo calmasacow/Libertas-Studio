@@ -255,6 +255,7 @@ Jv enc(const Canvas& c) {
     o["height"] = c.height;
     o["fps"] = enc(c.fps);
     o["color_space"] = std::string{to_string(c.color_space)};
+    o["emergency_scene"] = c.emergency_scene ? enc(*c.emergency_scene) : Jv{Json::nullValue};
     return o;
 }
 
@@ -989,6 +990,7 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
             }
             c.color_space = rd.enumerated(v, "color_space", "project.canvases",
                                           color_space_from_string, c.color_space);
+            c.emergency_scene = rd.id_opt(v, "emergency_scene", "project.canvases");
             p.canvases.push_back(std::move(c));
         }
     }

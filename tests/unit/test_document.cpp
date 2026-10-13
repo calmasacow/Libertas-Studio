@@ -658,4 +658,151 @@ LTEST_CASE(scene_audio_routing_for_a_node_that_is_not_there_is_a_warning_not_an_
     CHECK(validate(p).front().severity == Severity::Warning);
 }
 
+// ---- the emergency scene (ADR-0025) ---------------------------------------------------------
+
+namespace {
+
+/// A project whose canvas has a proper safety net: one scene, one layer, one looping local clip.
+struct WithEmergencyScene {
+    Project project;
+    Id canvas;
+    Id scene;
+    Id source;
+    Id node;
+
+    explicit WithEmergencyScene(std::string type = "source.media", bool loops = true) {
+        project = make_default_project("Show");
+        canvas = project.canvases[0].id;
+
+        Source src;
+        src.id = Id::generate();
+        src.name = "Be Right Back";
+        src.type = std::move(type);
+        src.settings.emplace("path", std::string{"assets/brb.webm"});
+        src.settings.emplace("loop", loops);
+        source = src.id;
+        project.sources.push_back(std::move(src));
+
+        Scene s;
+        s.id = Id::generate();
+        s.name = "Emergency";
+        Node l = layer("Card");
+        std::get<LayerData>(l.data).source = source;
+        node = l.id;
+        s.roots.push_back(std::move(l));
+        scene = s.id;
+        project.scenes.push_back(std::move(s));
+
+        project.canvases[0].emergency_scene = scene;
+    }
+};
+
+} // namespace
+
+LTEST_CASE(source_types_are_classified_by_whether_they_can_fault) {
+    for (std::string_view safe : {"source.media", "source.image", "source.color", "source.text"})
+        CHECK_MSG(is_self_contained(safe), "{} should be safe for an emergency scene", safe);
+
+    // Anything with a device, a network, or a browser engine behind it can be exactly what
+    // failed.
+    for (std::string_view unsafe : {"source.browser", "source.v4l2", "source.screen",
+                                    "source.window", "source.stream", "source.audio-input"})
+        CHECK_MSG(!is_self_contained(unsafe), "{} should not be safe", unsafe);
+
+    // And an unrecognised type answers false, because a net we cannot vouch for is not a net.
+    CHECK(!is_self_contained("source.something-added-later"));
+    CHECK(!is_self_contained(""));
+}
+
+LTEST_CASE(a_single_looping_local_clip_is_a_good_emergency_scene) {
+    const WithEmergencyScene f;
+    const auto problems = check_emergency_scene(f.project, f.scene);
+    CHECK_MSG(problems.empty(), "{}", problems.empty() ? std::string{} : problems.front().message);
+    CHECK_MSG(is_valid(f.project), "{}", errors_of(f.project));
+    CHECK_EQ(warning_count(f.project), std::size_t{0});
+}
+
+LTEST_CASE(a_clip_that_does_not_loop_is_a_net_that_expires) {
+    // The safe state can last minutes. A clip that plays once and cuts to black is worse than
+    // useless, because it looks like it worked for the first thirty seconds.
+    const WithEmergencyScene f{"source.media", /*loops=*/false};
+    const auto problems = check_emergency_scene(f.project, f.scene);
+    REQUIRE(problems.size() == 1);
+    CHECK(problems.front().message.find("loop") != std::string::npos);
+    CHECK(problems.front().severity == Severity::Warning);
+    CHECK_MSG(is_valid(f.project), "an unsuitable emergency scene made the project invalid");
+}
+
+LTEST_CASE(a_source_that_can_fault_is_refused_as_a_safety_net) {
+    for (const std::string_view type : {"source.browser", "source.v4l2", "source.screen"}) {
+        const WithEmergencyScene f{std::string{type}};
+        const auto problems = check_emergency_scene(f.project, f.scene);
+        REQUIRE_MSG(!problems.empty(), "{} was accepted as a safety net", type);
+        CHECK_MSG(problems.front().message.find(type) != std::string::npos,
+                  "the complaint does not name the source type");
+        CHECK(problems.front().message.find("Be Right Back") != std::string::npos);
+    }
+}
+
+LTEST_CASE(an_empty_or_crowded_emergency_scene_is_reported) {
+    Project p = make_default_project("Show");
+    Scene empty;
+    empty.id = Id::generate();
+    empty.name = "Nothing";
+    p.scenes.push_back(empty);
+    p.canvases[0].emergency_scene = empty.id;
+    REQUIRE(check_emergency_scene(p, empty.id).size() == 1);
+    CHECK(check_emergency_scene(p, empty.id).front().message.find("nothing in it") !=
+          std::string::npos);
+
+    // More layers is not an error -- a logo over a clip is reasonable -- but the net is reliable
+    // in proportion to how little it depends on, and one pre-rendered clip can carry branding.
+    WithEmergencyScene f;
+    Scene* s = f.project.scene(f.scene);
+    REQUIRE(s != nullptr);
+    s->roots.push_back(layer("Extra"));
+    const auto problems = check_emergency_scene(f.project, f.scene);
+    REQUIRE(problems.size() == 1);
+    CHECK(problems.front().message.find("layers") != std::string::npos);
+}
+
+LTEST_CASE(an_emergency_scene_that_was_deleted_is_noticed) {
+    WithEmergencyScene f;
+    const auto it = std::find_if(f.project.scenes.begin(), f.project.scenes.end(),
+                                 [&f](const Scene& s) { return s.id == f.scene; });
+    f.project.scenes.erase(it);
+
+    const auto problems = check_emergency_scene(f.project, f.scene);
+    REQUIRE(problems.size() == 1);
+    CHECK(problems.front().message.find("does not exist") != std::string::npos);
+    CHECK_MSG(is_valid(f.project), "losing the safety net made the project unopenable");
+    CHECK_EQ(warning_count(f.project), std::size_t{1});
+}
+
+LTEST_CASE(a_canvas_with_no_emergency_scene_is_not_a_document_problem) {
+    // A project at rest is not wrong for lacking a safety net; warning about it would mean every
+    // new project is born complaining. "Does every canvas have one?" is a pre-flight question,
+    // asked when the operator is about to go live and it actually matters.
+    const Project p = make_default_project("Show");
+    CHECK(!p.canvases[0].emergency_scene.has_value());
+    CHECK_MSG(validate(p).empty(), "a new project reported a problem: {}",
+              validate(p).empty() ? std::string{} : validate(p).front().message);
+}
+
+LTEST_CASE(the_emergency_scene_is_per_canvas) {
+    // A vertical show wants a separately authored vertical clip, and a per-canvas override can
+    // reposition a card but cannot swap the source binding.
+    WithEmergencyScene f;
+    Canvas vertical;
+    vertical.id = Id::generate();
+    vertical.name = "Vertical";
+    vertical.width = 1080;
+    vertical.height = 1920;
+    f.project.canvases.push_back(vertical);
+
+    CHECK(f.project.canvases[0].emergency_scene.value() == f.scene);
+    CHECK(!f.project.canvases[1].emergency_scene.has_value());
+    CHECK_MSG(is_valid(f.project), "{}", errors_of(f.project));
+}
+
 LTEST_MAIN("document")

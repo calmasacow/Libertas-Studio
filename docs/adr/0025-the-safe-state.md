@@ -51,17 +51,66 @@ That is better, and it removes special cases rather than adding them:
   scene reference.
 - Real shows want branding on the card — a logo, a wordmark, "back in a minute" — and a file
   means re-rendering a video every time any of that changes.
-- **Multi-canvas falls out for free.** A vertical canvas needs a vertical card, and a scene
-  already carries per-canvas overrides (ADR-0020, ADR-0021). One emergency scene, laid out for
-  each canvas by the same mechanism as every other scene. As a file it would have needed one
-  asset per canvas and a rule for pairing them.
-- It can be edited, previewed and **rehearsed** with the tools that already exist. Switching to it
-  is switching to a scene, so "show me what my safety net looks like" is not a feature to build.
+- It can be edited and previewed with the tools that already exist.
+- **Rehearsing it is switching to a scene**, so "show me what my safety net looks like" is not a
+  feature to build.
 
 The risk the file was avoiding does not go away, it just moves to where it can be checked: see the
 pre-flight below. The "preferably one self-contained media source" part of the operator's phrasing
 is the mitigation, not a stylistic preference — a scene built from one local file depends on
 nothing that can fault.
+
+### 0b. One emergency scene per canvas
+
+An earlier draft claimed multi-canvas fell out for free, because a scene carries per-canvas
+overrides. That was wrong, and the reason is worth recording: **an override can reposition a card
+but cannot swap the source binding.** A shared emergency scene would mean either letterboxing a
+16:9 clip into a 9:16 canvas, or carrying two media layers with per-canvas visibility — and the
+second violates the single-clip constraint below, which is the thing that makes the net reliable.
+
+So the emergency scene is a property of the **canvas**: `Canvas::emergency_scene`. Outputs are
+already per-canvas, triggers can be per-canvas, and a vertical show wants a separately authored
+vertical clip rather than a scaled landscape one.
+
+A canvas with none set falls back to black and silence, and pre-flight says so.
+
+### 0c. A limit on what an emergency scene may contain
+
+The safety net is reliable in proportion to how little it depends on. The shape to aim for is
+**one media layer playing a local, looping clip** — which is not restrictive in practice, because
+a pre-rendered clip can carry any branding, motion or text the operator wants.
+
+Sources are classified by whether they can fault:
+
+| | |
+|---|---|
+| **allowed** | local media, image, colour, static text |
+| **refused** | capture devices, window and screen capture, browser sources, network streams, `Reference` or `Precomp` into the live show |
+
+Everything in the refused column can be exactly what failed. A browser source that wedged and took
+the UI with it is not a thing to put on the holding card.
+
+This is enforced **when the scene is designated**, not when it is needed: that is a deliberate,
+off-air act with a human present, so refusing is clear and costs nothing. Pre-flight re-checks it,
+because a scene can be edited after it was designated — and there it warns rather than refuses,
+since blocking a broadcast is worse than saying so.
+
+**Where** that refusal lives matters, and ADR-0023 already settled it: not in the command. A
+command may only refuse states the document model itself refuses, or an inverse can become
+unapplicable and undo breaks at an arbitrary depth. So `SetCanvasEmergencyScene` permits what the
+model permits, `validate()` reports an unsuitable emergency scene as a warning, and the
+*designation flow* is what refuses — it checks first, explains, offers to fix, and only then
+issues the command. Exactly as the UI offers only scenes that exist rather than the command
+rejecting ones that do not.
+
+### 0d. Designating it checks the clip loops, and offers to fix it
+
+The safe state can last minutes. A clip that plays once and cuts to black is a net that expires,
+usually at the moment it is finally needed.
+
+So designating a scene checks whether its media source is set to loop, and if it is not, **asks
+whether to set it** — rather than recording a warning the operator reads later or never. The
+answer is an ordinary `Command`, so it is journaled and undoable like any other edit.
 
 ### 1. It is a state, not an event, with several triggers
 
@@ -118,17 +167,15 @@ operator believed they had one.
 
 Pre-flight asks four things:
 
-1. **Does it exist and render?** The scene is composited once and its sources opened.
-2. **Is it self-contained?** Every source in it is a local file, an image, text or a colour —
-   nothing that can fault at the moment it is needed. A capture device, a browser source, a
-   network stream or a `Reference` to a node in the live show all mean the safety net depends on
-   something that might be exactly what failed. That is a warning, not a refusal: the operator may
-   know what they are doing, and refusing to go live over it would be worse than saying so.
-3. **Does its media loop?** The safe state can last minutes. A clip that ends and cuts to black is
-   a safety net that expires, so a non-looping media source in the emergency scene is a warning.
-4. **Is it primed?** Decoders opened, first frames decoded, audio confirmed, held ready — so
-   entering the safe state is a switch rather than a load. Reading from disk at the moment the
-   show has already gone wrong is the wrong time to find out the disk is busy.
+1. **Does every canvas have one?** A canvas without an emergency scene falls back to black and
+   silence, which is safe but not what anyone chose.
+2. **Does it exist and render?** The scene is composited once and its sources opened.
+3. **Is it still self-contained?** Re-checked here because the scene may have been edited since it
+   was designated. A warning rather than a refusal at this point.
+4. **Does its media still loop?** Likewise.
+5. **Is it primed?** Decoders opened, first frames decoded, audio confirmed, held ready — so
+   entering the safe state is a switch rather than a load. The moment the show has already gone
+   wrong is the wrong time to find out the disk is busy.
 
 If it cannot be loaded at all, that is said loudly **before going live**, and the fallback degrades
 to black and silence — never to the live scene.
@@ -141,18 +188,19 @@ to black and silence — never to the live scene.
   what was dangerous about it.
 - `libertas-render` owns the safe state and can enter it with no help from anything else. It
   cannot depend on the UI, the session process, or a disk read at the moment of entry.
-- The document model grows the configuration: which scene, the audio policy, the deadman interval,
-  and which outputs it applies to. These are project state, not settings, since a different show
-  wants a different card. The *per-canvas* part needs nothing new — the emergency scene carries
-  canvas overrides like any other scene.
+- The document model grows `Canvas::emergency_scene`, plus the audio policy, the deadman interval
+  and which outputs the fallback applies to. These are project state rather than settings, since a
+  different show wants a different card.
 - The deadman interval is a real tuning problem in both directions. Too short and a long repaint
   or a GC pause takes the show off air; too long and seconds of unwanted content go out. It is
   configurable, with a conservative default, and the heartbeat must come from somewhere that
   stalls when the operator's ability to act stalls — not from a timer that keeps ticking while
   the window is frozen.
 - Falling back on one canvas and not another is a legitimate state, since the triggers can be
-  per-canvas. The emergency scene is laid out for each of them through the override mechanism
-  that already exists.
+  per-canvas.
+- Source types need a **self-contained** property. Until source manifests exist it is a built-in
+  table of type names; it belongs in the manifest beside the rest of a source type's declaration,
+  and should move there rather than growing.
 - The emergency scene should be visibly marked in the scene list, and it should be hard to delete
   by accident — deleting the safety net and discovering it at the wrong moment is the failure this
   ADR exists to prevent, arriving by a different route.
