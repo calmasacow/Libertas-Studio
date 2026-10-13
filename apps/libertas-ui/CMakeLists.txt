@@ -13,6 +13,10 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick QuickShapes)
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(libertas-ui
+    document.cpp
+    document.hpp
+    documentmodels.cpp
+    documentmodels.hpp
     layoutmodels.cpp
     layoutmodels.hpp
     main.cpp
@@ -30,18 +34,27 @@ qt_add_qml_module(libertas-ui
     URI Libertas
     VERSION 1.0
     QML_FILES
+        qml/CheckLabel.qml
+        qml/ChoiceField.qml
         qml/DragGhost.qml
         qml/DropOverlay.qml
+        qml/LayersPanel.qml
         qml/Main.qml
+        qml/NumberField.qml
         qml/PanelBody.qml
         qml/PanelFrame.qml
+        qml/PropertiesPanel.qml
+        qml/ScenesPanel.qml
         qml/StatusBar.qml
         qml/TabStrip.qml
+        qml/ToolButton.qml
+        qml/ToolTipText.qml
 )
 
 target_link_libraries(libertas-ui PRIVATE
     libertas::flags
     libertas::llayout
+    libertas::lsession
     libertas::ltheme
     Qt6::Gui
     Qt6::Quick
@@ -57,8 +70,9 @@ set_source_files_properties(
 
 # The headless self-check: load the real QML tree, drive the real gestures, touch no screen.
 if(LIBERTAS_BUILD_TESTS)
-    add_test(NAME shell_self_check COMMAND libertas-ui --check --layout
-             "${CMAKE_CURRENT_BINARY_DIR}/self-check-layout.toml")
+    add_test(NAME shell_self_check COMMAND libertas-ui --check
+             --layout "${CMAKE_CURRENT_BINARY_DIR}/self-check-layout.toml"
+             --project "${CMAKE_CURRENT_BINARY_DIR}/self-check-project")
     # Qt initialises GL even on the offscreen platform, and the GPU driver leaks a little
     # one-time state on every run. The suppression file names libraries, never functions of ours,
     # so this cannot hide a leak we introduce.

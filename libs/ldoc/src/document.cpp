@@ -136,8 +136,16 @@ std::vector<Problem> check_emergency_scene(const Project& project, const Id& sce
         if (!layer)
             return;
         ++total_layers;
-        if (!layer->source)
+        if (!layer->source) {
+            // A layer bound to nothing draws nothing, which makes the safety net exactly as
+            // useful as not having one -- while looking, in the scene list, as though it is set.
+            out.push_back(Problem{Severity::Warning,
+                                  std::format("'{}' in the emergency scene is not bound to "
+                                              "anything, so it would show nothing",
+                                              n.name),
+                                  n.id});
             return;
+        }
         const Source* src = project.source(*layer->source);
         if (!src) {
             out.push_back(Problem{Severity::Warning,

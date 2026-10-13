@@ -45,6 +45,12 @@ inverse commands because a layout tree is a few dozen nodes — cheaper than the
 incapable of drifting out of step with the thing it describes, which is what makes undo stacks
 untrustworthy in the first place.
 
+**Which keystroke gets it, decided when both stacks existed:** `Ctrl+Z` is the *document's* undo,
+because that is what it is in every other application and an operator should never have to work
+out which stack it will reach. The layout stack keeps its own binding (`Ctrl+Alt+Z`). Separating
+the stacks is what made that choice available at all — with one stack there is no choice, only a
+gamble. It is also how Premiere and After Effects treat a workspace change.
+
 Two consequences that matter in use:
 
 - A gesture that changed nothing does not spend a step. Otherwise Ctrl+Z after a mis-aimed drag

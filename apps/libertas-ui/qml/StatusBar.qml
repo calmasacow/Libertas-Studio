@@ -41,6 +41,66 @@ Rectangle {
             font.pixelSize: 11
             color: Theme.c.textMuted
         }
+
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 1
+            height: 12
+            color: Theme.c.border
+        }
+
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: Document.projectName
+            font.pixelSize: 11
+            color: Theme.c.text
+        }
+
+        // An unsaved-changes dot rather than the word, because this line is read at a glance
+        // while something else has the operator's attention.
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: Document.dirty
+            width: 6
+            height: 6
+            radius: 3
+            color: Theme.c.warning
+
+            ToolTipText {
+                text: qsTr("Unsaved changes — recoverable from the journal if this stops")
+                visible: dirtyHover.containsMouse
+                anchorItem: parent
+            }
+
+            MouseArea {
+                id: dirtyHover
+
+                anchors.fill: parent
+                anchors.margins: -4
+                hoverEnabled: true
+            }
+        }
+
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: Document.problems.length > 0
+            text: qsTr("%1 problem(s)").arg(Document.problems.length)
+            font.pixelSize: 11
+            color: Theme.c.warning
+
+            ToolTipText {
+                text: Document.problems.join("\n")
+                visible: problemHover.containsMouse
+                anchorItem: parent
+            }
+
+            MouseArea {
+                id: problemHover
+
+                anchors.fill: parent
+                hoverEnabled: true
+            }
+        }
     }
 
     // The middle says what is happening: what a release would do while dragging, and whatever

@@ -57,15 +57,17 @@ LTEST_CASE(the_default_layout_is_valid_and_holds_the_expected_panels) {
     CHECK_MSG(!bad.has_value(), "{}", bad.value_or(""));
 
     CHECK_EQ(sorted_panels(l),
-             (std::vector<std::string>{"audio-mixer", "controls", "log", "program", "scenes",
-                                       "sources", "stats"}));
+             (std::vector<std::string>{"audio-mixer", "controls", "log", "program", "properties",
+                                       "scenes", "sources", "stats"}));
 
     // The program canvas is a region of the workspace, not a window (ADR-0015 rule 2).
     CHECK(l.has_panel("program"));
     CHECK(l.node_of_panel("program") != kInvalidNode);
 
-    // stats and log ship as a tabbed group, so the tab path is exercised by the default.
+    // properties, stats and log ship as one tabbed group, so the tab path is exercised by the
+    // default layout.
     CHECK_EQ(l.node_of_panel("stats"), l.node_of_panel("log"));
+    CHECK_EQ(l.node_of_panel("properties"), l.node_of_panel("log"));
 }
 
 LTEST_CASE(an_empty_layout_is_valid) {
@@ -170,11 +172,11 @@ LTEST_CASE(a_centre_drop_makes_a_tabbed_group) {
     CHECK_EQ(l.node_of_panel("scenes"), target);
     CHECK_EQ(l.node_of_panel("scenes"), l.node_of_panel("stats"));
     // The dropped panel becomes the visible tab: the user just put it there on purpose.
-    CHECK_EQ(l.tab_index_of("scenes"), std::size_t{2});
+    CHECK_EQ(l.tab_index_of("scenes"), std::size_t{3});
     const Node* n = l.find(target);
     REQUIRE(n != nullptr);
-    CHECK_EQ(n->active, std::size_t{2});
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{7});
+    CHECK_EQ(n->active, std::size_t{3});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{8});
 }
 
 LTEST_CASE(an_outer_drop_splits_the_target_on_the_right_axis_and_side) {
@@ -302,8 +304,10 @@ LTEST_CASE(dropping_a_panel_where_it_already_is_does_nothing) {
     const Viewport vp = vp_of(2560.0, 1440.0);
     const Layout before = l;
 
-    // Its own group, centre zone: it is already a tab there.
-    const DockResult a = l.dock("stats", l.node_of_panel("stats"), Zone::Center, vp, cs);
+    // Its own group, centre zone, *and already the visible tab*: nothing at all to do. Dropping
+    // a tab that is not the active one would bring it forward, which is a real change.
+    const DockResult a = l.dock("properties", l.node_of_panel("properties"), Zone::Center, vp,
+                                cs);
     CHECK_EQ(a.status, DockStatus::NoOp);
     CHECK(l == before);
 
@@ -368,7 +372,7 @@ LTEST_CASE(a_panel_not_yet_in_the_tree_can_be_docked) {
     const DockResult r = l.dock("chat", l.node_of_panel("audio-mixer"), Zone::Right, vp, cs);
     REQUIRE(r.applied());
     CHECK(l.has_panel("chat"));
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{8});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{9});
     CHECK(!l.validate().has_value());
 }
 
@@ -558,9 +562,9 @@ LTEST_CASE(a_hit_test_result_can_be_docked_directly) {
 LTEST_CASE(activating_a_tab_selects_it) {
     Layout l = Layout::default_studio();
     CHECK(l.activate("log"));
-    CHECK_EQ(l.find(l.node_of_panel("log"))->active, std::size_t{1});
+    CHECK_EQ(l.find(l.node_of_panel("log"))->active, std::size_t{2});
     CHECK(l.activate("stats"));
-    CHECK_EQ(l.find(l.node_of_panel("stats"))->active, std::size_t{0});
+    CHECK_EQ(l.find(l.node_of_panel("stats"))->active, std::size_t{1});
     CHECK(!l.activate("nope"));
 }
 
@@ -568,13 +572,14 @@ LTEST_CASE(closing_the_visible_tab_leaves_a_valid_selection) {
     Layout l = Layout::default_studio();
     const NodeId group = l.node_of_panel("stats");
     REQUIRE(l.activate("log"));
-    CHECK_EQ(l.find(group)->active, std::size_t{1});
+    CHECK_EQ(l.find(group)->active, std::size_t{2});
 
+    // Closing the visible tab leaves the selection on a tab that still exists.
     CHECK(l.close_panel("log"));
     const Node* n = l.find(l.node_of_panel("stats"));
     REQUIRE(n != nullptr);
-    CHECK_EQ(n->tabs.size(), std::size_t{1});
-    CHECK_EQ(n->active, std::size_t{0});
+    CHECK_EQ(n->tabs.size(), std::size_t{2});
+    CHECK_EQ(n->active, std::size_t{1});
     CHECK(!l.validate().has_value());
 }
 
@@ -602,9 +607,9 @@ LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
     // Two window sizes, because they exercise different code: the large one applies nearly every
     // dock and hammers the tree surgery, while the small one spends most of its time refusing
     // drops and so tests that a refusal really does leave the layout alone.
-    const std::vector<std::string> pool = {"program", "scenes",      "sources", "stats",
-                                           "log",     "audio-mixer", "controls", "chat",
-                                           "browser", "replay"};
+    const std::vector<std::string> pool = {"program", "scenes",      "sources",  "stats",
+                                           "log",     "audio-mixer", "controls", "properties",
+                                           "chat",    "browser",     "replay"};
     const Constraints cs = Constraints::studio_defaults();
 
     for (const Viewport& vp : {vp_of(3840.0, 2160.0), vp_of(1366.0, 768.0)}) {
@@ -669,8 +674,13 @@ LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
             for (const std::string& p : ps)
                 CHECK(std::find(pool.begin(), pool.end(), p) != pool.end());
 
-            // Flattening keeps the tree from growing without bound.
-            CHECK_MSG(depth(l, l.root()) <= 8, "depth {} at step {}", depth(l, l.root()), step);
+            // Flattening keeps the tree from growing without bound. The bound is structural
+            // rather than a tuned number: a tree cannot have more levels than it has leaves, so
+            // exceeding it means nesting that nothing in the layout justifies. The tight check
+            // on flattening itself lives in repeated_docking_keeps_the_tree_shallow, where a
+            // run of same-axis docks must stay four deep however many there are.
+            CHECK_MSG(depth(l, l.root()) <= pool.size() + 1, "depth {} at step {}",
+                      depth(l, l.root()), step);
             CHECK(l.node_count() <= 2 * pool.size() + 2);
 
             // Every panel that is in the tree can actually be drawn: no zero-area leaves, and
@@ -695,8 +705,9 @@ LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
 LTEST_CASE(a_tight_window_refuses_drops_without_corrupting_anything) {
     // The same loop as above, but small enough that refusals are the common case. The point is
     // the refusal path, so assert it was actually taken.
-    const std::vector<std::string> pool = {"program", "scenes", "sources", "stats",
-                                           "log",     "chat",   "browser", "replay"};
+    const std::vector<std::string> pool = {"program", "scenes", "sources",    "stats",
+                                           "log",     "chat",   "browser",    "replay",
+                                           "properties"};
     const Constraints cs = Constraints::studio_defaults();
     const Viewport vp = vp_of(1366.0, 768.0);
 

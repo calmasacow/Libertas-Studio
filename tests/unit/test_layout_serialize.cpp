@@ -120,7 +120,7 @@ LTEST_CASE(a_tabbed_group_remembers_which_tab_was_visible) {
     REQUIRE(l.activate("log"));
     const auto back = from_toml(to_toml(l));
     REQUIRE(back.has_value());
-    CHECK_EQ(back->find(back->node_of_panel("log"))->active, std::size_t{1});
+    CHECK_EQ(back->find(back->node_of_panel("log"))->active, std::size_t{2});
 }
 
 LTEST_CASE(awkward_panel_ids_round_trip) {

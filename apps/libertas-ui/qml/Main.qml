@@ -17,7 +17,8 @@ Window {
     height: 950
     minimumWidth: 960
     minimumHeight: 620
-    title: qsTr("Libertas Studio")
+    title: Document.projectName + (Document.dirty ? " \u2022 " : " \u2014 ") +
+           qsTr("Libertas Studio")
     color: Theme.c.window
 
     // A line of text the status bar shows for a few seconds: a refused drop, a failed save, a
@@ -47,19 +48,41 @@ Window {
         }
     }
 
+    Connections {
+        target: Document
+        function onNotice(text) {
+            root.notice = text;
+            noticeTimer.restart();
+        }
+    }
+
     // ADR-0016 rule 7: Escape cancels an in-flight drag. A mis-drop costs one keystroke.
     Shortcut {
         sequences: ["Escape"]
         onActivated: Workspace.cancelDrag()
     }
-    // ADR-0015 rule 6, with the refinement recorded in llayout/history.hpp: layout has its own
-    // undo stack, separate from document history.
+    // Ctrl+Z is the *document's* undo, because that is what it is everywhere else and an
+    // operator should never have to work out which stack it will reach. ADR-0021 kept the two
+    // stacks separate precisely so this choice was available; the layout stack is still there,
+    // on its own binding, which is also how Premiere and After Effects treat a workspace change.
     Shortcut {
         sequences: ["Ctrl+Z"]
-        onActivated: Workspace.undo()
+        onActivated: Document.undo()
     }
     Shortcut {
         sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]
+        onActivated: Document.redo()
+    }
+    Shortcut {
+        sequences: ["Ctrl+S"]
+        onActivated: Document.save()
+    }
+    Shortcut {
+        sequences: ["Ctrl+Alt+Z"]
+        onActivated: Workspace.undo()
+    }
+    Shortcut {
+        sequences: ["Ctrl+Alt+Shift+Z"]
         onActivated: Workspace.redo()
     }
     Shortcut {

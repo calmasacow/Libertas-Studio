@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Libertas-Studio contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "document.hpp"
 #include "theme.hpp"
 #include "workspace.hpp"
 
@@ -102,11 +103,17 @@ int main(int argc, char** argv) {
         QStringList{QStringLiteral("check")},
         QStringLiteral("Load the shell, exercise the gestures headlessly, report, and exit "
                        "without showing a window.")};
+    const QCommandLineOption project_opt{
+        QStringList{QStringLiteral("project")},
+        QStringLiteral("Project directory to open, creating it if it does not exist. Without "
+                       "this the shell starts on an unsaved document."),
+        QStringLiteral("dir")};
     const QCommandLineOption shot_opt{
         QStringList{QStringLiteral("check-shots")},
         QStringLiteral("With --check, write the grabbed frames into this directory."),
         QStringLiteral("dir")};
     parser.addOption(layout_opt);
+    parser.addOption(project_opt);
     parser.addOption(check_opt);
     parser.addOption(shot_opt);
     parser.process(app);
@@ -126,6 +133,10 @@ int main(int argc, char** argv) {
     // The singletons are constructed by the QML engine, so everything they need that QML cannot
     // supply is handed over first.
     libertas::ui::Workspace::configure(layout_path);
+    libertas::ui::Document::configure(
+        parser.isSet(project_opt)
+            ? std::filesystem::path(parser.value(project_opt).toStdString())
+            : std::filesystem::path{});
 
     QQmlApplicationEngine engine;
 
@@ -134,16 +145,20 @@ int main(int argc, char** argv) {
     auto* workspace_ptr =
         engine.singletonInstance<libertas::ui::Workspace*>("Libertas", "Workspace");
     auto* theme_ptr = engine.singletonInstance<libertas::ui::Theme*>("Libertas", "Theme");
-    if (!workspace_ptr || !theme_ptr)
-        return fail("the workspace and theme singletons could not be created");
+    auto* document_ptr =
+        engine.singletonInstance<libertas::ui::Document*>("Libertas", "Document");
+    if (!workspace_ptr || !theme_ptr || !document_ptr)
+        return fail("the singletons could not be created");
     libertas::ui::Workspace& workspace = *workspace_ptr;
     libertas::ui::Theme& theme = *theme_ptr;
+    libertas::ui::Document& document = *document_ptr;
 
     const auto say = [](const QString& t) {
         std::fprintf(stderr, "notice: %s\n", qPrintable(t));
     };
     QObject::connect(&workspace, &libertas::ui::Workspace::notice, &app, say);
     QObject::connect(&theme, &libertas::ui::Theme::notice, &app, say);
+    QObject::connect(&document, &libertas::ui::Document::notice, &app, say);
 
     engine.load(QUrl(QStringLiteral("qrc:/qt/qml/Libertas/qml/Main.qml")));
 
@@ -398,6 +413,94 @@ int main(int argc, char** argv) {
 
         report(!theme.colors().isEmpty(), "the theme exposes colours");
         report(theme.colors().contains(QStringLiteral("dropFill")), "including the drop overlay fill");
+
+        // ---- the document panels ------------------------------------------------------------
+        //
+        // Driven through the same API QML drives, which is the whole point: the UI holds no
+        // mutable Project and every one of these is a command going to the session.
+        const auto scene_rows = [&] { return collect(window->contentItem(),
+                                                     QStringLiteral("sceneRow")).size(); };
+        const auto layer_rows = [&] { return collect(window->contentItem(),
+                                                     QStringLiteral("layerRow")).size(); };
+
+        settle();
+        // Counts are relative, because --check may be run against a project it has already been
+        // run against -- which is also worth proving, since a self-check that only passes on a
+        // clean slate stops being run.
+        const int scenes_before = document.scenesModel()->rowCount();
+        report(scenes_before >= 1, "the document has at least one scene");
+        report(scene_rows() == scenes_before, "and every one of them reached the screen");
+        report(!document.selectedScene().isEmpty(), "with one selected");
+
+        document.addScene(QStringLiteral("Gameplay"));
+        settle();
+        report(document.scenesModel()->rowCount() == scenes_before + 1, "a scene can be added");
+        report(scene_rows() == scenes_before + 1, "and the list redrew");
+        report(document.dirty(), "which made the document dirty");
+
+        const int layers_before = document.layersModel()->rowCount();
+        document.addLayer(QStringLiteral("Camera"));
+        settle();
+        report(document.layersModel()->rowCount() == layers_before + 1,
+               "a layer can be added to it");
+        report(layer_rows() == layers_before + 1, "and the layers panel redrew");
+        report(!document.selectedLayer().isEmpty(), "with the new layer selected");
+
+        const QVariantMap props = document.layerProperties();
+        report(props.value("name").toString() == QLatin1String("Camera"),
+               "the properties panel sees the selected layer");
+        report(props.value("visible").toBool(), "and its state");
+
+        document.setLayerOpacity(0.5);
+        document.setLayerBlendMode(QStringLiteral("multiply"));
+        settle();
+        report(qFuzzyCompare(document.layerProperties().value("opacity").toDouble(), 0.5),
+               "a property edit reaches the document");
+        report(document.layerProperties().value("blendMode").toString() ==
+                   QLatin1String("multiply"),
+               "including the blend mode");
+
+        // Undo is the document's, not the layout's: the binding operators expect.
+        report(document.canUndo(), "and is undoable");
+        document.undo();
+        settle();
+        report(document.layerProperties().value("blendMode").toString() ==
+                   QLatin1String("normal"),
+               "Ctrl+Z puts it back");
+        document.redo();
+        settle();
+
+        document.setLayerVisible(document.selectedLayer(), false);
+        settle();
+        report(!document.layerProperties().value("visible").toBool(), "a layer can be hidden");
+
+        // The emergency scene (ADR-0025): designating one reports why it is a poor safety net
+        // rather than accepting it silently.
+        QString complaint;
+        QMetaObject::Connection c = QObject::connect(
+            &document, &libertas::ui::Document::notice,
+            [&complaint](const QString& t) { complaint = t; });
+        document.setEmergencyScene(document.selectedScene());
+        settle();
+        QObject::disconnect(c);
+        report(!complaint.isEmpty(),
+               "designating an unsuitable emergency scene says what is wrong with it");
+        report(!document.emergencySceneProblems(document.selectedScene()).isEmpty(),
+               "and the problems can be asked for without issuing the command");
+
+        // Removing the selected scene must leave the selection somewhere real.
+        document.removeScene(document.selectedScene());
+        settle();
+        report(document.scenesModel()->rowCount() == scenes_before, "a scene can be removed");
+        report(!document.selectedScene().isEmpty(),
+               "and the selection moves to one that still exists");
+        report(document.selectedLayer().isEmpty(), "with the layer selection cleared");
+
+        if (!document.projectPath().startsWith(QLatin1Char('('))) {
+            document.save();
+            settle();
+            report(!document.dirty(), "the document saves");
+        }
         std::fprintf(stderr, "\n  theme: %s (%s), layout: %s\n", qPrintable(theme.name()),
                      theme.dark() ? "dark" : "light", qPrintable(workspace.layoutSource()));
         std::fprintf(stderr, "  %s\n", rc == 0 ? "shell self-check passed" : "SHELL CHECK FAILED");

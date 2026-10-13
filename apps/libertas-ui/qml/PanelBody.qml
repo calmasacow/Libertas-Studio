@@ -22,6 +22,46 @@ Item {
         color: Theme.c.panelBackground
     }
 
+    // One Loader rather than three panels with two of them hidden.
+    //
+    // A hidden item is still a built item: the first version instantiated all three document
+    // panels in *every* panel frame, so a six-panel workspace held six scene lists and six
+    // layer lists, each with its own ListView over the same model. Only one was ever visible.
+    Loader {
+        anchors.fill: parent
+        active: sourceComponent !== null
+        sourceComponent: {
+            switch (body.panelId) {
+            case "scenes":
+                return scenesComponent;
+            case "sources":
+                return layersComponent;
+            case "properties":
+                return propertiesComponent;
+            default:
+                return null;
+            }
+        }
+    }
+
+    Component {
+        id: scenesComponent
+
+        ScenesPanel {}
+    }
+
+    Component {
+        id: layersComponent
+
+        LayersPanel {}
+    }
+
+    Component {
+        id: propertiesComponent
+
+        PropertiesPanel {}
+    }
+
     // The program canvas. ADR-0015 rule 2: it is a region of this surface, never a separate OS
     // window, so it cannot be lost, moved off-screen or closed by accident.
     Item {
@@ -93,7 +133,9 @@ Item {
 
     // Every other panel: its name, and one honest line about what belongs there.
     Column {
-        visible: body.panelId !== "program" && body.panelId !== ""
+        visible: body.panelId !== "program" && body.panelId !== "" &&
+                 body.panelId !== "scenes" && body.panelId !== "sources" &&
+                 body.panelId !== "properties"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -114,10 +156,6 @@ Item {
             color: Theme.c.textMuted
             text: {
                 switch (body.panelId) {
-                case "scenes":
-                    return qsTr("Scene list. Arrives with the document model.");
-                case "sources":
-                    return qsTr("Sources for the selected scene, with per-canvas overrides.");
                 case "audio-mixer":
                     return qsTr("Bus graph, meters and sends. Arrives with the audio host.");
                 case "controls":

@@ -85,7 +85,7 @@ Layout Layout::default_studio() {
     const NodeId scenes = tabs({"scenes"});
     const NodeId sources = tabs({"sources"});
     const NodeId program = tabs({"program"});
-    const NodeId inspect = tabs({"stats", "log"});
+    const NodeId inspect = tabs({"properties", "stats", "log"});
     const NodeId mixer = tabs({"audio-mixer"});
     const NodeId controls = tabs({"controls"});
 

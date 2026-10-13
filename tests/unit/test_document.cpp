@@ -762,8 +762,25 @@ LTEST_CASE(an_empty_or_crowded_emergency_scene_is_reported) {
     REQUIRE(s != nullptr);
     s->roots.push_back(layer("Extra"));
     const auto problems = check_emergency_scene(f.project, f.scene);
+    // Two complaints: the extra layer is bound to nothing, and the scene is no longer one clip.
+    REQUIRE(problems.size() == 2);
+    CHECK(problems.back().message.find("layers") != std::string::npos);
+}
+
+LTEST_CASE(a_layer_bound_to_nothing_is_not_a_safety_net) {
+    // It draws nothing, which makes the net exactly as useful as not having one -- while looking
+    // in the scene list as though it is set, which is worse.
+    Project p = make_default_project("Show");
+    Scene s;
+    s.id = Id::generate();
+    s.name = "Emergency";
+    s.roots.push_back(layer("Card"));
+    p.canvases[0].emergency_scene = s.id;
+    p.scenes.push_back(std::move(s));
+
+    const auto problems = check_emergency_scene(p, *p.canvases[0].emergency_scene);
     REQUIRE(problems.size() == 1);
-    CHECK(problems.front().message.find("layers") != std::string::npos);
+    CHECK(problems.front().message.find("not bound to anything") != std::string::npos);
 }
 
 LTEST_CASE(an_emergency_scene_that_was_deleted_is_noticed) {
