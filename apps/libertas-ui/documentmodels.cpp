@@ -90,4 +90,39 @@ QHash<int, QByteArray> SourceModel::roleNames() const {
     };
 }
 
+int BusModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+}
+
+QVariant BusModel::data(const QModelIndex& index, int role) const {
+    const BusRow* r = at(rows_, index);
+    if (!r)
+        return {};
+    switch (role) {
+    case IdRole:               return r->id;
+    case NameRole:             return r->name;
+    case KindRole:             return r->kind;
+    case GainDbRole:           return r->gainDb;
+    case PanRole:              return r->pan;
+    case MuteRole:             return r->mute;
+    case SoloRole:             return r->solo;
+    case ChannelsRole:         return r->channels;
+    case FeedCountRole:        return r->feedCount;
+    case SendCountRole:        return r->sendCount;
+    case CarriesSelectionRole: return r->carriesSelection;
+    default:                   return {};
+    }
+}
+
+QHash<int, QByteArray> BusModel::roleNames() const {
+    return {
+        {IdRole, "busId"},           {NameRole, "name"},
+        {KindRole, "kind"},          {GainDbRole, "gainDb"},
+        {PanRole, "pan"},            {MuteRole, "mute"},
+        {SoloRole, "solo"},          {ChannelsRole, "channels"},
+        {FeedCountRole, "feedCount"}, {SendCountRole, "sendCount"},
+        {CarriesSelectionRole, "carriesSelection"},
+    };
+}
+
 } // namespace libertas::ui

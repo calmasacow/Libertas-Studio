@@ -624,6 +624,135 @@ int main(int argc, char** argv) {
                    .toInt() == 0,
                "unbinding it again releases the input");
 
+        // ---- the audio mixer -------------------------------------------------------------
+        //
+        // No audio host exists yet, so what is checked here is the document half: the buses, the
+        // faders, and which bus a layer's audio goes to. All of it is commands, so all of it has
+        // to undo.
+        const auto bus_strips = [&] { return collect(window->contentItem(),
+                                                     QStringLiteral("busStrip")); };
+        const auto bus_at = [&](int row, int role) {
+            return document.busesModel()->data(document.busesModel()->index(row, 0),
+                                               Qt::UserRole + role);
+        };
+        settle();
+        const int buses_before = document.busesModel()->rowCount();
+        report(buses_before >= 1, "the document has at least one bus");
+        report(bus_strips().size() == buses_before, "and a strip on screen for each one");
+        report(!document.busKinds().isEmpty(), "the bus kinds are listed");
+
+        // A strip squeezed into the panel's minimum height still has to be a fader rather than a
+        // sliver. The default layout's mixer row is the smallest this gets without a drag.
+        {
+            int usable_faders = 0;
+            for (const QQuickItem* f : collect(window->contentItem(),
+                                               QStringLiteral("busFader"))) {
+                if (f->height() >= 24.0 && f->width() > 1.0)
+                    ++usable_faders;
+            }
+            report(usable_faders == bus_strips().size(),
+                   "every fader has room to be dragged at the panel's docked size");
+        }
+
+        document.addBus(QStringLiteral("Game"), QStringLiteral("submix"));
+        settle();
+        report(document.busesModel()->rowCount() == buses_before + 1, "a bus can be added");
+        report(bus_strips().size() == buses_before + 1, "and the mixer redrew");
+
+        const QString new_bus = bus_at(buses_before, 1).toString();
+        document.setBusGain(new_bus, -6.5);
+        document.setBusMute(new_bus, true);
+        document.setBusPan(new_bus, -0.5);
+        settle();
+        report(qFuzzyCompare(bus_at(buses_before, 4).toDouble(), -6.5), "its fader moves");
+        report(bus_at(buses_before, 6).toBool(), "it can be muted");
+        report(qFuzzyCompare(bus_at(buses_before, 5).toDouble(), -0.5), "and panned");
+
+        // Setting a value it already has must not land on the undo stack: a fader released
+        // without moving is not an edit.
+        const QString before_noop = document.undoDescription();
+        document.setBusGain(new_bus, -6.5);
+        settle();
+        report(document.undoDescription() == before_noop,
+               "and setting a fader to where it already is changes nothing");
+
+        document.setBusPan(new_bus, 4.0);
+        settle();
+        report(bus_at(buses_before, 5).toDouble() <= 1.0, "a pan outside the range is clamped");
+
+        // Routing: a layer's audio has to be able to reach a bus, and be taken off it again.
+        document.addLayer(QStringLiteral("Mic"));
+        settle();
+        if (!document.selectedLayer().isEmpty()) {
+            report(document.layerProperties().value("hasAudio").toBool(),
+                   "a layer has audio of its own");
+            report(document.layerProperties().value("audioBus").toString().isEmpty(),
+                   "and starts routed nowhere, which is not the same as muted");
+
+            document.routeSelectedLayer(new_bus);
+            settle();
+            report(document.layerProperties().value("audioBus").toString() == new_bus,
+                   "it can be routed to a bus");
+            report(bus_at(buses_before, 9).toInt() == 1,
+                   "which the bus strip counts as something feeding it");
+            report(bus_at(buses_before, 11).toBool(),
+                   "and marks as carrying the selection");
+
+            document.setSelectedLayerGain(-3.0);
+            document.setSelectedLayerMute(true);
+            settle();
+            report(qFuzzyCompare(document.layerProperties().value("audioGain").toDouble(), -3.0),
+                   "the layer has its own fader");
+            report(document.layerProperties().value("audioMute").toBool(),
+                   "and its own mute");
+
+            document.undo();
+            settle();
+            report(!document.layerProperties().value("audioMute").toBool(),
+                   "both of which undo");
+
+            // Removing the bus underneath it is allowed: a dangling route is a warning, not an
+            // error, and the strip has to stop claiming the layer feeds it.
+            document.removeBus(new_bus);
+            settle();
+            report(document.busesModel()->rowCount() == buses_before,
+                   "a bus can be removed while a layer still routes to it");
+            report(document.layerProperties().value("audioBusName").toString() ==
+                       QLatin1String("(missing bus)"),
+                   "and the layer says its bus is gone rather than looking unrouted");
+            report(!document.problems().isEmpty(), "which validate() reports as a problem");
+
+            document.undo();
+            settle();
+            report(document.busesModel()->rowCount() == buses_before + 1,
+                   "undo brings the bus back");
+            report(document.layerProperties().value("audioBusName").toString() ==
+                       QLatin1String("Game"),
+                   "with the layer routed to it again");
+
+            document.routeSelectedLayer(QString{});
+            settle();
+            report(document.layerProperties().value("audioBus").toString().isEmpty(),
+                   "and a layer can be taken off its bus");
+        }
+
+        // A group has no audio, and saying so is better than silently doing nothing.
+        document.addGroup(QStringLiteral("Overlays"));
+        settle();
+        if (!document.selectedLayer().isEmpty() &&
+            document.layerProperties().value("kind").toString() == QLatin1String("group")) {
+            report(!document.layerProperties().value("hasAudio").toBool(),
+                   "a group has no audio of its own");
+            QString refusal;
+            QMetaObject::Connection gc = QObject::connect(
+                &document, &libertas::ui::Document::notice,
+                [&refusal](const QString& t) { refusal = t; });
+            document.routeSelectedLayer(new_bus);
+            settle();
+            QObject::disconnect(gc);
+            report(!refusal.isEmpty(), "and routing one says so rather than failing quietly");
+        }
+
         // Scenes can be reordered, which the scene list is the order of.
         document.addScene(QStringLiteral("Second"));
         settle();

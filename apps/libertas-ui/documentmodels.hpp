@@ -176,4 +176,54 @@ private:
     std::vector<SourceRow> rows_;
 };
 
+struct BusRow {
+    QString id;
+    QString name;
+    QString kind;
+    double gainDb = 0.0;
+    double pan = 0.0;
+    bool mute = false;
+    bool solo = false;
+    int channels = 2;
+    /// How many layers, across every scene, route here. The mixer shows it because a bus with
+    /// nothing feeding it looks identical to a working one until the show starts.
+    int feedCount = 0;
+    int sendCount = 0;
+    /// This bus is where the selected layer's audio goes, so the strip can say so.
+    bool carriesSelection = false;
+
+    friend bool operator==(const BusRow&, const BusRow&) = default;
+};
+
+class BusModel : public RowModelBase {
+    Q_OBJECT
+
+public:
+    enum Role {
+        IdRole = Qt::UserRole + 1,
+        NameRole,
+        KindRole,
+        GainDbRole,
+        PanRole,
+        MuteRole,
+        SoloRole,
+        ChannelsRole,
+        FeedCountRole,
+        SendCountRole,
+        CarriesSelectionRole,
+    };
+
+    using RowModelBase::RowModelBase;
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+
+    void set_rows(std::vector<BusRow> rows) { sync(rows_, std::move(rows)); }
+    [[nodiscard]] const std::vector<BusRow>& rows() const { return rows_; }
+
+private:
+    std::vector<BusRow> rows_;
+};
+
 } // namespace libertas::ui

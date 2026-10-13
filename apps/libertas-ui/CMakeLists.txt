@@ -41,6 +41,7 @@ qt_add_qml_module(libertas-ui
     URI Libertas
     VERSION 1.0
     QML_FILES
+        qml/AudioMixerPanel.qml
         qml/CheckLabel.qml
         qml/ChoiceField.qml
         qml/DragGhost.qml

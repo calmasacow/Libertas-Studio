@@ -50,6 +50,12 @@ Constraints Constraints::studio_defaults() {
     // The program canvas is the one panel where a too-small size is not merely ugly: an operator
     // who cannot see the frame cannot run the show.
     cs.set("program", PanelMin{320.0, 200.0});
+    // The mixer keeps the small minimum it started with, and the panel adapts instead: it drops
+    // the routing line, then each strip's kind, feed count and pan, before it will squeeze a
+    // fader. Raising this to what a full strip wants (160) was tried and reverted -- it stopped
+    // a drop above the mixer from splitting that row in half, because the engine then had to
+    // water-fill against the minimum. A panel's minimum is a constraint on everything docked
+    // near it, not just on itself.
     cs.set("audio-mixer", PanelMin{260.0, 130.0});
     cs.set("controls", PanelMin{180.0, 130.0});
     return cs;

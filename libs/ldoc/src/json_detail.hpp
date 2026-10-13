@@ -107,6 +107,7 @@ Blend dec_blend(Rd& rd, const Jv& parent, const char* key, std::string_view path
 Effect dec_effect(Rd& rd, const Jv& o, std::string_view path);
 std::vector<Effect> dec_effects(Rd& rd, const Jv& parent, const char* key, std::string_view path);
 Send dec_send(Rd& rd, const Jv& o, std::string_view path);
+AudioRouting dec_audio_routing(Rd& rd, const Jv& o, std::string_view path);
 std::vector<Send> dec_sends(Rd& rd, const Jv& parent, const char* key, std::string_view path);
 Node dec_node(Rd& rd, const Jv& o, std::string_view path);
 CanvasOverride dec_canvas_override(Rd& rd, const Jv& o, std::string_view path);

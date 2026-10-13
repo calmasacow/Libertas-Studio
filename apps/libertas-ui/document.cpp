@@ -168,6 +168,28 @@ QVariantMap Document::layerProperties() const {
     m["alignX"] = n->layout.alignment.x;
     m["alignY"] = n->layout.alignment.y;
     m["effectCount"] = static_cast<int>(n->effects.size());
+
+    // Audio, for the mixer's selected-layer strip. A layer with no bus is unrouted, which is a
+    // different thing from muted -- so both are reported rather than collapsed into one flag.
+    if (const auto* layer = std::get_if<ldoc::LayerData>(&n->data)) {
+        m["hasAudio"] = true;
+        m["audioBus"] = layer->audio.bus ? id_str(*layer->audio.bus) : QString{};
+        m["audioGain"] = layer->audio.gain_db;
+        m["audioMute"] = layer->audio.mute;
+        m["audioSendCount"] = static_cast<int>(layer->audio.sends.size());
+        QString bus_name;
+        if (layer->audio.bus) {
+            const ldoc::Project& p = session_->project();
+            bus_name = QStringLiteral("(missing bus)");
+            for (const ldoc::Bus& b : p.buses) {
+                if (b.id == *layer->audio.bus)
+                    bus_name = qstr(b.name);
+            }
+        }
+        m["audioBusName"] = bus_name;
+    } else {
+        m["hasAudio"] = false;
+    }
     return m;
 }
 
@@ -262,6 +284,36 @@ void Document::rebuild() {
         sources.push_back(std::move(row));
     }
     sources_.set_rows(std::move(sources));
+
+    std::vector<BusRow> buses;
+    for (const ldoc::Bus& b : p.buses) {
+        BusRow row;
+        row.id = id_str(b.id);
+        row.name = qstr(b.name);
+        const auto kind = ldoc::to_string(b.kind);
+        row.kind = QString::fromUtf8(kind.data(), static_cast<qsizetype>(kind.size()));
+        row.gainDb = b.gain_db;
+        row.pan = b.pan;
+        row.mute = b.mute;
+        row.solo = b.solo;
+        row.channels = b.channels;
+        row.sendCount = static_cast<int>(b.sends.size());
+        // Every scene, not just the selected one: a bus is project-level, and the question the
+        // strip answers is whether anything in the show feeds it at all.
+        for (const ldoc::Scene& sc : p.scenes) {
+            ldoc::visit(sc.roots, [&](const ldoc::Node& n) {
+                const auto* layer = std::get_if<ldoc::LayerData>(&n.data);
+                if (layer && layer->audio.bus && *layer->audio.bus == b.id)
+                    ++row.feedCount;
+            });
+        }
+        if (const ldoc::Node* sel = current_layer()) {
+            const auto* layer = std::get_if<ldoc::LayerData>(&sel->data);
+            row.carriesSelection = layer && layer->audio.bus && *layer->audio.bus == b.id;
+        }
+        buses.push_back(std::move(row));
+    }
+    buses_.set_rows(std::move(buses));
 
     emit changed();
     emit selectionChanged();
@@ -435,6 +487,128 @@ void Document::bindSelectedLayer(const QString& sourceId) {
     }
     run(ldoc::SetLayerSource{s->id, n->id,
                              sourceId.isEmpty() ? std::nullopt : parse_id(sourceId)});
+}
+
+// ---- buses ------------------------------------------------------------------------------------
+
+QVariantList Document::busKinds() const {
+    struct Entry {
+        ldoc::BusKind kind;
+        const char* title;
+        const char* note;
+    };
+    static constexpr Entry kKinds[] = {
+        {ldoc::BusKind::Submix, "Submix", "A group of inputs with one fader"},
+        {ldoc::BusKind::Program, "Program", "What goes to the live outputs"},
+        {ldoc::BusKind::Vod, "VOD", "The recording track with the music left off"},
+        {ldoc::BusKind::Track, "Track", "A numbered track in the recording file"},
+        {ldoc::BusKind::Monitor, "Monitor", "What you hear, which nobody else does"},
+        {ldoc::BusKind::Input, "Input", "One device, before anything is done to it"},
+    };
+    QVariantList out;
+    for (const Entry& e : kKinds) {
+        const auto id = ldoc::to_string(e.kind);
+        QVariantMap m;
+        m["id"] = QString::fromUtf8(id.data(), static_cast<qsizetype>(id.size()));
+        m["title"] = QString::fromLatin1(e.title);
+        m["note"] = QString::fromLatin1(e.note);
+        out.append(m);
+    }
+    return out;
+}
+
+void Document::addBus(const QString& name, const QString& kind) {
+    const auto parsed = ldoc::bus_kind_from_string(to_std(kind));
+    if (!parsed) {
+        emit notice(QStringLiteral("'%1' is not a kind of bus this build knows.").arg(kind));
+        return;
+    }
+    ldoc::Bus b;
+    b.id = ldoc::Id::generate();
+    b.name = name.isEmpty() ? std::string{"Bus"} : to_std(name);
+    b.kind = *parsed;
+    run(ldoc::AddBus{std::move(b), session_->project().buses.size()});
+}
+
+void Document::removeBus(const QString& id) {
+    const auto parsed = parse_id(id);
+    if (parsed)
+        run(ldoc::RemoveBus{*parsed});
+}
+
+/// Read-modify-write on one bus. The command carries the whole bus rather than a delta, so each
+/// of these has to start from the current one -- and there is exactly one place that does it,
+/// because a copy of this that forgot a field would silently reset it.
+void Document::edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>& change) {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    const ldoc::Bus* existing = nullptr;
+    for (const ldoc::Bus& b : session_->project().buses) {
+        if (b.id == *parsed)
+            existing = &b;
+    }
+    if (!existing)
+        return;
+    ldoc::Bus next = *existing;
+    change(next);
+    if (next == *existing)
+        return; // nothing to put on the undo stack
+    run(ldoc::SetBus{std::move(next)});
+}
+
+void Document::renameBus(const QString& id, const QString& name) {
+    if (name.isEmpty())
+        return;
+    edit_bus(id, [&](ldoc::Bus& b) { b.name = to_std(name); });
+}
+
+void Document::setBusGain(const QString& id, double gainDb) {
+    edit_bus(id, [gainDb](ldoc::Bus& b) { b.gain_db = gainDb; });
+}
+
+void Document::setBusPan(const QString& id, double pan) {
+    edit_bus(id, [pan](ldoc::Bus& b) { b.pan = std::clamp(pan, -1.0, 1.0); });
+}
+
+void Document::setBusMute(const QString& id, bool mute) {
+    edit_bus(id, [mute](ldoc::Bus& b) { b.mute = mute; });
+}
+
+void Document::setBusSolo(const QString& id, bool solo) {
+    edit_bus(id, [solo](ldoc::Bus& b) { b.solo = solo; });
+}
+
+/// Same shape for the selected layer's own routing, for the same reason.
+void Document::edit_selected_audio(const std::function<void(ldoc::AudioRouting&)>& change) {
+    const ldoc::Scene* s = current_scene();
+    const ldoc::Node* n = current_layer();
+    if (!s || !n)
+        return;
+    const auto* layer = std::get_if<ldoc::LayerData>(&n->data);
+    if (!layer) {
+        emit notice(QStringLiteral("Only a layer has audio of its own."));
+        return;
+    }
+    ldoc::AudioRouting next = layer->audio;
+    change(next);
+    if (next == layer->audio)
+        return;
+    run(ldoc::SetNodeAudio{s->id, n->id, std::move(next)});
+}
+
+void Document::routeSelectedLayer(const QString& busId) {
+    edit_selected_audio([&](ldoc::AudioRouting& a) {
+        a.bus = busId.isEmpty() ? std::nullopt : parse_id(busId);
+    });
+}
+
+void Document::setSelectedLayerGain(double gainDb) {
+    edit_selected_audio([gainDb](ldoc::AudioRouting& a) { a.gain_db = gainDb; });
+}
+
+void Document::setSelectedLayerMute(bool mute) {
+    edit_selected_audio([mute](ldoc::AudioRouting& a) { a.mute = mute; });
 }
 
 // ---- layers -----------------------------------------------------------------------------------

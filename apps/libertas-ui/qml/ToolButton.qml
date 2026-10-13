@@ -16,6 +16,13 @@ Rectangle {
     // `enabled` is Item's own: it already stops children receiving input and it
     // propagates, so declaring another one here would shadow the working one.
 
+    /// A latched button -- a mute, a solo -- that is currently on. This exists rather than
+    /// letting a caller assign `color` directly: an assignment from outside *replaces* the
+    /// binding below, so a latched button would keep its colour and stop reacting to hover and
+    /// press altogether. `activeColor` is what it latches to.
+    property bool active: false
+    property color activeColor: Theme.c.accent
+
     signal clicked
 
     implicitWidth: 22
@@ -23,11 +30,12 @@ Rectangle {
     radius: 2
     color: !button.enabled ? "transparent"
          : mouse.pressed ? Theme.c.accent
+         : button.active ? button.activeColor
          : mouse.containsMouse ? Theme.c.panelHeaderActive
          : "transparent"
     border.width: 1
     border.color: !button.enabled ? "transparent"
-                : mouse.containsMouse ? Theme.c.accent
+                : mouse.containsMouse || button.active ? Theme.c.accent
                 : Theme.c.border
 
     Behavior on color {
@@ -42,7 +50,7 @@ Rectangle {
         font.pixelSize: 13
         color: !button.enabled ? Qt.rgba(Theme.c.textMuted.r, Theme.c.textMuted.g,
                                          Theme.c.textMuted.b, 0.4)
-             : mouse.pressed ? Theme.c.window
+             : mouse.pressed || button.active ? Theme.c.window
              : Theme.c.text
     }
 

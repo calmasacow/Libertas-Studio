@@ -128,6 +128,17 @@ struct SetNodeBlend {
     friend bool operator==(const SetNodeBlend&, const SetNodeBlend&) = default;
 };
 
+/// A layer's own audio routing: which bus it feeds, its sends, its fader and its mute.
+///
+/// Only a Layer has anywhere to keep this, so it is refused on anything else: a group has no
+/// audio field, which means there would be nothing for the inverse to restore.
+struct SetNodeAudio {
+    Id scene;
+    Id node;
+    AudioRouting audio;
+    friend bool operator==(const SetNodeAudio&, const SetNodeAudio&) = default;
+};
+
 /// Absent `value` removes the override, which is how a node goes back to following the scene on
 /// that canvas.
 struct SetCanvasOverride {
@@ -297,11 +308,11 @@ struct SetCanvasEmergencyScene {
 using Command =
     std::variant<SetProjectName, AddScene, RemoveScene, RenameScene, MoveScene, AddNode, RemoveNode,
                  MoveNode, RenameNode, SetNodeVisible, SetNodeLocked, SetNodeTransform,
-                 SetNodeLayout, SetNodeBlend, SetCanvasOverride, AddEffect, RemoveEffect,
-                 SetEffectParams, SetEffectEnabled, SetDeckProgram, SetDeckPreview,
-                 SetCanvasEmergencyScene, SetLayerSource, AddSource, RemoveSource,
-                 SetSource, AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus,
-                 SetBus, AddOutput, RemoveOutput, SetOutput, SetProjectSettings>;
+                 SetNodeLayout, SetNodeBlend, SetNodeAudio, SetCanvasOverride, AddEffect,
+                 RemoveEffect, SetEffectParams, SetEffectEnabled, SetDeckProgram, SetDeckPreview,
+                 SetCanvasEmergencyScene, SetLayerSource, AddSource, RemoveSource, SetSource,
+                 AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus, SetBus, AddOutput,
+                 RemoveOutput, SetOutput, SetProjectSettings>;
 
 struct Applied {
     /// A command that, applied to the resulting project, restores the previous one.

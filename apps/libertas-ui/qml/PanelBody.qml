@@ -46,6 +46,8 @@ Item {
                 return statsComponent;
             case "log":
                 return logComponent;
+            case "audio-mixer":
+                return mixerComponent;
             default:
                 return null;
             }
@@ -92,6 +94,12 @@ Item {
         id: logComponent
 
         LogPanel {}
+    }
+
+    Component {
+        id: mixerComponent
+
+        AudioMixerPanel {}
     }
 
     // The program canvas. ADR-0015 rule 2: it is a region of this surface, never a separate OS
@@ -169,7 +177,7 @@ Item {
                  body.panelId !== "scenes" && body.panelId !== "sources" &&
                  body.panelId !== "properties" && body.panelId !== "shortcuts" &&
                  body.panelId !== "inputs" && body.panelId !== "stats" &&
-                 body.panelId !== "log"
+                 body.panelId !== "log" && body.panelId !== "audio-mixer"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -190,8 +198,6 @@ Item {
             color: Theme.c.textMuted
             text: {
                 switch (body.panelId) {
-                case "audio-mixer":
-                    return qsTr("Bus graph, meters and sends. Arrives with the audio host.");
                 case "controls":
                     return qsTr("Stream, record, replay buffer and transitions.");
                 default:

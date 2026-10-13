@@ -16,6 +16,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 
 class QJSEngine;
@@ -41,6 +42,7 @@ class Document : public QObject {
     Q_PROPERTY(QAbstractItemModel* scenes READ scenesModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* layers READ layersModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* sources READ sourcesModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* buses READ busesModel CONSTANT)
 
     Q_PROPERTY(QString projectName READ projectName NOTIFY changed)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY changed)
@@ -73,6 +75,7 @@ public:
     [[nodiscard]] QAbstractItemModel* scenesModel() { return &scenes_; }
     [[nodiscard]] QAbstractItemModel* layersModel() { return &layers_; }
     [[nodiscard]] QAbstractItemModel* sourcesModel() { return &sources_; }
+    [[nodiscard]] QAbstractItemModel* busesModel() { return &buses_; }
 
     [[nodiscard]] QString projectName() const;
     [[nodiscard]] QString projectPath() const;
@@ -121,6 +124,31 @@ public:
     Q_INVOKABLE void renameSource(const QString& id, const QString& name);
     /// Bind the selected layer to this source, or to nothing when the id is empty.
     Q_INVOKABLE void bindSelectedLayer(const QString& sourceId);
+
+    // ---- buses (the audio graph) -------------------------------------------------------------
+    //
+    // Nothing here makes a sound: there is no audio host yet, so the mixer edits routing and
+    // levels in the document and says plainly that it is not metering anything. The alternative
+    // -- drawing moving meters off a timer -- would make the panel look finished and make it
+    // impossible to tell later which half works.
+
+    /// The bus kinds a document can hold, as {id, title, note} for the add menu.
+    Q_PROPERTY(QVariantList busKinds READ busKinds CONSTANT)
+    [[nodiscard]] QVariantList busKinds() const;
+
+    Q_INVOKABLE void addBus(const QString& name, const QString& kind);
+    Q_INVOKABLE void removeBus(const QString& id);
+    Q_INVOKABLE void renameBus(const QString& id, const QString& name);
+    Q_INVOKABLE void setBusGain(const QString& id, double gainDb);
+    Q_INVOKABLE void setBusPan(const QString& id, double pan);
+    Q_INVOKABLE void setBusMute(const QString& id, bool mute);
+    Q_INVOKABLE void setBusSolo(const QString& id, bool solo);
+
+    /// Send the selected layer's audio to this bus, or to nothing when the id is empty.
+    /// Unrouted is not the same as muted, and the mixer says which it is.
+    Q_INVOKABLE void routeSelectedLayer(const QString& busId);
+    Q_INVOKABLE void setSelectedLayerGain(double gainDb);
+    Q_INVOKABLE void setSelectedLayerMute(bool mute);
 
     // ---- layers -----------------------------------------------------------------------------
 
@@ -180,10 +208,17 @@ private:
     /// a way to choose; taking the first is honest rather than pretending otherwise.
     [[nodiscard]] const ldoc::Canvas* current_canvas() const;
 
+    /// Read-modify-write helpers. SetBus and SetNodeAudio carry a whole value rather than a
+    /// delta, so every edit has to start from the current one; doing it in one place is what
+    /// stops a setter that forgot a field from quietly resetting it.
+    void edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>& change);
+    void edit_selected_audio(const std::function<void(ldoc::AudioRouting&)>& change);
+
     std::unique_ptr<lsession::Session> session_;
     SceneModel scenes_;
     LayerModel layers_;
     SourceModel sources_;
+    BusModel buses_;
 
     QString selected_scene_;
     QString selected_layer_;

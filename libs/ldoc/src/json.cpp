@@ -721,6 +721,15 @@ std::vector<Send> dec_sends(Rd& rd, const Jv& parent, const char* key, std::stri
     return out;
 }
 
+AudioRouting dec_audio_routing(Rd& rd, const Jv& o, std::string_view path) {
+    AudioRouting a;
+    a.bus = rd.id_opt(o, "bus", path);
+    a.sends = dec_sends(rd, o, "sends", path);
+    a.gain_db = rd.number(o, "gain_db", path, 0.0);
+    a.mute = rd.boolean(o, "mute", path, false);
+    return a;
+}
+
 Node dec_node(Rd& rd, const Jv& o, std::string_view path);
 
 CanvasOverride dec_canvas_override(Rd& rd, const Jv& e, std::string_view path) {
@@ -759,12 +768,8 @@ NodeData dec_node_data(Rd& rd, NodeKind kind, const Jv& parent, std::string_view
     case NodeKind::Layer: {
         LayerData l;
         l.source = rd.id_opt(d, "source", path);
-        if (const Jv* a = rd.object(d, "audio", path)) {
-            l.audio.bus = rd.id_opt(*a, "bus", path);
-            l.audio.sends = dec_sends(rd, *a, "sends", path);
-            l.audio.gain_db = rd.number(*a, "gain_db", path, 0.0);
-            l.audio.mute = rd.boolean(*a, "mute", path, false);
-        }
+        if (const Jv* a = rd.object(d, "audio", path))
+            l.audio = dec_audio_routing(rd, *a, path);
         return l;
     }
     case NodeKind::Adjustment:

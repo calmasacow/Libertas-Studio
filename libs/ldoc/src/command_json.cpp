@@ -126,6 +126,14 @@ Jv body(const SetNodeBlend& c) {
     return o;
 }
 
+Jv body(const SetNodeAudio& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["node"] = detail::enc(c.node);
+    o["audio"] = detail::enc(c.audio);
+    return o;
+}
+
 Jv body(const SetCanvasOverride& c) {
     Jv o{Json::objectValue};
     o["scene"] = detail::enc(c.scene);
@@ -356,6 +364,11 @@ std::expected<Command, std::string> command_from_json(std::string_view text) {
     } else if (name == "node.set-blend") {
         out = SetNodeBlend{rd.id(o, "scene", path), rd.id(o, "node", path),
                            detail::dec_blend(rd, o, "blend", path)};
+    } else if (name == "node.set-audio") {
+        AudioRouting audio;
+        if (const Jv* a = rd.object(o, "audio", path))
+            audio = detail::dec_audio_routing(rd, *a, path);
+        out = SetNodeAudio{rd.id(o, "scene", path), rd.id(o, "node", path), audio};
     } else if (name == "node.set-canvas-override") {
         std::optional<CanvasOverride> value;
         if (const Jv* v = rd.object(o, "value", path))

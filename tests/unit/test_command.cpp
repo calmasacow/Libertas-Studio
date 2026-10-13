@@ -165,6 +165,11 @@ std::vector<Command> every_command_shape(const Fixture& f) {
     resized.width = 2560;
     resized.height = 1440;
 
+    AudioRouting routed;
+    routed.bus = f.project.buses.front().id;
+    routed.gain_db = -6.0;
+    routed.sends.push_back(Send{f.project.buses.back().id, -3.0, true});
+
     Bus submix;
     submix.id = Id::generate();
     submix.name = "Game";
@@ -216,6 +221,7 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         AddCanvas{vertical, 1},
         RemoveCanvas{f.spare_canvas},
         SetCanvas{resized},
+        SetNodeAudio{f.scene, f.loose, routed},
         AddBus{submix, 0},
         RemoveBus{f.existing_bus},
         SetBus{louder},
@@ -242,8 +248,11 @@ Command random_command(std::mt19937& rng, const Project& p) {
     const Id node = nodes.empty() ? Id::generate() : nodes[rng() % nodes.size()];
     const Id canvas = p.canvases[rng() % p.canvases.size()].id;
     const Id deck = p.decks[rng() % p.decks.size()].id;
+    // A sequence can remove every bus, which the project is allowed to be left with -- so
+    // unlike a canvas or a deck there is not always one to route at.
+    const Id bus = p.buses.empty() ? Id::generate() : p.buses[rng() % p.buses.size()].id;
 
-    switch (rng() % 25) {
+    switch (rng() % 26) {
     case 0:
         return SetProjectName{std::format("Show {}", rng() % 100)};
     case 1: {
@@ -306,6 +315,14 @@ Command random_command(std::mt19937& rng, const Project& p) {
     case 15:
         return SetCanvasEmergencyScene{canvas,
                                        (rng() % 3) ? std::optional<Id>{scene.id} : std::nullopt};
+    case 24: {
+        AudioRouting a;
+        if (rng() % 4)
+            a.bus = bus;
+        a.gain_db = static_cast<double>(rng() % 24) - 12.0;
+        a.mute = (rng() % 2) == 0;
+        return SetNodeAudio{scene.id, node, a};
+    }
     case 17: {
         Bus b;
         b.id = Id::generate();
@@ -315,8 +332,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
         return AddBus{b, rng() % (p.buses.size() + 1)};
     }
     case 18:
-        return RemoveBus{p.buses.empty() ? Id::generate()
-                                         : p.buses[rng() % p.buses.size()].id};
+        return RemoveBus{bus};
     case 19: {
         if (p.buses.empty())
             return SetProjectName{"no buses"};

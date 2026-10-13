@@ -132,6 +132,7 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetNodeTransform>) return "node.set-transform";
             else if constexpr (std::is_same_v<T, SetNodeLayout>) return "node.set-layout";
             else if constexpr (std::is_same_v<T, SetNodeBlend>) return "node.set-blend";
+            else if constexpr (std::is_same_v<T, SetNodeAudio>) return "node.set-audio";
             else if constexpr (std::is_same_v<T, SetCanvasOverride>)
                 return "node.set-canvas-override";
             else if constexpr (std::is_same_v<T, AddEffect>) return "effect.add";
@@ -192,6 +193,8 @@ std::string describe(const Command& command) {
                 return "Change layer fit";
             else if constexpr (std::is_same_v<T, SetNodeBlend>)
                 return "Change blending";
+            else if constexpr (std::is_same_v<T, SetNodeAudio>)
+                return c.audio.bus ? "Route layer audio" : "Unroute layer audio";
             else if constexpr (std::is_same_v<T, SetCanvasOverride>)
                 return c.value ? "Set per-canvas override" : "Clear per-canvas override";
             else if constexpr (std::is_same_v<T, AddEffect>)
@@ -486,6 +489,32 @@ struct Apply {
             return std::unexpected(std::format("opacity {} is outside 0..1", c.blend.opacity));
         Applied out{SetNodeBlend{c.scene, c.node, (*n)->blend}, describe(c)};
         (*n)->blend = c.blend;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetNodeAudio& c) const {
+        auto scene = find_scene(p, c.scene);
+        if (!scene)
+            return std::unexpected(scene.error());
+        auto n = find_in_scene(**scene, c.node);
+        if (!n)
+            return std::unexpected(n.error());
+        // Only a layer has somewhere to put this. A group has no audio field at all, so there
+        // would be nothing for the inverse to restore -- that is the model refusing the state,
+        // not this command inventing a rule (ADR-0023).
+        auto* l = std::get_if<LayerData>(&(*n)->data);
+        if (!l)
+            return std::unexpected(
+                std::format("{} has no audio of its own to route", quoted((*n)->name)));
+        // The bus is a reference, not a precondition: a layer routed at a bus that no longer
+        // exists is a warning from validate(), so refusing it here would leave an undo that
+        // cannot be applied. A send to itself is structural, and is refused.
+        for (const Send& send : c.audio.sends) {
+            if (send.to == c.node)
+                return std::unexpected("a layer cannot send to itself");
+        }
+        Applied out{SetNodeAudio{c.scene, c.node, l->audio}, describe(c)};
+        l->audio = c.audio;
         return out;
     }
 
