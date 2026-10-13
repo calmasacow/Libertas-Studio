@@ -892,15 +892,34 @@ Scene dec_scene(Rd& rd, const Jv& root, std::string_view path) {
     return s;
 }
 
+/// Deeper than any real scene, shallow enough that the parser's recursion cannot exhaust the
+/// stack. A group nested two hundred deep is not a document anyone made on purpose.
+constexpr int kMaxNesting = 200;
+
 std::optional<Jv> parse_text(std::string_view text, std::string& error) {
     Json::CharReaderBuilder b;
+    b.settings_["stackLimit"] = kMaxNesting;
     const std::unique_ptr<Json::CharReader> reader{b.newCharReader()};
     Jv root;
     std::string errs;
     const char* begin = text.data();
     const char* end = begin + text.size();
-    if (!reader->parse(begin, end, &root, &errs)) {
-        error = errs;
+
+    // jsoncpp reports most failures by returning false, but **throws** on a few -- exceeding the
+    // nesting limit among them. Letting that escape would turn a corrupt or hostile project file
+    // into a crash instead of a refusal, which is the opposite of this format's contract: errors
+    // are values, and nothing here throws. Found by the mutation tests, which is what they are
+    // for.
+    try {
+        if (!reader->parse(begin, end, &root, &errs)) {
+            error = errs;
+            return std::nullopt;
+        }
+    } catch (const std::exception& e) {
+        error = e.what();
+        return std::nullopt;
+    } catch (...) {
+        error = "the file could not be parsed";
         return std::nullopt;
     }
     return root;

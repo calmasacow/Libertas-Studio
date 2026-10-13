@@ -314,6 +314,11 @@ std::expected<Bindings, std::string> Bindings::from_toml(std::string_view text) 
     } catch (const toml::parse_error& e) {
         return std::unexpected(std::format("line {}: {}", e.source().begin.line,
                                            std::string_view{e.description()}));
+    } catch (const std::exception& e) {
+        // Same contract as the JSON side: a damaged file is refused, never thrown out of.
+        return std::unexpected(e.what());
+    } catch (...) {
+        return std::unexpected("the file could not be parsed");
     }
 
     const auto version = tbl["version"].value<std::int64_t>();
