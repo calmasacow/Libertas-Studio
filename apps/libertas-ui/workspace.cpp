@@ -82,6 +82,7 @@ Workspace::Workspace(std::filesystem::path config_path, QObject* parent)
     connect(&save_timer_, &QTimer::timeout, this, &Workspace::saveNow);
 
     refresh_models();
+    validate_focus();
 }
 
 Workspace::~Workspace() {
@@ -137,8 +138,136 @@ void Workspace::refresh_models() {
 void Workspace::touch() {
     ++revision_;
     refresh_models();
+    validate_focus();
     emit layoutChanged();
     scheduleSave();
+}
+
+void Workspace::validate_focus() {
+    const llayout::Layout& l = layout();
+    if (!focused_.isEmpty() && l.has_panel(to_std(focused_)))
+        return;
+    // Whatever was focused has been closed or merged away. Land on something real rather than
+    // leaving the keyboard pointed at nothing.
+    const auto panels = l.panels();
+    const QString next = panels.empty() ? QString{} : QString::fromStdString(panels.front());
+    if (next != focused_) {
+        focused_ = next;
+        emit focusChanged();
+    }
+}
+
+int Workspace::focusedNode() const {
+    return static_cast<int>(layout().node_of_panel(to_std(focused_)));
+}
+
+std::optional<llayout::Edge> Workspace::direction_from(const QString& name) const {
+    if (name == QLatin1String("left"))
+        return llayout::Edge::Left;
+    if (name == QLatin1String("right"))
+        return llayout::Edge::Right;
+    if (name == QLatin1String("up"))
+        return llayout::Edge::Top;
+    if (name == QLatin1String("down"))
+        return llayout::Edge::Bottom;
+    return std::nullopt;
+}
+
+void Workspace::focusPanel(const QString& panel) {
+    if (focused_ == panel || !layout().has_panel(to_std(panel)))
+        return;
+    focused_ = panel;
+    emit focusChanged();
+}
+
+void Workspace::focusNeighbour(const QString& direction) {
+    const auto edge = direction_from(direction);
+    const llayout::NodeId from = layout().node_of_panel(to_std(focused_));
+    if (!edge || from == llayout::kInvalidNode)
+        return;
+    const auto next = layout().neighbour(from, *edge, vp_, constraints_);
+    if (!next) {
+        emit notice(QStringLiteral("There is no panel to the %1.").arg(direction));
+        return;
+    }
+    const llayout::Node* n = layout().find(*next);
+    if (n && !n->tabs.empty())
+        focusPanel(QString::fromStdString(n->tabs[n->active]));
+}
+
+void Workspace::focusNext(bool backwards) {
+    const auto panels = layout().panels();
+    if (panels.empty())
+        return;
+    const std::string current = to_std(focused_);
+    auto it = std::find(panels.begin(), panels.end(), current);
+    std::size_t index = it == panels.end() ? 0 : static_cast<std::size_t>(it - panels.begin());
+    index = backwards ? (index + panels.size() - 1) % panels.size()
+                      : (index + 1) % panels.size();
+    focusPanel(QString::fromStdString(panels[index]));
+}
+
+void Workspace::movePanel(const QString& direction) {
+    const auto edge = direction_from(direction);
+    const llayout::NodeId from = layout().node_of_panel(to_std(focused_));
+    if (!edge || from == llayout::kInvalidNode)
+        return;
+    const auto target = layout().neighbour(from, *edge, vp_, constraints_);
+    if (!target) {
+        emit notice(QStringLiteral("%1 is already at the %2 edge.")
+                        .arg(title(focused_), direction));
+        return;
+    }
+
+    // Docking into the neighbour's zone on the same side puts the panel past it, which is what
+    // "move it left" means: one step, not a teleport to the workspace edge.
+    const llayout::Zone zone = *edge == llayout::Edge::Left     ? llayout::Zone::Left
+                               : *edge == llayout::Edge::Right  ? llayout::Zone::Right
+                               : *edge == llayout::Edge::Top    ? llayout::Zone::Top
+                                                                : llayout::Zone::Bottom;
+    llayout::Layout next = history_.current();
+    const llayout::DockResult r = next.dock(to_std(focused_), *target, zone, vp_, constraints_);
+    if (r.status == llayout::DockStatus::Rejected) {
+        emit notice(QString::fromStdString(r.reason));
+        return;
+    }
+    if (history_.commit(std::move(next)))
+        touch();
+}
+
+void Workspace::tabPanelWithNeighbour(const QString& direction) {
+    const auto edge = direction_from(direction);
+    const llayout::NodeId from = layout().node_of_panel(to_std(focused_));
+    if (!edge || from == llayout::kInvalidNode)
+        return;
+    const auto target = layout().neighbour(from, *edge, vp_, constraints_);
+    if (!target) {
+        emit notice(QStringLiteral("There is no panel to the %1 to group with.").arg(direction));
+        return;
+    }
+    llayout::Layout next = history_.current();
+    const llayout::DockResult r =
+        next.dock(to_std(focused_), *target, llayout::Zone::Center, vp_, constraints_);
+    if (r.status == llayout::DockStatus::Rejected) {
+        emit notice(QString::fromStdString(r.reason));
+        return;
+    }
+    if (history_.commit(std::move(next)))
+        touch();
+}
+
+void Workspace::movePanelToEdge(const QString& direction) {
+    const auto edge = direction_from(direction);
+    if (!edge || focused_.isEmpty())
+        return;
+    llayout::Layout next = history_.current();
+    const llayout::DockResult r = next.dock_edge(to_std(focused_), *edge, vp_, constraints_);
+    if (r.status == llayout::DockStatus::Rejected) {
+        emit notice(QString::fromStdString(r.reason));
+        return;
+    }
+    if (history_.commit(std::move(next)))
+        touch();
 }
 
 void Workspace::scheduleSave() {

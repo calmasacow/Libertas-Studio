@@ -55,6 +55,11 @@ class Workspace : public QObject {
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY layoutChanged)
     Q_PROPERTY(QString layoutSource READ layoutSource NOTIFY layoutChanged)
 
+    /// The panel the keyboard acts on. ADR-0016's gesture is entirely pointer-driven, and an
+    /// operator who cannot aim a pointer precisely could not rearrange the workspace at all.
+    Q_PROPERTY(QString focusedPanel READ focusedPanel NOTIFY focusChanged)
+    Q_PROPERTY(int focusedNode READ focusedNode NOTIFY focusChanged)
+
     Q_PROPERTY(bool dragging READ dragging NOTIFY dragChanged)
     Q_PROPERTY(QString dragPanel READ dragPanel NOTIFY dragChanged)
     Q_PROPERTY(QString dragTitle READ dragTitle NOTIFY dragChanged)
@@ -122,6 +127,25 @@ public:
     Q_INVOKABLE void dragDividerTo(qreal x, qreal y);
     Q_INVOKABLE void endDividerDrag();
 
+    // --- keyboard navigation and docking ---
+    //
+    // ADR-0016's gesture is entirely pointer-driven, so without this an operator who cannot aim
+    // a pointer precisely could not rearrange the workspace at all.
+
+    [[nodiscard]] QString focusedPanel() const { return focused_; }
+    [[nodiscard]] int focusedNode() const;
+
+    Q_INVOKABLE void focusPanel(const QString& panel);
+    /// "left", "right", "up" or "down".
+    Q_INVOKABLE void focusNeighbour(const QString& direction);
+    Q_INVOKABLE void focusNext(bool backwards);
+    /// Move the focused panel one step in a direction, splitting whatever is already there.
+    Q_INVOKABLE void movePanel(const QString& direction);
+    /// Merge the focused panel into its neighbour as a tab.
+    Q_INVOKABLE void tabPanelWithNeighbour(const QString& direction);
+    /// Dock the focused panel against the whole workspace.
+    Q_INVOKABLE void movePanelToEdge(const QString& direction);
+
     // --- panels ---
     Q_INVOKABLE void activate(const QString& panel);
     Q_INVOKABLE void closePanel(const QString& panel);
@@ -136,6 +160,7 @@ public:
 
 signals:
     void layoutChanged();
+    void focusChanged();
     void dragChanged();
     /// Something the status line should say: a refused drop, a failed save, a fallback on load.
     void notice(const QString& text);
@@ -152,6 +177,9 @@ private:
     void touch();
     /// Rebuild the QML-facing rows from the current layout and viewport.
     void refresh_models();
+    /// Keep the focus on something that still exists.
+    void validate_focus();
+    [[nodiscard]] std::optional<llayout::Edge> direction_from(const QString& name) const;
     void scheduleSave();
     void recompute_drag_target();
 
@@ -174,6 +202,9 @@ private:
         llayout::Layout before;
     };
     std::optional<DividerDrag> divider_drag_;
+
+    /// Which panel the keyboard acts on, and the one the UI draws a ring around.
+    QString focused_;
 
     std::filesystem::path config_path_;
     QString layout_source_;

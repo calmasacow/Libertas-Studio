@@ -17,11 +17,13 @@
 #include <QEventLoop>
 #include <QImage>
 #include <QQuickItem>
+#include <QSet>
 #include <QVariantMap>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QImage>
 #include <QQuickItem>
+#include <QSet>
 #include <QVariantMap>
 #include <QQuickWindow>
 #include <QTimer>
@@ -509,6 +511,53 @@ int main(int argc, char** argv) {
             settle();
             report(!document.dirty(), "the document saves");
         }
+
+        // ---- the workspace from the keyboard ----------------------------------------------
+        //
+        // ADR-0016's gesture is pointer-only, so this is the path for anyone who cannot aim one.
+        workspace.resetLayout();
+        settle();
+        report(!workspace.focusedPanel().isEmpty(), "a panel has keyboard focus");
+
+        workspace.focusPanel(QStringLiteral("program"));
+        report(workspace.focusedPanel() == QLatin1String("program"), "focus can be set");
+
+        workspace.focusNeighbour(QStringLiteral("right"));
+        report(workspace.focusedPanel() != QLatin1String("program"),
+               "and moves to the panel drawn to the right");
+        workspace.focusNeighbour(QStringLiteral("left"));
+        report(workspace.focusedPanel() == QLatin1String("program"), "and back again");
+
+        // Cycling visits every panel and returns to where it started.
+        const QString start_panel = workspace.focusedPanel();
+        QSet<QString> visited;
+        for (int i = 0; i < workspace.panelCount() * 3; ++i) {
+            visited.insert(workspace.focusedPanel());
+            workspace.focusNext(false);
+        }
+        report(visited.size() >= workspace.panelCount(),
+               "cycling focus reaches every panel group");
+
+        // Moving a panel by keyboard rearranges the layout and is undoable like a drag.
+        workspace.focusPanel(QStringLiteral("program"));
+        const int rev_before_move = workspace.revision();
+        workspace.movePanel(QStringLiteral("down"));
+        settle();
+        report(workspace.revision() > rev_before_move, "a panel can be moved by keyboard");
+        report(workspace.canUndo(), "and the move is undoable");
+
+        // Grouping with a neighbour is the keyboard form of a centre drop.
+        workspace.focusPanel(QStringLiteral("program"));
+        const int panels_before_tab = workspace.panelCount();
+        workspace.tabPanelWithNeighbour(QStringLiteral("right"));
+        settle();
+        report(workspace.panelCount() == panels_before_tab - 1,
+               "grouping with a neighbour merges two panel groups into one");
+
+        workspace.resetLayout();
+        settle();
+        report(!workspace.focusedPanel().isEmpty(),
+               "and focus survives the layout being replaced");
 
         // ---- inputs ---------------------------------------------------------------------
         const int inputs_before = document.sourcesModel()->rowCount();

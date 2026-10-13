@@ -90,6 +90,9 @@ enum class Outcome : std::uint8_t {
     Undo,
     Redo,
     Save,
+    /// Rearranges the workspace, which is not part of the document (ADR-0021), so the shell
+    /// performs it rather than the session.
+    Workspace,
     /// A real action with a real binding that no part of this build can perform yet. It is in the
     /// catalogue anyway, so the table is complete and a binding made today survives until the
     /// feature arrives -- rather than the operator having to rebind once it does.

@@ -195,6 +195,19 @@ public:
                                                      const Constraints& cs,
                                                      const ZoneMetrics& zm = {}) const;
 
+    /// The panel group immediately in `direction` from `from`, or nothing at the workspace edge.
+    ///
+    /// Geometric rather than structural: the neighbour to the left is whatever is drawn to the
+    /// left, not whatever happens to be a sibling in the tree. A tree-walking answer would skip
+    /// past a panel that is visibly adjacent just because it lives in a different branch, which
+    /// is not what anyone means by "the panel to the left".
+    ///
+    /// This is what lets the whole docking gesture be driven from the keyboard. ADR-0016's model
+    /// is entirely pointer-based, and an operator who cannot aim a pointer precisely could not
+    /// rearrange the workspace at all.
+    [[nodiscard]] std::optional<NodeId> neighbour(NodeId from, Edge direction, const Viewport& vp,
+                                                  const Constraints& cs) const;
+
     /// The divider under (x, y), widened by `slop_px` so a 6 px divider is grabbable.
     [[nodiscard]] std::optional<DividerHandle> hit_test_divider(double x, double y,
                                                                 const Viewport& vp,

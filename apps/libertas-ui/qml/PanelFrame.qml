@@ -32,11 +32,21 @@ Rectangle {
     y: rectY
     width: rectW
     height: rectH
+    readonly property bool focused: frame.tabs !== undefined &&
+                                    frame.tabs.indexOf(Workspace.focusedPanel) >= 0
+
     color: Theme.c.panelBackground
     border.width: 1
-    border.color: Theme.c.border
+    // The keyboard acts on one panel at a time, so which one has to be visible without hunting.
+    border.color: frame.focused ? Theme.c.accent : Theme.c.border
     radius: 2
     clip: true
+
+    Behavior on border.color {
+        ColorAnimation {
+            duration: 90
+        }
+    }
 
     TabStrip {
         id: strip

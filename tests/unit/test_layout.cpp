@@ -600,6 +600,97 @@ LTEST_CASE(bad_arguments_are_refused_rather_than_asserted) {
     CHECK(l == before);
 }
 
+LTEST_CASE(the_neighbour_in_a_direction_is_whatever_is_drawn_there) {
+    // Geometric, not structural. The panel to the left is whatever is drawn to the left, not
+    // whatever happens to be a sibling: a tree-walking answer would skip past something visibly
+    // adjacent because it lives in a different branch.
+    const Layout l = Layout::default_studio();
+    const Constraints cs = Constraints::studio_defaults();
+    const Viewport vp = vp_of(2560.0, 1440.0);
+
+    const NodeId program = l.node_of_panel("program");
+    const NodeId scenes = l.node_of_panel("scenes");
+    const NodeId sources = l.node_of_panel("sources");
+    const NodeId inspect = l.node_of_panel("stats");
+    const NodeId mixer = l.node_of_panel("audio-mixer");
+
+    // scenes sits above sources in the left column; program is to their right.
+    CHECK(l.neighbour(scenes, Edge::Bottom, vp, cs).value() == sources);
+    CHECK(l.neighbour(sources, Edge::Top, vp, cs).value() == scenes);
+    CHECK(l.neighbour(program, Edge::Right, vp, cs).value() == inspect);
+    CHECK(l.neighbour(inspect, Edge::Left, vp, cs).value() == program);
+
+    // Across a branch: the panel left of program is in the scenes/sources column, which is a
+    // different subtree entirely.
+    const auto left_of_program = l.neighbour(program, Edge::Left, vp, cs);
+    REQUIRE(left_of_program.has_value());
+    CHECK_MSG(*left_of_program == scenes || *left_of_program == sources,
+              "the neighbour across a branch boundary was not found");
+
+    // And the bottom row is below the top one.
+    CHECK(l.neighbour(program, Edge::Bottom, vp, cs).value() == mixer);
+}
+
+LTEST_CASE(there_is_no_neighbour_past_the_edge_of_the_workspace) {
+    const Layout l = Layout::default_studio();
+    const Constraints cs = Constraints::studio_defaults();
+    const Viewport vp = vp_of(2560.0, 1440.0);
+
+    CHECK(!l.neighbour(l.node_of_panel("scenes"), Edge::Left, vp, cs).has_value());
+    CHECK(!l.neighbour(l.node_of_panel("scenes"), Edge::Top, vp, cs).has_value());
+    CHECK(!l.neighbour(l.node_of_panel("stats"), Edge::Right, vp, cs).has_value());
+    CHECK(!l.neighbour(l.node_of_panel("audio-mixer"), Edge::Bottom, vp, cs).has_value());
+    CHECK(!l.neighbour(99999, Edge::Left, vp, cs).has_value());
+}
+
+LTEST_CASE(a_panel_is_never_its_own_neighbour_and_corners_do_not_count) {
+    // A panel diagonally across the workspace is not "the one to the left", however far left it
+    // is. Without the overlap test, moving a panel by keyboard would teleport it across the
+    // screen.
+    Layout l;
+    const Constraints cs = Constraints::studio_defaults();
+    const Viewport vp = vp_of(1200.0, 800.0);
+
+    REQUIRE(l.dock("a", l.root(), Zone::Center, vp, cs).applied());
+    REQUIRE(l.dock("b", l.node_of_panel("a"), Zone::Right, vp, cs).applied());
+    REQUIRE(l.dock("c", l.node_of_panel("a"), Zone::Bottom, vp, cs).applied());
+    // Layout: a top-left, b right (full height), c below a.
+
+    for (const Edge e : {Edge::Left, Edge::Right, Edge::Top, Edge::Bottom}) {
+        const auto n = l.neighbour(l.node_of_panel("a"), e, vp, cs);
+        if (n)
+            CHECK_MSG(*n != l.node_of_panel("a"), "a panel was its own neighbour");
+    }
+    // c is below a, and b is to the right of both.
+    CHECK(l.neighbour(l.node_of_panel("a"), Edge::Bottom, vp, cs).value() ==
+          l.node_of_panel("c"));
+    CHECK(l.neighbour(l.node_of_panel("a"), Edge::Right, vp, cs).value() ==
+          l.node_of_panel("b"));
+}
+
+LTEST_CASE(walking_in_one_direction_reaches_every_panel_and_terminates) {
+    // The property that makes keyboard movement usable: repeatedly stepping one way gets you
+    // somewhere and then stops, rather than cycling between two panels forever.
+    const Layout l = Layout::default_studio();
+    const Constraints cs = Constraints::studio_defaults();
+    const Viewport vp = vp_of(2560.0, 1440.0);
+
+    for (const Edge e : {Edge::Left, Edge::Right, Edge::Top, Edge::Bottom}) {
+        for (const LeafRect& start : l.leaves(vp, cs)) {
+            std::set<NodeId> seen{start.node};
+            NodeId at = start.node;
+            int steps = 0;
+            while (const auto next = l.neighbour(at, e, vp, cs)) {
+                REQUIRE_MSG(seen.insert(*next).second,
+                            "walking {} revisited a panel, so the walk does not terminate",
+                            to_string(e));
+                at = *next;
+                REQUIRE_MSG(++steps < 32, "walking {} did not terminate", to_string(e));
+            }
+        }
+    }
+}
+
 LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
     // The gesture is forgiving by design, which means the engine will be driven into states no
     // hand-written case would think of. A fixed seed keeps any failure reproducible.

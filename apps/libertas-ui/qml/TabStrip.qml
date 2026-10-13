@@ -96,6 +96,8 @@ Item {
                         pressX = mouse.x;
                         pressY = mouse.y;
                         armed = true;
+                        // Clicking a panel is also how the keyboard's idea of "here" moves.
+                        Workspace.focusPanel(tab.panelId);
                     }
 
                     onPositionChanged: mouse => {

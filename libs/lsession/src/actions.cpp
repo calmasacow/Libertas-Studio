@@ -42,6 +42,51 @@ const std::vector<ActionDef>& catalogue() {
         {"workspace.reset", "Reset Workspace", "Workspace", Scope::Application,
          ArgumentKind::None, "Ctrl+Shift+R"},
 
+        // --- the workspace from the keyboard ----------------------------------------------
+        //
+        // ADR-0016's docking gesture is entirely pointer-driven. Without these an operator who
+        // cannot aim a pointer precisely cannot rearrange the workspace at all, which makes
+        // "the layout engine has to be good" (ADR-0015) untrue for them.
+        //
+        // Focusing and moving are bound by default because they are the navigation; grouping
+        // and edge-docking are not, because they are rarer and the key space is not free.
+        {"workspace.focus-next", "Focus Next Panel", "Workspace", Scope::Application,
+         ArgumentKind::None, "F6"},
+        {"workspace.focus-previous", "Focus Previous Panel", "Workspace", Scope::Application,
+         ArgumentKind::None, "Shift+F6"},
+        {"workspace.focus-left", "Focus Panel Left", "Workspace", Scope::Application,
+         ArgumentKind::None, "Ctrl+Alt+Left"},
+        {"workspace.focus-right", "Focus Panel Right", "Workspace", Scope::Application,
+         ArgumentKind::None, "Ctrl+Alt+Right"},
+        {"workspace.focus-up", "Focus Panel Up", "Workspace", Scope::Application,
+         ArgumentKind::None, "Ctrl+Alt+Up"},
+        {"workspace.focus-down", "Focus Panel Down", "Workspace", Scope::Application,
+         ArgumentKind::None, "Ctrl+Alt+Down"},
+        {"workspace.move-left", "Move Panel Left", "Workspace", Scope::Application,
+         ArgumentKind::None, "Ctrl+Alt+Shift+Left"},
+        {"workspace.move-right", "Move Panel Right", "Workspace", Scope::Application,
+         ArgumentKind::None, "Ctrl+Alt+Shift+Right"},
+        {"workspace.move-up", "Move Panel Up", "Workspace", Scope::Application,
+         ArgumentKind::None, "Ctrl+Alt+Shift+Up"},
+        {"workspace.move-down", "Move Panel Down", "Workspace", Scope::Application,
+         ArgumentKind::None, "Ctrl+Alt+Shift+Down"},
+        {"workspace.tab-with-left", "Group With Panel Left", "Workspace", Scope::Application,
+         ArgumentKind::None, ""},
+        {"workspace.tab-with-right", "Group With Panel Right", "Workspace", Scope::Application,
+         ArgumentKind::None, ""},
+        {"workspace.tab-with-up", "Group With Panel Above", "Workspace", Scope::Application,
+         ArgumentKind::None, ""},
+        {"workspace.tab-with-down", "Group With Panel Below", "Workspace", Scope::Application,
+         ArgumentKind::None, ""},
+        {"workspace.edge-left", "Dock Panel to Left Edge", "Workspace", Scope::Application,
+         ArgumentKind::None, ""},
+        {"workspace.edge-right", "Dock Panel to Right Edge", "Workspace", Scope::Application,
+         ArgumentKind::None, ""},
+        {"workspace.edge-up", "Dock Panel to Top Edge", "Workspace", Scope::Application,
+         ArgumentKind::None, ""},
+        {"workspace.edge-down", "Dock Panel to Bottom Edge", "Workspace", Scope::Application,
+         ArgumentKind::None, ""},
+
         // --- the show, global scope -------------------------------------------------------
         {"scene.switch", "Switch to Scene", "Scenes", Scope::Global, ArgumentKind::Scene, ""},
         {"deck.transition", "Transition", "Scenes", Scope::Global, ArgumentKind::None, ""},
@@ -156,6 +201,11 @@ Resolved resolve(const ActionRef& ref, const ldoc::Project& project) {
                         ldoc::SetDeckProgram{project.decks.front().id, canvas.emergency_scene},
                         {}};
     }
+
+    // Workspace actions do not touch the document at all -- the layout is not part of it
+    // (ADR-0021) -- so they resolve to nothing here and are performed by the shell.
+    if (ref.action.starts_with("workspace."))
+        return Resolved{Outcome::Workspace, std::nullopt, {}};
 
     return Resolved{Outcome::NotYetAvailable, std::nullopt,
                     std::format("'{}' is not wired up yet", def->title)};

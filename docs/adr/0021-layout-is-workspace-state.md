@@ -185,6 +185,10 @@ look at the output.
   gesture and the `xdg_toplevel_tag_manager_v1` tagging.
 - **Panel contents.** Everything inside a panel is a placeholder that says so. Drawing convincing
   fake meters would make it impossible to tell later which parts actually work.
-- **Keyboard-only docking.** The whole gesture is pointer-driven. An operator who cannot use a
-  pointer precisely cannot currently rearrange the workspace at all, and "the layout engine has to
-  be good" (ADR-0015) has to include that.
+- ~~**Keyboard-only docking.**~~ Done. `Layout::neighbour` answers "what is drawn to the left",
+  geometrically rather than structurally -- a tree-walking answer would skip past a panel that is
+  visibly adjacent because it lives in a different branch, which is not what anyone means. On top
+  of it the shell has focus, directional focus movement, moving a panel one step in a direction,
+  grouping it with a neighbour, and docking it to a workspace edge: eighteen actions in the
+  registry, the navigation ones bound by default. The property that makes it usable -- repeatedly
+  stepping one way terminates rather than cycling -- is a test.

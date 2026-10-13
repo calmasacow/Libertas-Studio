@@ -149,20 +149,33 @@ void Shortcuts::perform(const QString& ref) {
         return;
 
     // Workspace actions are the one family that does not touch the document, because the layout
-    // is not part of it (ADR-0021).
-    if (parsed->action == "workspace.undo") {
-        if (workspace_)
+    // is not part of it (ADR-0021). Routed by prefix rather than one case each, so adding a
+    // direction to the catalogue does not also mean adding a branch here.
+    if (parsed->action.starts_with("workspace.") && workspace_) {
+        const std::string_view verb =
+            std::string_view{parsed->action}.substr(std::string_view{"workspace."}.size());
+        const auto suffix = [verb](std::string_view prefix) {
+            return QString::fromUtf8(verb.data() + prefix.size(),
+                                     static_cast<qsizetype>(verb.size() - prefix.size()));
+        };
+        if (verb == "undo")
             workspace_->undo();
-        return;
-    }
-    if (parsed->action == "workspace.redo") {
-        if (workspace_)
+        else if (verb == "redo")
             workspace_->redo();
-        return;
-    }
-    if (parsed->action == "workspace.reset") {
-        if (workspace_)
+        else if (verb == "reset")
             workspace_->resetLayout();
+        else if (verb == "focus-next")
+            workspace_->focusNext(false);
+        else if (verb == "focus-previous")
+            workspace_->focusNext(true);
+        else if (verb.starts_with("focus-"))
+            workspace_->focusNeighbour(suffix("focus-"));
+        else if (verb.starts_with("move-"))
+            workspace_->movePanel(suffix("move-"));
+        else if (verb.starts_with("tab-with-"))
+            workspace_->tabPanelWithNeighbour(suffix("tab-with-"));
+        else if (verb.starts_with("edge-"))
+            workspace_->movePanelToEdge(suffix("edge-"));
         return;
     }
 
@@ -181,6 +194,8 @@ void Shortcuts::perform(const QString& ref) {
         if (resolved.command)
             document_->runCommand(*resolved.command);
         return;
+    case lsession::Outcome::Workspace:
+        return; // routed above; nothing in the document changed
     case lsession::Outcome::NotYetAvailable:
     case lsession::Outcome::Unknown:
         emit notice(qstr(resolved.note));

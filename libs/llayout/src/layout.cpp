@@ -434,6 +434,55 @@ std::optional<DropTarget> Layout::hit_test(double x, double y, const Viewport& v
     return std::nullopt;
 }
 
+std::optional<NodeId> Layout::neighbour(NodeId from, Edge direction, const Viewport& vp,
+                                        const Constraints& cs) const {
+    const auto origin = rect_of(from, vp, cs);
+    if (!origin || origin->empty())
+        return std::nullopt;
+
+    const bool horizontal = axis_of(direction) == Axis::Horizontal;
+    const double tolerance = vp.divider_px + 1.0;
+
+    std::optional<NodeId> best;
+    double best_gap = 0.0;
+    double best_offset = 0.0;
+
+    for (const LeafRect& lf : leaves(vp, cs)) {
+        if (lf.node == from || lf.rect.empty())
+            continue;
+
+        // It has to be on the right side, and it has to actually be beside us: a panel in the
+        // far corner is not the one to the left, however far left it is.
+        double gap = 0.0;
+        bool overlaps = false;
+        if (horizontal) {
+            gap = direction == Edge::Left ? origin->x - lf.rect.right()
+                                          : lf.rect.x - origin->right();
+            overlaps = lf.rect.y < origin->bottom() - 1.0 && origin->y < lf.rect.bottom() - 1.0;
+        } else {
+            gap = direction == Edge::Top ? origin->y - lf.rect.bottom()
+                                         : lf.rect.y - origin->bottom();
+            overlaps = lf.rect.x < origin->right() - 1.0 && origin->x < lf.rect.right() - 1.0;
+        }
+        if (gap < -tolerance || !overlaps)
+            continue;
+
+        // Nearest wins; among equally near ones, the best aligned, so repeatedly moving in one
+        // direction walks a predictable path rather than wandering between rows.
+        const double offset =
+            horizontal
+                ? std::abs((lf.rect.y + lf.rect.h * 0.5) - (origin->y + origin->h * 0.5))
+                : std::abs((lf.rect.x + lf.rect.w * 0.5) - (origin->x + origin->w * 0.5));
+        if (!best || gap < best_gap - 1.0 ||
+            (std::abs(gap - best_gap) <= 1.0 && offset < best_offset)) {
+            best = lf.node;
+            best_gap = gap;
+            best_offset = offset;
+        }
+    }
+    return best;
+}
+
 std::optional<DividerHandle> Layout::hit_test_divider(double x, double y, const Viewport& vp,
                                                       const Constraints& cs,
                                                       double slop_px) const {
