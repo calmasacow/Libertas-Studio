@@ -7,6 +7,7 @@
 #include <expected>
 #include <optional>
 #include <string>
+#include <memory>
 #include <string_view>
 #include <variant>
 
@@ -324,6 +325,37 @@ struct SetCanvasEmergencyScene {
                            const SetCanvasEmergencyScene&) = default;
 };
 
+/// Several commands that are one thing the operator did, and therefore one undo step.
+///
+/// "Add a camera" is three commands -- make the source, make the layer, bind them -- and nobody
+/// pressing Ctrl+Z after that wants the layer back without its source. So the group applies and
+/// reverses as a unit.
+///
+/// `apply()` is all-or-nothing: if any member is refused, the ones already applied are reversed
+/// before the error comes back, so a half-applied batch cannot exist. The inverse is the members'
+/// inverses *in reverse order*, which is the only order that can work -- the bind has to come
+/// undone before the layer it bound does.
+///
+/// `description` is the purpose, not a list. The undo menu should read "Add Camera", not
+/// "Add source; Add layer; Bind layer".
+///
+/// The body is held indirectly, and that is a language constraint rather than a choice: a Batch
+/// is one of `Command`'s alternatives, so it cannot contain a `std::vector<Command>` directly --
+/// the variant would need Batch to be complete while Batch needed the variant to be. A
+/// `shared_ptr` to an incomplete type is fine, and the batch is immutable once built, so sharing
+/// it costs nothing.
+struct BatchBody;
+
+struct Batch {
+    std::shared_ptr<const BatchBody> body;
+    std::string description;
+
+    /// Compares what the batches *contain*, not which object they point at. Two batches built
+    /// separately from equal commands are equal -- which the round-trip and undo/redo property
+    /// tests rely on.
+    friend bool operator==(const Batch& a, const Batch& b);
+};
+
 using Command =
     std::variant<SetProjectName, AddScene, RemoveScene, RenameScene, MoveScene,
                  SetSceneFavourite, AddNode, RemoveNode,
@@ -333,7 +365,16 @@ using Command =
                  SetDeckPreview,
                  SetCanvasEmergencyScene, SetLayerSource, AddSource, RemoveSource, SetSource,
                  AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus, SetBus, AddOutput,
-                 RemoveOutput, SetOutput, SetProjectSettings>;
+                 RemoveOutput, SetOutput, SetProjectSettings, Batch>;
+
+struct BatchBody {
+    std::vector<Command> commands;
+    friend bool operator==(const BatchBody&, const BatchBody&) = default;
+};
+
+/// Build a batch. Prefer this to assembling a `Batch` by hand; it is the only place the body
+/// gets allocated.
+[[nodiscard]] Command make_batch(std::vector<Command> commands, std::string description);
 
 struct Applied {
     /// A command that, applied to the resulting project, restores the previous one.

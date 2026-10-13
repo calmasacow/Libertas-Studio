@@ -97,7 +97,7 @@ Layout Layout::default_build() {
     const NodeId scenes = tabs({"scenes"});
     const NodeId sources = tabs({"sources"});
     const NodeId program = tabs({"program"});
-    const NodeId inspect = tabs({"properties", "inputs", "info", "log"});
+    const NodeId inspect = tabs({"properties", "info", "log"});
     const NodeId mixer = tabs({"audio-mixer"});
     const NodeId controls = tabs({"controls"});
 

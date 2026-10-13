@@ -227,6 +227,8 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         RemoveCanvas{f.spare_canvas},
         SetCanvas{resized},
         SetSceneFavourite{f.scene, true},
+        make_batch({RenameScene{f.scene, "Batched"}, SetSceneFavourite{f.scene, true}},
+                   "Rename and star"),
         SetNodeAudio{f.scene, f.loose, routed},
         SetDeck{studio},
         AddBus{submix, 0},
@@ -259,7 +261,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
     // unlike a canvas or a deck there is not always one to route at.
     const Id bus = p.buses.empty() ? Id::generate() : p.buses[rng() % p.buses.size()].id;
 
-    switch (rng() % 28) {
+    switch (rng() % 29) {
     case 0:
         return SetProjectName{std::format("Show {}", rng() % 100)};
     case 1: {
@@ -324,6 +326,19 @@ Command random_command(std::mt19937& rng, const Project& p) {
                                        (rng() % 3) ? std::optional<Id>{scene.id} : std::nullopt};
     case 26:
         return SetSceneFavourite{scene.id, (rng() % 2) == 0};
+    case 27: {
+        // A batch of two ordinary commands. Built from the same generator so the members are as
+        // varied as everything else, and capped at two so a refused member stays common -- the
+        // unwind is the part worth hammering.
+        std::vector<Command> members;
+        for (int i = 0; i < 2; ++i) {
+            Command member = random_command(rng, p);
+            if (std::holds_alternative<Batch>(member))
+                member = RenameScene{scene.id, std::format("s{}", rng() % 100)};
+            members.push_back(std::move(member));
+        }
+        return make_batch(std::move(members), "A batch");
+    }
     case 25: {
         Deck d = p.decks[rng() % p.decks.size()];
         d.studio_mode = (rng() % 2) == 0;
@@ -981,6 +996,89 @@ LTEST_CASE(a_refused_command_does_not_open_or_close_a_gesture) {
     CHECK_EQ(h.undo_depth(), std::size_t{1});
     REQUIRE(h.undo().has_value());
     CHECK_NEAR(h.project().buses.front().gain_db, 0.0, 1e-9);
+}
+
+LTEST_CASE(a_batch_is_one_undo_step_that_restores_everything_it_changed) {
+    // What "Add a camera" needs: three commands, one undo, and the undo takes all three back.
+    Fixture f;
+    DocumentHistory h{f.project};
+    const Project start = h.project();
+
+    Source cam;
+    cam.id = Id::generate();
+    cam.name = "Desk Cam";
+    cam.type = "source.v4l2";
+    const Id cam_id = cam.id;
+
+    Node layer = make_node(NodeKind::Layer, "Desk Cam");
+    const Id layer_id = layer.id;
+
+    REQUIRE(h.run(make_batch({AddSource{cam, f.project.sources.size()},
+                              AddNode{f.scene, std::nullopt, 0, layer},
+                              SetLayerSource{f.scene, layer_id, cam_id}},
+                             "Add Desk Cam"))
+                .has_value());
+
+    CHECK_EQ(h.undo_depth(), std::size_t{1});
+    CHECK_EQ(h.undo_description(), std::string{"Add Desk Cam"});
+    CHECK(h.project().source(cam_id) != nullptr);
+    const Node* placed = find_node(h.project().scenes[0].roots, layer_id);
+    REQUIRE(placed != nullptr);
+    CHECK(std::get<LayerData>(placed->data).source.value() == cam_id);
+
+    REQUIRE(h.undo().has_value());
+    CHECK_MSG(h.project() == start, "undoing a batch did not restore the project exactly");
+    CHECK(h.project().source(cam_id) == nullptr);
+
+    REQUIRE(h.redo().has_value());
+    CHECK(h.project().source(cam_id) != nullptr);
+}
+
+LTEST_CASE(a_batch_that_cannot_finish_leaves_nothing_behind) {
+    // The property that makes a batch worth having rather than three calls: a refused member
+    // must take the applied ones with it. Otherwise "add a camera" could leave a source with no
+    // layer, which is exactly the orphan this exists to prevent.
+    Fixture f;
+    const Project before = f.project;
+
+    Source cam;
+    cam.id = Id::generate();
+    cam.name = "Doomed";
+    cam.type = "source.v4l2";
+
+    const Id nowhere = Id::generate();
+    const auto r = apply(f.project, make_batch({AddSource{cam, f.project.sources.size()},
+                                                RenameScene{nowhere, "no such scene"}},
+                                               "Add Doomed"));
+    CHECK_MSG(!r.has_value(), "a batch with an impossible member was accepted");
+    CHECK_MSG(f.project == before, "a refused batch left part of itself behind");
+    CHECK_MSG(f.project.source(cam.id) == nullptr, "the source from a refused batch survived");
+
+    // And the error says which member failed, not just that something did.
+    CHECK(r.error().contains("scene.rename"));
+}
+
+LTEST_CASE(an_empty_batch_and_a_nested_one_are_refused) {
+    Fixture f;
+    const Project before = f.project;
+
+    CHECK(!apply(f.project, make_batch({}, "Nothing")).has_value());
+    CHECK_EQ(f.project, before);
+
+    const Command inner = make_batch({RenameScene{f.scene, "Inner"}}, "Inner");
+    const auto nested = apply(f.project, make_batch({inner}, "Outer"));
+    CHECK_MSG(!nested.has_value(), "a batch inside a batch was accepted");
+    CHECK_EQ(f.project, before);
+}
+
+LTEST_CASE(two_batches_built_separately_from_equal_commands_are_equal) {
+    // The body is shared through a pointer, so identity comparison would make the round-trip and
+    // undo/redo property tests fail for reasons that have nothing to do with the document.
+    const Command a = make_batch({RenameScene{Id::nil(), "x"}}, "Same");
+    const Command b = make_batch({RenameScene{Id::nil(), "x"}}, "Same");
+    CHECK(a == b);
+    CHECK(!(a == make_batch({RenameScene{Id::nil(), "y"}}, "Same")));
+    CHECK(!(a == make_batch({RenameScene{Id::nil(), "x"}}, "Different")));
 }
 
 LTEST_CASE(project_settings_are_undoable_and_bounded) {

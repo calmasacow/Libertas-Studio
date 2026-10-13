@@ -87,7 +87,7 @@ std::string to_toml(const Layout& l) {
 }
 
 namespace {
-std::expected<Layout, std::string> layout_from_table(const toml::table& tbl);
+std::expected<Layout, std::string> layout_from_table(const toml::table& tbl, int version);
 } // namespace
 
 std::expected<Layout, std::string> from_toml(std::string_view text) {
@@ -107,17 +107,19 @@ std::expected<Layout, std::string> from_toml(std::string_view text) {
     const auto version = tbl["version"].value<std::int64_t>();
     if (!version)
         return std::unexpected("missing 'version'");
-    if (*version != kLayoutFormatVersion)
+    // Older files are read and migrated. Newer ones are refused, because this build cannot know
+    // what a later version put in them.
+    if (*version < 1 || *version > kLayoutFormatVersion)
         return std::unexpected(std::format("unsupported layout format version {} (this build "
-                                           "reads version {})",
+                                           "reads up to version {})",
                                            *version, kLayoutFormatVersion));
 
-    return layout_from_table(tbl);
+    return layout_from_table(tbl, static_cast<int>(*version));
 }
 
 namespace {
 
-std::expected<Layout, std::string> layout_from_table(const toml::table& tbl) {
+std::expected<Layout, std::string> layout_from_table(const toml::table& tbl, int version) {
     const auto root_raw = tbl["root"].value<std::int64_t>();
     if (!root_raw)
         return std::unexpected("missing 'root'");
@@ -217,6 +219,12 @@ std::expected<Layout, std::string> layout_from_table(const toml::table& tbl) {
     Layout l;
     if (!l.adopt(std::move(nodes), *root))
         return std::unexpected("the nodes do not form a single valid tree rooted at 'root'");
+
+    // Panels this build no longer has. Dropped after adopting rather than while reading, so the
+    // tree is validated exactly as it was written and then edited through the same path a user
+    // closing a panel goes through -- which is what collapses a group left empty by the removal.
+    if (version < 2)
+        static_cast<void>(l.close_panel("inputs"));
     return l;
 }
 
@@ -262,16 +270,18 @@ std::expected<Workspaces, std::string> workspaces_from_toml(std::string_view tex
     const auto version = tbl["version"].value<std::int64_t>();
     if (!version)
         return std::unexpected("missing 'version'");
-    if (*version != kLayoutFormatVersion)
+    // Older files are read and migrated. Newer ones are refused, because this build cannot know
+    // what a later version put in them.
+    if (*version < 1 || *version > kLayoutFormatVersion)
         return std::unexpected(std::format("unsupported layout format version {} (this build "
-                                           "reads version {})",
+                                           "reads up to version {})",
                                            *version, kLayoutFormatVersion));
 
     const toml::array* arr = tbl["workspace"].as_array();
     if (!arr || arr->empty()) {
         // The older format: one layout at the top level, no workspaces. Adopt it as Build rather
         // than throwing away an arrangement someone had set up.
-        auto single = layout_from_table(tbl);
+        auto single = layout_from_table(tbl, static_cast<int>(*version));
         if (!single)
             return std::unexpected(single.error());
         Workspaces w = Workspaces::defaults();
@@ -288,7 +298,7 @@ std::expected<Workspaces, std::string> workspaces_from_toml(std::string_view tex
         const auto name = (*t)["name"].value<std::string>();
         if (!name || name->empty())
             return std::unexpected(std::format("workspace #{} has no 'name'", i));
-        auto layout = layout_from_table(*t);
+        auto layout = layout_from_table(*t, static_cast<int>(*version));
         if (!layout)
             return std::unexpected(std::format("'{}': {}", *name, layout.error()));
 

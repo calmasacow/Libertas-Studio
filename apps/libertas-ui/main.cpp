@@ -555,7 +555,7 @@ int main(int argc, char** argv) {
         const auto scene_rows = [&] { return collect(window->contentItem(),
                                                      QStringLiteral("sceneRow")).size(); };
         const auto layer_rows = [&] { return collect(window->contentItem(),
-                                                     QStringLiteral("layerRow")).size(); };
+                                                     QStringLiteral("sourceRow")).size(); };
 
         settle();
         // Counts are relative, because --check may be run against a project it has already been
@@ -717,36 +717,68 @@ int main(int argc, char** argv) {
         report(!workspace.focusedPanel().isEmpty(),
                "and focus survives the layout being replaced");
 
-        // ---- inputs ---------------------------------------------------------------------
-        const int inputs_before = document.sourcesModel()->rowCount();
+        // ---- sources ----------------------------------------------------------------------
+        //
+        // One panel and one word. Adding a source puts it in the project *and* in the scene, as
+        // one undoable step -- nobody pressing Ctrl+Z after adding a camera wants the layer back
+        // without its source, or the source back with no layer.
+        const int sources_before = document.sourcesModel()->rowCount();
+        const auto source_at = [&](int row, int role) {
+            return document.sourcesModel()->data(document.sourcesModel()->index(row, 0),
+                                                 Qt::UserRole + role);
+        };
         report(!document.sourceTypes().isEmpty(), "the source types are listed");
-        document.addSource(QStringLiteral("Desk Cam"), QStringLiteral("source.v4l2"));
-        settle();
-        report(document.sourcesModel()->rowCount() == inputs_before + 1, "an input can be added");
 
-        // Binding needs a layer; the one added above was removed with its scene, so make another.
-        document.addLayer(QStringLiteral("Cam Layer"));
+        const int layers_before_source = document.layersModel()->rowCount();
+        const QString undo_before_source = document.undoDescription();
+        document.addSourceAsLayer(QStringLiteral("Desk Cam"), QStringLiteral("source.v4l2"));
         settle();
-        const QString input_id =
-            document.sourcesModel()
-                ->data(document.sourcesModel()->index(inputs_before, 0),
-                       Qt::UserRole + 1)
-                .toString();
-        document.bindSelectedLayer(input_id);
-        settle();
-        report(document.sourcesModel()
-                   ->data(document.sourcesModel()->index(inputs_before, 0),
-                          Qt::UserRole + 4)
-                   .toInt() == 1,
-               "and bound to a layer, which the use count reflects");
+        report(document.sourcesModel()->rowCount() == sources_before + 1,
+               "adding a source puts it in the project");
+        report(document.layersModel()->rowCount() == layers_before_source + 1,
+               "and in the scene");
+        const QString cam_id = source_at(sources_before, 1).toString();
+        const QString cam_layer = document.selectedLayer();
+        report(document.layerProperties().value("name").toString() == QLatin1String("Desk Cam"),
+               "with the new one selected");
+        report(source_at(sources_before, 4).toInt() == 1,
+               "bound to it, which the use count reflects");
+        report(document.undoDescription() != undo_before_source &&
+                   document.undoDescription().contains(QLatin1String("Desk Cam")),
+               "as one undo step named for what it did");
 
+        // One undo takes the whole thing back -- not the bind, leaving an orphan.
+        document.undo();
+        settle();
+        report(document.sourcesModel()->rowCount() == sources_before &&
+                   document.layersModel()->rowCount() == layers_before_source,
+               "one undo removes the source and the layer together");
+        document.redo();
+        settle();
+
+        // An existing source goes into the scene again without being created twice: one camera,
+        // opened once, in as many scenes as you like.
+        const int layers_before_reuse = document.layersModel()->rowCount();
+        document.addExistingSourceAsLayer(cam_id);
+        settle();
+        report(document.sourcesModel()->rowCount() == sources_before + 1,
+               "adding an existing source does not create a second one");
+        report(document.layersModel()->rowCount() == layers_before_reuse + 1,
+               "but does add another layer");
+        report(source_at(sources_before, 4).toInt() == 2, "and the use count says two");
+        document.undo();
+        settle();
+
+        // Explicitly, because the undo above moved the selection -- unbinding "whatever is
+        // selected" would have been unbinding something else.
+        document.selectLayer(cam_layer);
+        settle();
         document.bindSelectedLayer(QString{});
         settle();
-        report(document.sourcesModel()
-                   ->data(document.sourcesModel()->index(inputs_before, 0),
-                          Qt::UserRole + 4)
-                   .toInt() == 0,
-               "unbinding it again releases the input");
+        report(source_at(sources_before, 4).toInt() == 0,
+               "unbinding the layer releases the source");
+        report(source_at(sources_before, 5).toBool() == false,
+               "a camera is not safe for an emergency scene");
 
         // ---- the audio mixer -------------------------------------------------------------
         //

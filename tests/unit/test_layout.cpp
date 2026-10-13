@@ -57,15 +57,15 @@ LTEST_CASE(the_default_layout_is_valid_and_holds_the_expected_panels) {
     CHECK_MSG(!bad.has_value(), "{}", bad.value_or(""));
 
     CHECK_EQ(sorted_panels(l),
-             (std::vector<std::string>{"audio-mixer", "controls", "info", "inputs", "log",
-                                       "program", "properties", "scenes", "sources"}));
+             (std::vector<std::string>{"audio-mixer", "controls", "info", "log", "program",
+                                       "properties", "scenes", "sources"}));
 
     // The program canvas is a region of the workspace, not a window (ADR-0015 rule 2).
     CHECK(l.has_panel("program"));
     CHECK(l.node_of_panel("program") != kInvalidNode);
 
-    // properties, inputs, info and log ship as one tabbed group, so the tab path is exercised
-    // by the default layout.
+    // properties, info and log ship as one tabbed group, so the tab path is exercised by the
+    // default layout.
     CHECK_EQ(l.node_of_panel("info"), l.node_of_panel("log"));
     CHECK_EQ(l.node_of_panel("properties"), l.node_of_panel("log"));
 }
@@ -172,11 +172,11 @@ LTEST_CASE(a_centre_drop_makes_a_tabbed_group) {
     CHECK_EQ(l.node_of_panel("scenes"), target);
     CHECK_EQ(l.node_of_panel("scenes"), l.node_of_panel("info"));
     // The dropped panel becomes the visible tab: the user just put it there on purpose.
-    CHECK_EQ(l.tab_index_of("scenes"), std::size_t{4});
+    CHECK_EQ(l.tab_index_of("scenes"), std::size_t{3});
     const Node* n = l.find(target);
     REQUIRE(n != nullptr);
-    CHECK_EQ(n->active, std::size_t{4});
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{9});
+    CHECK_EQ(n->active, std::size_t{3});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{8});
 }
 
 LTEST_CASE(an_outer_drop_splits_the_target_on_the_right_axis_and_side) {
@@ -372,7 +372,7 @@ LTEST_CASE(a_panel_not_yet_in_the_tree_can_be_docked) {
     const DockResult r = l.dock("chat", l.node_of_panel("audio-mixer"), Zone::Right, vp, cs);
     REQUIRE(r.applied());
     CHECK(l.has_panel("chat"));
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{10});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{9});
     CHECK(!l.validate().has_value());
 }
 
@@ -562,9 +562,9 @@ LTEST_CASE(a_hit_test_result_can_be_docked_directly) {
 LTEST_CASE(activating_a_tab_selects_it) {
     Layout l = Layout::default_studio();
     CHECK(l.activate("log"));
-    CHECK_EQ(l.find(l.node_of_panel("log"))->active, std::size_t{3});
+    CHECK_EQ(l.find(l.node_of_panel("log"))->active, std::size_t{2});
     CHECK(l.activate("info"));
-    CHECK_EQ(l.find(l.node_of_panel("info"))->active, std::size_t{2});
+    CHECK_EQ(l.find(l.node_of_panel("info"))->active, std::size_t{1});
     CHECK(!l.activate("nope"));
 }
 
@@ -572,14 +572,14 @@ LTEST_CASE(closing_the_visible_tab_leaves_a_valid_selection) {
     Layout l = Layout::default_studio();
     const NodeId group = l.node_of_panel("info");
     REQUIRE(l.activate("log"));
-    CHECK_EQ(l.find(group)->active, std::size_t{3});
+    CHECK_EQ(l.find(group)->active, std::size_t{2});
 
     // Closing the visible tab leaves the selection on a tab that still exists.
     CHECK(l.close_panel("log"));
     const Node* n = l.find(l.node_of_panel("info"));
     REQUIRE(n != nullptr);
-    CHECK_EQ(n->tabs.size(), std::size_t{3});
-    CHECK_EQ(n->active, std::size_t{2});
+    CHECK_EQ(n->tabs.size(), std::size_t{2});
+    CHECK_EQ(n->active, std::size_t{1});
     CHECK(!l.validate().has_value());
 }
 
@@ -703,7 +703,7 @@ LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
     // the starting layout but missing here fails on the first step.
     const std::vector<std::string> pool = {"program",  "scenes",   "sources",     "info",
                                            "log",      "controls", "audio-mixer", "properties",
-                                           "inputs",   "outputs",  "chat",        "browser",
+                                           "outputs",  "chat",     "browser",
                                            "replay",   "broadcast-stats", "favourites"};
     const Constraints cs = Constraints::studio_defaults();
 
@@ -802,7 +802,7 @@ LTEST_CASE(a_tight_window_refuses_drops_without_corrupting_anything) {
     // the refusal path, so assert it was actually taken.
     const std::vector<std::string> pool = {"program", "scenes",  "sources", "info",
                                            "log",     "chat",    "browser", "replay",
-                                           "properties", "inputs", "audio-mixer", "controls"};
+                                           "properties", "audio-mixer", "controls"};
     const Constraints cs = Constraints::studio_defaults();
     const Viewport vp = vp_of(1366.0, 768.0);
 

@@ -311,13 +311,40 @@ std::size_t dec_index(Rd& rd, const Jv& o, const char* key, std::string_view pat
     return static_cast<std::size_t>(v);
 }
 
+/// Declared before the visitor below, which reaches it by overload resolution.
+Jv body(const Batch& c);
+
+Jv command_value(const Command& command) {
+    Jv root = std::visit([](const auto& c) { return body(c); }, command);
+    root["cmd"] = std::string{command_name(command)};
+    return root;
+}
+
+/// A batch carries whole commands, not bodies: each member needs its own "cmd" to be read back.
+Jv body(const Batch& c) {
+    Jv o{Json::objectValue};
+    o["description"] = c.description;
+    Jv members{Json::arrayValue};
+    if (c.body) {
+        for (const Command& member : c.body->commands)
+            members.append(command_value(member));
+    }
+    o["commands"] = members;
+    return o;
+}
+
 } // namespace
 
 std::string command_to_json(const Command& command) {
-    Jv root = std::visit([](const auto& c) { return body(c); }, command);
-    root["cmd"] = std::string{command_name(command)};
-    return detail::write(root);
+    return detail::write(command_value(command));
 }
+
+namespace {
+
+std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
+                                                       std::string_view path);
+
+} // namespace
 
 std::expected<Command, std::string> command_from_json(std::string_view text) {
     std::string parse_error;
@@ -328,11 +355,23 @@ std::expected<Command, std::string> command_from_json(std::string_view text) {
         return std::unexpected("a command is not a JSON object");
 
     Rd rd;
-    const std::string name = rd.text(*root, "cmd", "command");
+    auto out = command_from_value(rd, *root, "command");
+    if (!out)
+        return out;
+    if (!rd.ok())
+        return std::unexpected(rd.error());
+    return out;
+}
+
+namespace {
+
+std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
+                                                       std::string_view path) {
+    if (!o.isObject())
+        return std::unexpected("a command is not a JSON object");
+    const std::string name = rd.text(o, "cmd", path);
     if (name.empty())
         return std::unexpected("a command has no 'cmd'");
-    const Jv& o = *root;
-    const std::string_view path = "command";
 
     Command out = SetProjectName{};
     if (name == "project.set-name") {
@@ -472,15 +511,29 @@ std::expected<Command, std::string> command_from_json(std::string_view text) {
         if (!cv)
             return std::unexpected("canvas.set has no value");
         out = SetCanvas{detail::dec_canvas(rd, *cv, path)};
+    } else if (name == "batch") {
+        std::vector<Command> members;
+        if (const Jv* arr = rd.array(o, "commands", path)) {
+            for (const Jv& m : *arr) {
+                auto parsed = command_from_value(rd, m, path);
+                if (!parsed)
+                    return std::unexpected(std::format("inside a batch: {}", parsed.error()));
+                members.push_back(std::move(*parsed));
+            }
+        }
+        // Validity -- empty, or nested -- is apply()'s to judge, not the parser's. A journal
+        // holding a batch this build would refuse must still be *readable*, so that the refusal
+        // is reported rather than looking like a corrupt file.
+        out = make_batch(std::move(members), rd.text(o, "description", path, std::string{}));
     } else {
         // Not a fallback: a command this build cannot perform must not be quietly skipped, or a
         // journal written by a newer build would replay as a different session than it recorded.
         return std::unexpected(std::format("'{}' is not a command this build knows", name));
     }
 
-    if (!rd.ok())
-        return std::unexpected(rd.error());
     return out;
 }
+
+} // namespace
 
 } // namespace ldoc

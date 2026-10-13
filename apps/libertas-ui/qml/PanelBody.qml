@@ -37,13 +37,11 @@ Item {
             case "scenes":
                 return scenesComponent;
             case "sources":
-                return layersComponent;
+                return sourcesComponent;
             case "properties":
                 return propertiesComponent;
             case "shortcuts":
                 return shortcutsComponent;
-            case "inputs":
-                return inputsComponent;
             case "info":
                 return infoComponent;
             case "broadcast-stats":
@@ -71,9 +69,9 @@ Item {
     }
 
     Component {
-        id: layersComponent
+        id: sourcesComponent
 
-        LayersPanel {}
+        SourcesPanel {}
     }
 
     Component {
@@ -86,12 +84,6 @@ Item {
         id: shortcutsComponent
 
         ShortcutsPanel {}
-    }
-
-    Component {
-        id: inputsComponent
-
-        InputsPanel {}
     }
 
     Component {

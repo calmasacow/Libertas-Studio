@@ -19,9 +19,9 @@ What exists is a workspace you can use and a document you can edit:
   windows. The built-in pair can be rearranged and reset but not renamed away, so there is always
   a known arrangement to get back to.
 - **A document model** — scenes as trees, groups, adjustment and reference nodes, canvases, buses,
-  decks, outputs, per-canvas overrides. Every panel in the workspace drives it: scenes, layers,
-  properties, inputs, the audio mixer, and program/preview with the output list.
-- **A command bus** — every change is one of thirty-nine validated, journaled, undoable
+  decks, outputs, per-canvas overrides. Every panel in the workspace drives it: scenes, sources,
+  properties, the audio mixer, and program/preview with the output list.
+- **A command bus** — every change is one of forty validated, journaled, undoable
   commands. A dragged fader is one undo step, not four hundred. Unsaved work survives the process
   being killed.
 - **A project on disk** — a git-diffable directory of JSON, saved as a transaction. A corrupt scene
@@ -119,7 +119,7 @@ ctest --preset linux-tsan     # the threaded code, under TSan
 
 The shell's own check is one of those twenty: `libertas-ui --check` loads the real QML, drives
 the real gestures through the same API the panels use, grabs frames and asserts what was drawn —
-192 assertions, on the offscreen platform, so it cannot reach a display even by accident. It is
+200 assertions, on the offscreen platform, so it cannot reach a display even by accident. It is
 excluded from the TSan preset, because Qt here is built without TSan and starting its QML thread
 makes the tool itself fail an internal check; the reason is recorded beside the exclusion.
 

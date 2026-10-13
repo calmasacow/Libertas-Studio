@@ -16,7 +16,12 @@
 /// file a user can read and hand-edit is a layout file a user can report a bug about.
 namespace llayout {
 
-inline constexpr int kLayoutFormatVersion = 1;
+/// Version 2 dropped the `inputs` panel. Its job -- listing the project's sources so one can be
+/// put into a second scene -- moved into the Sources panel's add menu, because a source is a
+/// source and having two panels for it meant two words for one thing. A version 1 file naming
+/// `inputs` would otherwise render a "this build has nothing to draw there" placeholder, so
+/// reading one drops that tab.
+inline constexpr int kLayoutFormatVersion = 2;
 
 [[nodiscard]] std::string to_toml(const Layout& l);
 

@@ -132,6 +132,14 @@ public:
     Q_PROPERTY(QVariantList sourceTypes READ sourceTypes CONSTANT)
     [[nodiscard]] QVariantList sourceTypes() const;
 
+    /// Put a new source of this type into the current scene: make the source, make the layer,
+    /// bind them. One `Batch`, so it is one undo step -- nobody pressing Ctrl+Z after adding a
+    /// camera wants the layer back without its source.
+    Q_INVOKABLE void addSourceAsLayer(const QString& name, const QString& type);
+    /// Put a source the project already has into the current scene. Also one step, and
+    /// deliberately does not create a second source: one camera, opened once, in six scenes.
+    Q_INVOKABLE void addExistingSourceAsLayer(const QString& sourceId);
+
     Q_INVOKABLE void addSource(const QString& name, const QString& type);
     Q_INVOKABLE void removeSource(const QString& id);
     Q_INVOKABLE void renameSource(const QString& id, const QString& name);

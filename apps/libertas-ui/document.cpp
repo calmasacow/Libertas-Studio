@@ -524,6 +524,76 @@ QVariantList Document::sourceTypes() const {
     return out;
 }
 
+namespace {
+
+/// Where a new layer goes: inside the selected group if one is selected, otherwise at the top.
+struct Placement {
+    std::optional<ldoc::Id> parent;
+    std::size_t index = 0;
+};
+
+} // namespace
+
+void Document::addSourceAsLayer(const QString& name, const QString& type) {
+    const ldoc::Scene* scene = current_scene();
+    if (!scene) {
+        emit notice(QStringLiteral("There is no scene to add a source to."));
+        return;
+    }
+    if (type.isEmpty())
+        return;
+
+    const ldoc::Project& p = session_->project();
+
+    ldoc::Source src;
+    src.id = ldoc::Id::generate();
+    src.name = name.isEmpty() ? std::string{"Source"} : to_std(name);
+    src.type = to_std(type);
+    // A media source in an emergency scene has to loop or the net expires (ADR-0025), and
+    // looping is the right default for every other use of one too.
+    if (src.type == "source.media")
+        src.settings.emplace("loop", true);
+    const ldoc::Id source_id = src.id;
+
+    ldoc::Node layer = ldoc::make_node(ldoc::NodeKind::Layer, src.name);
+    const ldoc::Id layer_id = layer.id;
+
+    Placement where;
+    if (const ldoc::Node* sel = current_layer(); sel && sel->is_group())
+        where.parent = sel->id;
+
+    run(ldoc::make_batch({ldoc::AddSource{std::move(src), p.sources.size()},
+                          ldoc::AddNode{scene->id, where.parent, where.index, std::move(layer)},
+                          ldoc::SetLayerSource{scene->id, layer_id, source_id}},
+                         std::format("Add {}", name.isEmpty() ? std::string{"source"}
+                                                              : to_std(name))));
+    selectLayer(id_str(layer_id));
+}
+
+void Document::addExistingSourceAsLayer(const QString& sourceId) {
+    const ldoc::Scene* scene = current_scene();
+    const auto parsed = parse_id(sourceId);
+    if (!scene || !parsed)
+        return;
+    const ldoc::Source* existing = session_->project().source(*parsed);
+    if (!existing) {
+        emit notice(QStringLiteral("That source is no longer in the project."));
+        return;
+    }
+
+    ldoc::Node layer = ldoc::make_node(ldoc::NodeKind::Layer, existing->name);
+    const ldoc::Id layer_id = layer.id;
+
+    Placement where;
+    if (const ldoc::Node* sel = current_layer(); sel && sel->is_group())
+        where.parent = sel->id;
+
+    run(ldoc::make_batch({ldoc::AddNode{scene->id, where.parent, where.index, std::move(layer)},
+                          ldoc::SetLayerSource{scene->id, layer_id, *parsed}},
+                         std::format("Add {}", existing->name)));
+    selectLayer(id_str(layer_id));
+}
+
 void Document::addSource(const QString& name, const QString& type) {
     if (type.isEmpty())
         return;

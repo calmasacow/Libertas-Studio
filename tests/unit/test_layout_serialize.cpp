@@ -120,7 +120,7 @@ LTEST_CASE(a_tabbed_group_remembers_which_tab_was_visible) {
     REQUIRE(l.activate("log"));
     const auto back = from_toml(to_toml(l));
     REQUIRE(back.has_value());
-    CHECK_EQ(back->find(back->node_of_panel("log"))->active, std::size_t{3});
+    CHECK_EQ(back->find(back->node_of_panel("log"))->active, std::size_t{2});
 }
 
 LTEST_CASE(awkward_panel_ids_round_trip) {
@@ -300,6 +300,88 @@ LTEST_CASE(a_truncated_layout_file_falls_back_to_the_default_and_says_so) {
     const LoadOutcome o = load_or_default(path);
     CHECK(o.used_default);
     CHECK(!o.complaint.empty());
+}
+
+LTEST_CASE(a_version_one_file_loses_the_panel_this_build_dropped) {
+    // The `inputs` panel is gone: a source is a source, and listing the project's sources moved
+    // into the Sources panel's add menu. A version 1 layout still names it, and without the
+    // migration it would come back as a panel this build has nothing to draw in -- visible,
+    // confusing, and permanent until the user closed it by hand.
+    const std::string v1 =
+        "version = 1\n"
+        "root = 1\n"
+        "\n[[node]]\n"
+        "id = 1\n"
+        "kind = \"split\"\n"
+        "axis = \"h\"\n"
+        "children = [ 2, 3 ]\n"
+        "fractions = [ 0.5, 0.5 ]\n"
+        "\n[[node]]\n"
+        "id = 2\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"program\" ]\n"
+        "active = 0\n"
+        "\n[[node]]\n"
+        "id = 3\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"properties\", \"inputs\", \"log\" ]\n"
+        "active = 1\n";
+
+    const auto back = from_toml(v1);
+    REQUIRE_MSG(back.has_value(), "{}", back ? std::string{} : back.error());
+    CHECK_MSG(!back->has_panel("inputs"), "a dropped panel survived the migration");
+    CHECK_MSG(back->has_panel("properties") && back->has_panel("log") && back->has_panel("program"),
+              "the migration took panels it should have kept");
+    CHECK(!back->validate().has_value());
+
+    // The tab that was visible was the one removed, so the selection has to land somewhere real
+    // rather than past the end.
+    const Node* group = back->find(back->node_of_panel("properties"));
+    REQUIRE(group != nullptr);
+    CHECK_EQ(group->tabs.size(), std::size_t{2});
+    CHECK_MSG(group->active < group->tabs.size(), "the visible tab index is past the end");
+
+    // Written back out, it is version 2 and says nothing about the dropped panel.
+    const std::string again = to_toml(*back);
+    CHECK(again.find("version = 2") != std::string::npos);
+    CHECK(again.find("inputs") == std::string::npos);
+}
+
+LTEST_CASE(a_version_one_group_of_only_the_dropped_panel_collapses) {
+    // The harder case: the migration empties a whole tab group. It must collapse rather than
+    // leave an empty leaf, which validate() would reject.
+    const std::string v1 =
+        "version = 1\n"
+        "root = 1\n"
+        "\n[[node]]\n"
+        "id = 1\n"
+        "kind = \"split\"\n"
+        "axis = \"h\"\n"
+        "children = [ 2, 3 ]\n"
+        "fractions = [ 0.5, 0.5 ]\n"
+        "\n[[node]]\n"
+        "id = 2\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"program\" ]\n"
+        "active = 0\n"
+        "\n[[node]]\n"
+        "id = 3\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"inputs\" ]\n"
+        "active = 0\n";
+
+    const auto back = from_toml(v1);
+    REQUIRE_MSG(back.has_value(), "{}", back ? std::string{} : back.error());
+    CHECK(!back->has_panel("inputs"));
+    CHECK_MSG(!back->validate().has_value(), "{}", back->validate().value_or(""));
+    CHECK_EQ(back->panels(), (std::vector<std::string>{"program"}));
+}
+
+LTEST_CASE(a_file_from_a_newer_build_is_still_refused) {
+    // Migration forward only. A file this build cannot understand must not be guessed at.
+    const auto newer = from_toml("version = 99\nroot = 1\n");
+    CHECK(!newer.has_value());
+    CHECK(newer.error().contains("99"));
 }
 
 LTEST_MAIN("layout-serialize")

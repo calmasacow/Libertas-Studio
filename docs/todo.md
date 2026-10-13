@@ -50,3 +50,11 @@ into a popup or floating panel rather than sitting in the interface. Deferred by
 until the docked model is finished.
 
 Related and also deferred: tearing a panel out to float as its own toplevel (ADR-0015 rule 3).
+
+## Done since this file was written
+
+- **One word for a source.** Anything that can go into a scene is a source — a capture card, a
+  webcam, a browser, a flat colour — differing by *type*, not by kind. The separate "Inputs"
+  panel was a second word for the same thing and has been folded into the Sources panel's add
+  menu, where OBS puts it. The document model needed no change: `ldoc::Source` was always the
+  source, and the type ids were always `source.v4l2`, `source.browser`, `source.color`.

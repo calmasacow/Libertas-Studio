@@ -135,6 +135,7 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetNodeAudio>) return "node.set-audio";
             else if constexpr (std::is_same_v<T, SetDeck>) return "deck.set";
             else if constexpr (std::is_same_v<T, SetSceneFavourite>) return "scene.set-favourite";
+            else if constexpr (std::is_same_v<T, Batch>) return "batch";
             else if constexpr (std::is_same_v<T, SetCanvasOverride>)
                 return "node.set-canvas-override";
             else if constexpr (std::is_same_v<T, AddEffect>) return "effect.add";
@@ -201,6 +202,8 @@ std::string describe(const Command& command) {
                 return std::format("Configure deck {}", quoted(c.value.name));
             else if constexpr (std::is_same_v<T, SetSceneFavourite>)
                 return c.favourite ? "Add to favourites" : "Remove from favourites";
+            else if constexpr (std::is_same_v<T, Batch>)
+                return c.description.empty() ? std::string{"Several changes"} : c.description;
             else if constexpr (std::is_same_v<T, SetCanvasOverride>)
                 return c.value ? "Set per-canvas override" : "Clear per-canvas override";
             else if constexpr (std::is_same_v<T, AddEffect>)
@@ -266,6 +269,36 @@ namespace {
 /// the ones that do.
 struct Apply {
     Project& p;
+
+    std::expected<Applied, std::string> operator()(const Batch& c) const {
+        if (!c.body || c.body->commands.empty())
+            return std::unexpected(std::string{"a batch with nothing in it does nothing"});
+        for (const Command& member : c.body->commands) {
+            if (std::holds_alternative<Batch>(member))
+                return std::unexpected(std::string{"a batch cannot contain another batch"});
+        }
+
+        std::vector<Command> inverses;
+        inverses.reserve(c.body->commands.size());
+        for (const Command& member : c.body->commands) {
+            auto applied = apply(p, member);
+            if (!applied) {
+                // Unwind what already landed, newest first, so a refused batch leaves the
+                // project exactly as it was. Each of these inverses was built from the state it
+                // reverses and is being applied to that same state, so it cannot fail -- and if
+                // it somehow did there would be nothing useful left to do about it.
+                for (auto it = inverses.rbegin(); it != inverses.rend(); ++it)
+                    static_cast<void>(apply(p, *it));
+                return std::unexpected(std::format("{}: {}", command_name(member),
+                                                   applied.error()));
+            }
+            inverses.push_back(std::move(applied->inverse));
+        }
+
+        // Reversed: the last thing done is the first thing undone.
+        std::reverse(inverses.begin(), inverses.end());
+        return Applied{make_batch(std::move(inverses), c.description), describe(c)};
+    }
 
     std::expected<Applied, std::string> operator()(const SetProjectName& c) const {
         Applied out{SetProjectName{p.name}, describe(c)};
@@ -901,6 +934,21 @@ struct Apply {
 };
 
 } // namespace
+
+bool operator==(const Batch& a, const Batch& b) {
+    if (a.description != b.description)
+        return false;
+    if (a.body == b.body)
+        return true;
+    if (!a.body || !b.body)
+        return false;
+    return *a.body == *b.body;
+}
+
+Command make_batch(std::vector<Command> commands, std::string description) {
+    return Batch{std::make_shared<const BatchBody>(BatchBody{std::move(commands)}),
+                 std::move(description)};
+}
 
 std::expected<Applied, std::string> apply(Project& project, const Command& command) {
     return std::visit(Apply{project}, command);
