@@ -13,6 +13,7 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QGuiApplication>
+#include <QMouseEvent>
 #include <QObject>
 #include <QQmlApplicationEngine>
 #include <QCoreApplication>
@@ -663,6 +664,86 @@ int main(int argc, char** argv) {
         report(qFuzzyCompare(bus_at(buses_before, 4).toDouble(), -6.5), "its fader moves");
         report(bus_at(buses_before, 6).toBool(), "it can be muted");
         report(qFuzzyCompare(bus_at(buses_before, 5).toDouble(), -0.5), "and panned");
+
+        // The fader as an operator actually reaches it: synthetic mouse events delivered to the
+        // window, so the QML handlers run.
+        //
+        // Everything else about the mixer is driven through Document, the way the divider drag
+        // is driven through Workspace. That proves the model and the commands, and proves
+        // nothing about the twenty lines of QML between a pointer and them -- which, given that
+        // this project exists because of how a UI behaves, is the half worth checking.
+        {
+            const QList<QQuickItem*> faders =
+                collect(window->contentItem(), QStringLiteral("busFader"));
+            report(!faders.isEmpty(), "the mixer has a fader to grab");
+            if (!faders.isEmpty()) {
+                QQuickItem* fader = faders.front();
+                // Which bus this fader belongs to, asked of the strip it lives in. `collect`
+                // walks childItems() and so hands them back in whatever order the scene graph
+                // holds them -- which is not the model's order, and assuming it was is how the
+                // first version of this check managed to drag one bus's fader and assert about
+                // another's.
+                QString dragged_bus;
+                for (QQuickItem* up = fader; up != nullptr; up = up->parentItem()) {
+                    const QVariant id = up->property("busId");
+                    if (id.isValid() && !id.toString().isEmpty()) {
+                        dragged_bus = id.toString();
+                        break;
+                    }
+                }
+                report(!dragged_bus.isEmpty(), "and the strip it belongs to names its bus");
+                int dragged_row = -1;
+                for (int r = 0; r < document.busesModel()->rowCount(); ++r) {
+                    if (bus_at(r, 1).toString() == dragged_bus)
+                        dragged_row = r;
+                }
+                const auto gain_of_dragged = [&] {
+                    return dragged_row < 0 ? 0.0 : bus_at(dragged_row, 4).toDouble();
+                };
+
+                const QPointF top = fader->mapToScene(QPointF(fader->width() / 2.0, 2.0));
+                const QPointF bottom =
+                    fader->mapToScene(QPointF(fader->width() / 2.0, fader->height() - 2.0));
+
+                const auto post = [&window](QEvent::Type type, QPointF at, Qt::MouseButton b,
+                                            Qt::MouseButtons held) {
+                    QMouseEvent e{type, at, window->mapToGlobal(at), b, held, {}};
+                    QCoreApplication::sendEvent(window, &e);
+                };
+
+                const double before_drag = gain_of_dragged();
+                post(QEvent::MouseButtonPress, bottom, Qt::LeftButton, Qt::LeftButton);
+                settle();
+                // Pressing near the bottom of the track is a request for silence, so the first
+                // bus's fader should have gone down rather than nowhere.
+                const double at_bottom = gain_of_dragged();
+                report(at_bottom < before_drag,
+                       "pressing the fader moves it, so the QML handler is wired to the bus");
+
+                for (int i = 1; i <= 12; ++i) {
+                    const QPointF step = bottom + (top - bottom) * (double(i) / 12.0);
+                    post(QEvent::MouseMove, step, Qt::NoButton, Qt::LeftButton);
+                }
+                settle();
+                report(gain_of_dragged() > at_bottom, "and dragging it upwards raises it");
+
+                post(QEvent::MouseButtonRelease, top, Qt::LeftButton, Qt::NoButton);
+                settle();
+                const double after_drag = gain_of_dragged();
+                report(after_drag > at_bottom, "releasing keeps where the fader was let go");
+
+                // Thirteen events, one undo step, landing before the press rather than one
+                // mouse-move back.
+                document.undo();
+                settle();
+                report(qFuzzyCompare(gain_of_dragged() + 1.0, before_drag + 1.0),
+                       "and the whole pointer drag undoes in one step");
+                document.redo();
+                settle();
+                report(qFuzzyCompare(gain_of_dragged() + 1.0, after_drag + 1.0),
+                       "which redo puts back");
+            }
+        }
 
         // A dragged fader: many commands, one undo step, landing where the drag began.
         {

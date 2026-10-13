@@ -112,7 +112,7 @@ ctest --preset linux-tsan     # the threaded code, under TSan
 
 The shell's own check is one of those eighteen: `libertas-ui --check` loads the real QML, drives
 the real gestures through the same API the panels use, grabs frames and asserts what was drawn —
-154 assertions, on the offscreen platform, so it cannot reach a display even by accident. It is
+161 assertions, on the offscreen platform, so it cannot reach a display even by accident. It is
 excluded from the TSan preset, because Qt here is built without TSan and starting its QML thread
 makes the tool itself fail an internal check; the reason is recorded beside the exclusion.
 
