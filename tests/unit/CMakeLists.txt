@@ -16,6 +16,8 @@ endfunction()
 
 libertas_unit_test(test_document         libertas::ldoc)
 libertas_unit_test(test_dropzone        libertas::llayout)
+libertas_unit_test(test_json             libertas::ldoc)
+libertas_unit_test(test_project_io       libertas::ldoc libertas::lcore)
 libertas_unit_test(test_layout          libertas::llayout)
 libertas_unit_test(test_layout_history  libertas::llayout)
 libertas_unit_test(test_layout_serialize libertas::llayout libertas::lcore)
