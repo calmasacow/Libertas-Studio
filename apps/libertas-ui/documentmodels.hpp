@@ -63,6 +63,8 @@ struct SceneRow {
     /// The safety net for at least one canvas (ADR-0025). Marked in the list, because losing it
     /// unnoticed is that ADR's own failure arriving by another route.
     bool isEmergency = false;
+    /// Marked by the operator; the favourites panel is this filtered.
+    bool isFavourite = false;
 
     friend bool operator==(const SceneRow&, const SceneRow&) = default;
 };
@@ -78,6 +80,7 @@ public:
         IsProgramRole,
         IsPreviewRole,
         IsEmergencyRole,
+        IsFavouriteRole,
     };
 
     using RowModelBase::RowModelBase;

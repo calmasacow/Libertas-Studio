@@ -44,6 +44,10 @@ class Document : public QObject {
     Q_PROPERTY(QAbstractItemModel* layers READ layersModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* sources READ sourcesModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* buses READ busesModel CONSTANT)
+    /// The scene list filtered to the starred ones. A second model rather than a filter proxy
+    /// in QML: the favourites panel must not be able to change the scene list's own selection
+    /// or ordering by being looked at.
+    Q_PROPERTY(QAbstractItemModel* favouriteScenes READ favouriteScenesModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* decks READ decksModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* outputs READ outputsModel CONSTANT)
 
@@ -79,6 +83,7 @@ public:
     [[nodiscard]] QAbstractItemModel* layersModel() { return &layers_; }
     [[nodiscard]] QAbstractItemModel* sourcesModel() { return &sources_; }
     [[nodiscard]] QAbstractItemModel* busesModel() { return &buses_; }
+    [[nodiscard]] QAbstractItemModel* favouriteScenesModel() { return &favourites_; }
     [[nodiscard]] QAbstractItemModel* decksModel() { return &decks_; }
     [[nodiscard]] QAbstractItemModel* outputsModel() { return &outputs_; }
 
@@ -109,6 +114,9 @@ public:
     Q_INVOKABLE void duplicateScene(const QString& id);
     /// Negative moves it towards the top of the list.
     Q_INVOKABLE void moveScene(const QString& id, int delta);
+    /// Mark a scene as one to reach for. Favourites are part of the document, not the layout:
+    /// they travel with the project and are the same set whichever workspace is on screen.
+    Q_INVOKABLE void setSceneFavourite(const QString& id, bool favourite);
     /// Make a scene this canvas's safety net (ADR-0025). Checks suitability first and reports
     /// what is wrong rather than silently accepting a net that will not hold.
     Q_INVOKABLE void setEmergencyScene(const QString& id);
@@ -266,6 +274,7 @@ private:
 
     std::unique_ptr<lsession::Session> session_;
     SceneModel scenes_;
+    SceneModel favourites_;
     LayerModel layers_;
     SourceModel sources_;
     BusModel buses_;

@@ -348,6 +348,7 @@ Jv enc_scene(const Scene& scene) {
     Jv root{Json::objectValue};
     root["id"] = enc(scene.id);
     root["name"] = scene.name;
+    root["favourite"] = scene.favourite;
 
     Jv roots{Json::arrayValue};
     for (const Node& n : scene.roots)
@@ -927,6 +928,7 @@ Scene dec_scene(Rd& rd, const Jv& root, std::string_view path) {
     Scene s;
     s.id = rd.id(root, "id", path);
     s.name = rd.text(root, "name", path);
+    s.favourite = rd.boolean(root, "favourite", path, false);
     if (const Jv* roots = rd.array(root, "roots", path)) {
         for (const Jv& n : *roots) {
             if (!n.isObject()) {

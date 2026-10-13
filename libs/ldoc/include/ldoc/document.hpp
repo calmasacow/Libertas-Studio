@@ -97,6 +97,10 @@ struct Scene {
     std::vector<Node> roots;
     /// Keyed by the layer node's id.
     std::map<Id, AudioOverride> audio_overrides;
+    /// Marked by the operator as one they reach for. Part of the document rather than of the
+    /// workspace, because it is a property of the show -- it should follow the project to
+    /// another machine, and it is the same set whichever layout is on screen.
+    bool favourite = false;
 
     friend bool operator==(const Scene&, const Scene&) = default;
 };

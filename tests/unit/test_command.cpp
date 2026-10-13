@@ -226,6 +226,7 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         AddCanvas{vertical, 1},
         RemoveCanvas{f.spare_canvas},
         SetCanvas{resized},
+        SetSceneFavourite{f.scene, true},
         SetNodeAudio{f.scene, f.loose, routed},
         SetDeck{studio},
         AddBus{submix, 0},
@@ -258,7 +259,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
     // unlike a canvas or a deck there is not always one to route at.
     const Id bus = p.buses.empty() ? Id::generate() : p.buses[rng() % p.buses.size()].id;
 
-    switch (rng() % 27) {
+    switch (rng() % 28) {
     case 0:
         return SetProjectName{std::format("Show {}", rng() % 100)};
     case 1: {
@@ -321,6 +322,8 @@ Command random_command(std::mt19937& rng, const Project& p) {
     case 15:
         return SetCanvasEmergencyScene{canvas,
                                        (rng() % 3) ? std::optional<Id>{scene.id} : std::nullopt};
+    case 26:
+        return SetSceneFavourite{scene.id, (rng() % 2) == 0};
     case 25: {
         Deck d = p.decks[rng() % p.decks.size()];
         d.studio_mode = (rng() % 2) == 0;

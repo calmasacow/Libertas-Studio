@@ -50,6 +50,7 @@ qt_add_qml_module(libertas-ui
         qml/DragGhost.qml
         qml/DropOverlay.qml
         qml/InputsPanel.qml
+        qml/FavouritesPanel.qml
         qml/InfoPanel.qml
         qml/LayersPanel.qml
         qml/LogPanel.qml

@@ -134,6 +134,7 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetNodeBlend>) return "node.set-blend";
             else if constexpr (std::is_same_v<T, SetNodeAudio>) return "node.set-audio";
             else if constexpr (std::is_same_v<T, SetDeck>) return "deck.set";
+            else if constexpr (std::is_same_v<T, SetSceneFavourite>) return "scene.set-favourite";
             else if constexpr (std::is_same_v<T, SetCanvasOverride>)
                 return "node.set-canvas-override";
             else if constexpr (std::is_same_v<T, AddEffect>) return "effect.add";
@@ -198,6 +199,8 @@ std::string describe(const Command& command) {
                 return c.audio.bus ? "Route layer audio" : "Unroute layer audio";
             else if constexpr (std::is_same_v<T, SetDeck>)
                 return std::format("Configure deck {}", quoted(c.value.name));
+            else if constexpr (std::is_same_v<T, SetSceneFavourite>)
+                return c.favourite ? "Add to favourites" : "Remove from favourites";
             else if constexpr (std::is_same_v<T, SetCanvasOverride>)
                 return c.value ? "Set per-canvas override" : "Clear per-canvas override";
             else if constexpr (std::is_same_v<T, AddEffect>)
@@ -837,6 +840,15 @@ struct Apply {
             return std::unexpected("the render queue needs at least one frame");
         Applied out{SetProjectSettings{p.settings}, describe(c)};
         p.settings = c.value;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetSceneFavourite& c) const {
+        auto scene = find_scene(p, c.scene);
+        if (!scene)
+            return std::unexpected(scene.error());
+        Applied out{SetSceneFavourite{c.scene, (*scene)->favourite}, describe(c)};
+        (*scene)->favourite = c.favourite;
         return out;
     }
 

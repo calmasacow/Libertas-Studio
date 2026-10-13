@@ -178,6 +178,13 @@ Jv body(const SetEffectEnabled& c) {
     return o;
 }
 
+Jv body(const SetSceneFavourite& c) {
+    Jv o{Json::objectValue};
+    o["scene"] = detail::enc(c.scene);
+    o["favourite"] = c.favourite;
+    return o;
+}
+
 Jv body(const SetDeck& c) {
     Jv o{Json::objectValue};
     o["deck"] = detail::enc(c.value);
@@ -397,6 +404,9 @@ std::expected<Command, std::string> command_from_json(std::string_view text) {
     } else if (name == "effect.set-enabled") {
         out = SetEffectEnabled{rd.id(o, "scene", path), rd.id(o, "node", path),
                                rd.id(o, "effect", path), rd.boolean(o, "enabled", path, true)};
+    } else if (name == "scene.set-favourite") {
+        out = SetSceneFavourite{rd.id(o, "scene", path),
+                                rd.boolean(o, "favourite", path, true)};
     } else if (name == "deck.set") {
         const Jv* d = rd.object(o, "deck", path);
         out = SetDeck{d ? detail::dec_deck(rd, *d, path) : Deck{}};

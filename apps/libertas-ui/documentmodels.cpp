@@ -20,6 +20,7 @@ QVariant SceneModel::data(const QModelIndex& index, int role) const {
     case IsProgramRole:   return r->isProgram;
     case IsPreviewRole:   return r->isPreview;
     case IsEmergencyRole: return r->isEmergency;
+    case IsFavouriteRole: return r->isFavourite;
     default:              return {};
     }
 }
@@ -29,6 +30,7 @@ QHash<int, QByteArray> SceneModel::roleNames() const {
         {IdRole, "sceneId"},        {NameRole, "name"},
         {LayerCountRole, "layerCount"}, {IsProgramRole, "isProgram"},
         {IsPreviewRole, "isPreview"},   {IsEmergencyRole, "isEmergency"},
+        {IsFavouriteRole, "isFavourite"},
     };
 }
 

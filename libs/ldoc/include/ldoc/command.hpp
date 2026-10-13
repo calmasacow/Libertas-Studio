@@ -49,6 +49,13 @@ struct RemoveScene {
 };
 
 /// Reorder a scene within the project's list, which is the order the scene list shows.
+/// Mark a scene as one the operator reaches for, so it appears in the favourites panel.
+struct SetSceneFavourite {
+    Id scene;
+    bool favourite = true;
+    friend bool operator==(const SetSceneFavourite&, const SetSceneFavourite&) = default;
+};
+
 struct MoveScene {
     Id scene;
     std::size_t index = 0;
@@ -318,7 +325,8 @@ struct SetCanvasEmergencyScene {
 };
 
 using Command =
-    std::variant<SetProjectName, AddScene, RemoveScene, RenameScene, MoveScene, AddNode, RemoveNode,
+    std::variant<SetProjectName, AddScene, RemoveScene, RenameScene, MoveScene,
+                 SetSceneFavourite, AddNode, RemoveNode,
                  MoveNode, RenameNode, SetNodeVisible, SetNodeLocked, SetNodeTransform,
                  SetNodeLayout, SetNodeBlend, SetNodeAudio, SetCanvasOverride, AddEffect,
                  RemoveEffect, SetEffectParams, SetEffectEnabled, SetDeck, SetDeckProgram,

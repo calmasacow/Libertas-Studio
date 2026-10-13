@@ -36,6 +36,7 @@ Item {
             required property bool isProgram
             required property bool isPreview
             required property bool isEmergency
+            required property bool isFavourite
 
             readonly property bool selected: Document.selectedScene === row.sceneId
 
@@ -119,6 +120,36 @@ Item {
                 anchors.rightMargin: 6
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 4
+
+                // Shown filled when it is a favourite and faintly when it is not, so the way to
+                // make one is discoverable by hovering the row rather than by being told.
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: row.isFavourite || mouse.containsMouse
+                    text: row.isFavourite ? "★" : "☆"
+                    font.pixelSize: 12
+                    color: row.isFavourite
+                        ? (row.selected ? Theme.c.window : Theme.c.warning)
+                        : (row.selected ? Theme.c.window : Theme.c.textMuted)
+                    opacity: row.isFavourite ? 1.0 : (starMouse.containsMouse ? 0.9 : 0.45)
+
+                    MouseArea {
+                        id: starMouse
+
+                        anchors.fill: parent
+                        anchors.margins: -3
+                        hoverEnabled: true
+                        onClicked: Document.setSceneFavourite(row.sceneId, !row.isFavourite)
+                    }
+
+                    ToolTipText {
+                        text: row.isFavourite
+                            ? qsTr("Remove from favourites")
+                            : qsTr("Add to favourites")
+                        visible: starMouse.containsMouse
+                        hoverArea: starMouse
+                    }
+                }
 
                 // On air. Named rather than a coloured dot, because which dot means what is
                 // exactly the thing nobody remembers at the moment it matters.

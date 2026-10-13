@@ -56,6 +56,8 @@ Item {
                 return controlsComponent;
             case "outputs":
                 return outputsComponent;
+            case "favourites":
+                return favouritesComponent;
             default:
                 return null;
             }
@@ -126,6 +128,12 @@ Item {
         id: outputsComponent
 
         OutputsPanel {}
+    }
+
+    Component {
+        id: favouritesComponent
+
+        FavouritesPanel {}
     }
 
     // The program canvas. ADR-0015 rule 2: it is a region of this surface, never a separate OS

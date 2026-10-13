@@ -232,8 +232,15 @@ void Document::rebuild() {
         }
         for (const ldoc::Canvas& c : p.canvases)
             row.isEmergency = row.isEmergency || (c.emergency_scene && *c.emergency_scene == s.id);
+        row.isFavourite = s.favourite;
         scenes.push_back(std::move(row));
     }
+    std::vector<SceneRow> favourites;
+    for (const SceneRow& row : scenes) {
+        if (row.isFavourite)
+            favourites.push_back(row);
+    }
+    favourites_.set_rows(std::move(favourites));
     scenes_.set_rows(std::move(scenes));
 
     std::vector<LayerRow> layers;
@@ -443,6 +450,12 @@ void Document::duplicateScene(const QString& id) {
     const QString new_id = id_str(copy.id);
     run(ldoc::AddScene{std::move(copy), session_->project().scenes.size()});
     selectScene(new_id);
+}
+
+void Document::setSceneFavourite(const QString& id, bool favourite) {
+    const auto parsed = parse_id(id);
+    if (parsed)
+        run(ldoc::SetSceneFavourite{*parsed, favourite});
 }
 
 void Document::moveScene(const QString& id, int delta) {
