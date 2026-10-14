@@ -210,3 +210,25 @@ output that happened to own it, for exactly the reason this ADR's consequences g
 nothing to start: no output actually runs yet, and the shell still reports "Start/Stop Streaming
 is not wired up". Backtrack remains undesigned. An encode left unreferenced by removing its last
 output is kept rather than collected, since nothing yet says which of the two the operator meant.
+
+## Amendment, 2026-10-14 — where reuse is made
+
+The model, the migration and the inspector all landed with the implementation note above, and
+the outputs panel now *shows* a shared encode by name on every destination that carries it. But
+nothing in the shell could *make* one: `addOutput` always creates a fresh encode, and the golden
+fixture shares one only because it was written by hand. The Aitum-shaped case this ADR exists
+for — encode 1080p once, send it to Twitch and Kick and Facebook — was unreachable from the UI.
+
+Asked where that belongs, the operator chose the **outputs manager window**, opened by the gear
+on the Outputs panel's footer, over a per-row encode picker.
+
+The reason it is the better of the two is the one this ADR is about. A dropdown on a row answers
+"what does this destination use", one row at a time, which is the output-centred view that made
+the encoder look like a property of an output in the first place. The manager window is
+encode-centred: it lists encodes, hangs destinations off them, and makes "two encodes, three
+destinations" a thing you can see at a glance instead of something you infer by comparing
+bitrates down a column. The number the inspector prints — concurrent encodes asked of the GPU —
+is then visible in the same shape in the UI.
+
+The row stays read-only about which encode it uses. Editing an encode from a row still edits the
+shared encode and still emits the notice naming the other destinations that moved with it.

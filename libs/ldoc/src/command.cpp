@@ -764,6 +764,20 @@ struct Apply {
             return std::unexpected(
                 std::format("there is no scene {} to link to", c.link.to.to_string()));
 
+        // A link always runs *from* Main. Linking is a secondary canvas's function: a
+        // secondary scene's list answers "which Main scenes bring me up", and Main's own
+        // scene rows carry no link control at all. So a link whose source is not on Main is
+        // not a link this model has a meaning for -- which is what ADR-0023 asks before a
+        // command refuses anything. An earlier reading left this to the panel; it is a rule
+        // about what a link *is*, not about which links are worth making.
+        if (p.canvases.empty())
+            return std::unexpected("a scene link needs a canvas to run from");
+        if (from->canvas != p.canvases.front().id)
+            return std::unexpected(std::format(
+                "{} is not on {}; a link always runs from a Main scene to a scene on another "
+                "canvas",
+                quoted(from->name), quoted(p.canvases.front().name)));
+
         if (from->canvas == to->canvas)
             return std::unexpected(std::format(
                 "{} and {} are on the same canvas, so a link between them would be a scene "

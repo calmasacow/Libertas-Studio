@@ -987,6 +987,40 @@ LTEST_CASE(a_scene_link_obeys_the_three_rules_that_make_a_cue_unambiguous) {
         SceneLink{Id::generate(), f.spare_scene, another_vertical.id}, 0}).has_value());
 }
 
+LTEST_CASE(a_link_can_only_start_on_main) {
+    // The operator's rule: linking is a secondary canvas's function. A secondary scene's link
+    // list answers "which Main scenes bring me up", and Main's own rows carry no link control
+    // at all. So the source of a link is always a Main scene -- enforced here and not only in
+    // the panel, because it is what a link *is*.
+    Fixture f;
+    const Id vertical_canvas = f.project.scene(f.vertical_scene)->canvas;
+    REQUIRE(f.project.canvases.size() >= 2);
+    REQUIRE(f.project.canvases.front().id != vertical_canvas);
+
+    // A third canvas, so there is somewhere for a non-Main link to point that is not Main and
+    // not the canvas it starts on -- otherwise the same-canvas rule would catch it first and
+    // the test would pass for the wrong reason.
+    Canvas third;
+    third.id = Id::generate();
+    third.name = "Ticker";
+    REQUIRE(apply(f.project, AddCanvas{third, f.project.canvases.size()}).has_value());
+    Scene on_third;
+    on_third.id = Id::generate();
+    on_third.name = "Ticker A";
+    on_third.canvas = third.id;
+    REQUIRE(apply(f.project, AddScene{on_third, 0}).has_value());
+
+    const auto sideways = apply(
+        f.project, AddSceneLink{SceneLink{Id::generate(), f.vertical_scene, on_third.id}, 0});
+    CHECK(!sideways.has_value());
+    CHECK(sideways.error().find("is not on") != std::string::npos);
+
+    // The same link from Main is fine, which is what makes the refusal above about the source
+    // and not about the destination.
+    CHECK(apply(f.project, AddSceneLink{SceneLink{Id::generate(), f.spare_scene, on_third.id}, 0})
+              .has_value());
+}
+
 LTEST_CASE(a_cue_and_a_safety_net_cannot_be_the_same_scene) {
     // ADR-0027 rule 5, enforced from both sides: the order the operator does the two steps in
     // must not decide whether the forbidden state is reachable.

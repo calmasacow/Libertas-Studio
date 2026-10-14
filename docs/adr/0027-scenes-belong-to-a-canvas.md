@@ -204,3 +204,65 @@ and adding another, and the linking panel commits a whole tick-list as one `Batc
 `RemoveScene`'s inverse is a `Batch` — and a batch cannot contain a batch. `Apply(Batch)` splices
 a member's batch inverse flat, keeping that member's own order while reversing the members. Found
 by the existing random-sequence property test, which is what it is for.
+
+## Amendment, 2026-10-14 — the operator settles the direction, and it is a model rule
+
+The implementation note above resolved "must a link start on Main?" by saying no, and leaving
+it to the panel. The operator has since stated the rule, and it is narrower than either reading
+of this ADR:
+
+> main scenes cant be linked to main scenes and no linking occurs on main itself. in the scenes
+> panel of a "non-main" canvas the linking icons will exist on a scene that can be clicked and
+> then a list of all of the "main canvas" scenes will be shown, where one or several can be
+> selected. Secondary canvases can not link scenes from canvases other than main. Scenes in Main
+> canvas have no linking icons at all. linking is purely a secondary canvas function and all
+> links are only to main scenes.
+
+So the shape is fixed, and it is the *reverse* of how the popup was being imagined. A secondary
+scene's link list does not answer "what do I cue" — it answers **"which Main scenes bring me
+up"**. Several Main scenes may select one secondary scene; that is the common case, not the edge
+one, and the model already allows it because the one-per-canvas rule is keyed on the *source*.
+
+### The source of a link must be a Main scene, and the command enforces it
+
+Reversing the earlier decision. ADR-0023 asks whether a refusal is about a state the model has
+no meaning for, or merely a policy about which states are worth reaching — a command may only
+refuse the first. The earlier note put "a link from a non-Main scene" in the second bucket. That
+was wrong, now that the operator has said what a link is: linking is a function of a secondary
+canvas, Main carries no link control anywhere in the product, and nothing watches a secondary
+canvas for cues. A link whose source is not on Main is not a link that could ever fire. That is
+a meaningless state, not an unfashionable one, so `AddSceneLink` refuses it.
+
+`validate()` warns rather than errors on one that is already stored, by the same reasoning as
+every other dangling-reference warning here: a project written by hand or by yesterday's build
+still opens and still renders, and the link simply never fires.
+
+This also makes section 6 of this ADR correct as written and retires the section 3 vs section 6
+conflict: links always run from a scene on Main. The one-hop rule in section 3 stays, but it now
+describes something unreachable rather than something merely harmless.
+
+### Ticking a Main scene that is already taken moves the link
+
+If Main's "Camera A" already brings up "Wide" on Vertical, and the operator ticks "Camera A" in
+the popup for Vertical's "Tight", the link **moves** — and the popup says so in words, naming
+the scene that is losing it. The alternative, refusing the tick and sending the operator to the
+other scene's popup to clear it first, makes re-pointing one cue a two-popup job for no safety:
+the move is visible, undoable in one step, and the thing being protected is a link the operator
+is in the middle of re-aiming on purpose.
+
+The model rule is unchanged; the panel commits the move as `RemoveSceneLink` + `AddSceneLink`
+inside one `Batch`, which is already how a tick-list commits.
+
+### "Clear links" unticks, and does not commit
+
+"Link" is the only commit point in the popup. "Clear links" empties the tick-list and writes
+nothing, so closing the popup any other way — Escape, the window button — always leaves the
+project exactly as it was found. Clearing and re-linking in one visit is therefore one undo
+step, not two, and the chain icon does not change colour until something is actually stored.
+
+### The Canvas panel is a tab beside Outputs
+
+Asked where it should live by default; the operator's answer was that it is just a panel so it
+could go anywhere, but by default it should be a tab in the same space as the Outputs panel.
+That is also the arrangement that makes the two panels' footers read as one idea: both get the
+same `+ − gear` row, and in both the gear opens a manager window rather than editing in place.

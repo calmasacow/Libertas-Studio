@@ -521,6 +521,16 @@ private:
                                       from->name, to->name));
                 continue;
             }
+            // Links run from Main and only from Main. A warning rather than an error: such a
+            // link cannot be made through the shell any more, but a project written by hand or
+            // by an earlier build still opens and still renders -- the link simply never fires,
+            // because only Main is watched for cues.
+            if (!p_.canvases.empty() && from->canvas != p_.canvases.front().id) {
+                warn(l.id, std::format("the link to '{}' starts at '{}', which is not on '{}'; "
+                                       "only scenes on the first canvas cue anything, so this "
+                                       "link will never fire",
+                                       to->name, from->name, p_.canvases.front().name));
+            }
             if (!seen.emplace(l.from, to->canvas).second)
                 err(l.id, std::format("scene '{}' cues more than one scene on the canvas '{}' "
                                       "holds, so there is no answer to which one",
