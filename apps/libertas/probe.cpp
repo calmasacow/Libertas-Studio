@@ -86,6 +86,40 @@ void warn_line(Findings& f, std::string_view msg) {
     out("  !! {}", msg);
 }
 
+// What the hardware sections established, kept so the encoder table can cite it. The encoder
+// table runs last for this reason: libavcodec only knows what it was compiled with, and on argus
+// that made `av1_nvenc` and every `*_qsv` read "present" while none of them could run (ADR-0008).
+// A name in the table is only as good as the evidence printed next to it.
+struct VulkanEncode {
+    std::uint32_t index = 0;
+    std::string name;
+    std::uint32_t vendor = 0;
+    bool encode_queue = false;
+    bool h264 = false;
+    bool h265 = false;
+    bool av1 = false;
+};
+
+struct VaapiNode {
+    std::string path;
+    bool h264_encode = false;
+};
+
+struct QsvNode {
+    std::string path;
+    bool ok = false;
+    bool needs_ihd = false;
+};
+
+struct Evidence {
+    bool vulkan_ran = false;
+    std::vector<VulkanEncode> vulkan;
+    bool vainfo_ran = false;
+    std::vector<VaapiNode> vaapi;
+    bool qsv_ran = false;
+    std::vector<QsvNode> qsv;
+};
+
 // ---------------------------------------------------------------------------- session / display
 
 void probe_session(Findings& f) {
@@ -214,7 +248,7 @@ const char* device_type_name(VkPhysicalDeviceType t) {
     }
 }
 
-void probe_vulkan(Findings& f, const std::vector<DrmNode>& drm_nodes) {
+void probe_vulkan(Findings& f, Evidence& ev, const std::vector<DrmNode>& drm_nodes) {
     section("Vulkan");
 
     VkApplicationInfo app{};
@@ -243,8 +277,12 @@ void probe_vulkan(Findings& f, const std::vector<DrmNode>& drm_nodes) {
     std::vector<VkPhysicalDevice> devices(count);
     vkEnumeratePhysicalDevices(inst, &count, devices.data());
 
-    // Extensions that the capture->composite->encode path actually depends on.
-    static constexpr std::array<const char*, 7> kWanted{
+    ev.vulkan_ran = true;
+
+    // Extensions that the capture->composite->encode path actually depends on. The per-codec
+    // encode extensions are listed because the queue extension alone says nothing about which
+    // codecs the silicon has: the RTX 2070 has the queue and no AV1 encoder.
+    static constexpr std::array<const char*, 10> kWanted{
         VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
         VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
         VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
@@ -252,6 +290,9 @@ void probe_vulkan(Findings& f, const std::vector<DrmNode>& drm_nodes) {
         VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
         VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME,
         "VK_KHR_video_encode_queue",
+        "VK_KHR_video_encode_h264",
+        "VK_KHR_video_encode_h265",
+        "VK_KHR_video_encode_av1",
     };
 
     for (std::uint32_t i = 0; i < count; ++i) {
@@ -303,6 +344,16 @@ void probe_vulkan(Findings& f, const std::vector<DrmNode>& drm_nodes) {
 
         for (const char* want : kWanted)
             out("      {:<46} {}", want, has_ext(exts, want) ? "yes" : "NO");
+
+        ev.vulkan.push_back(VulkanEncode{
+            .index = i,
+            .name = p.deviceName,
+            .vendor = p.vendorID,
+            .encode_queue = has_ext(exts, "VK_KHR_video_encode_queue"),
+            .h264 = has_ext(exts, "VK_KHR_video_encode_h264"),
+            .h265 = has_ext(exts, "VK_KHR_video_encode_h265"),
+            .av1 = has_ext(exts, "VK_KHR_video_encode_av1"),
+        });
     }
 
     vkDestroyInstance(inst, nullptr);
@@ -310,23 +361,195 @@ void probe_vulkan(Findings& f, const std::vector<DrmNode>& drm_nodes) {
 
 // ---------------------------------------------------------------------------- encoders
 
-void probe_encoders() {
+enum class Family { Vulkan, Nvenc, Vaapi, Qsv, Software };
+enum class Codec { H264, Hevc, Av1, Audio };
+
+struct Verdict {
+    const char* status;
+    std::string why;
+};
+
+const char* codec_ext(Codec c) {
+    switch (c) {
+    case Codec::H264: return "VK_KHR_video_encode_h264";
+    case Codec::Hevc: return "VK_KHR_video_encode_h265";
+    case Codec::Av1:  return "VK_KHR_video_encode_av1";
+    default:          return "";
+    }
+}
+
+bool claims(const VulkanEncode& d, Codec c) {
+    switch (c) {
+    case Codec::H264: return d.encode_queue && d.h264;
+    case Codec::Hevc: return d.encode_queue && d.h265;
+    case Codec::Av1:  return d.encode_queue && d.av1;
+    default:          return false;
+    }
+}
+
+std::string join(const std::vector<std::string>& parts) {
+    std::string s;
+    for (const std::string& p : parts)
+        s += (s.empty() ? "" : ", ") + p;
+    return s;
+}
+
+std::string label(const VulkanEncode& d) { return std::format("[{}] {}", d.index, d.name); }
+
+Verdict judge_vulkan(const Evidence& ev, Codec c) {
+    if (!ev.vulkan_ran)
+        return {"unknown", "no Vulkan instance (see Vulkan section)"};
+    std::vector<std::string> yes;
+    bool any_queue = false;
+    for (const VulkanEncode& d : ev.vulkan) {
+        any_queue = any_queue || d.encode_queue;
+        if (claims(d, c))
+            yes.push_back(label(d));
+    }
+    if (!yes.empty())
+        return {"claimed", std::format("{} advertises {}", join(yes), codec_ext(c))};
+    if (!any_queue)
+        return {"no", "no Vulkan device has VK_KHR_video_encode_queue"};
+    return {"no", std::format("no Vulkan device advertises {}", codec_ext(c))};
+}
+
+// NVENC is never opened here, but on NVIDIA the Vulkan video encode extensions are the same
+// hardware block reported by the same driver, so they are the cheapest honest witness to which
+// codecs the silicon has. The one way this can be wrong is a driver old enough to expose the
+// queue but predate a codec's extension, which is why "no" names the missing extension rather
+// than asserting anything about the GPU.
+Verdict judge_nvenc(const Evidence& ev, const std::vector<DrmNode>& drm_nodes, Codec c) {
+    std::vector<const VulkanEncode*> nvidia;
+    for (const VulkanEncode& d : ev.vulkan)
+        if (d.vendor == 0x10de)
+            nvidia.push_back(&d);
+
+    if (nvidia.empty()) {
+        const bool nvidia_drm = std::any_of(drm_nodes.begin(), drm_nodes.end(),
+            [](const DrmNode& n) { return n.driver == "nvidia-drm"; });
+        return nvidia_drm ? Verdict{"unknown", "NVIDIA GPU present but not visible to Vulkan"}
+                          : Verdict{"no", "no NVIDIA GPU on this machine"};
+    }
+
+    std::vector<std::string> yes;
+    std::vector<std::string> lacking;
+    for (const VulkanEncode* d : nvidia) {
+        if (claims(*d, c))
+            yes.push_back(label(*d));
+        else if (d->encode_queue)
+            lacking.push_back(label(*d));
+    }
+    if (!yes.empty())
+        return {"claimed", std::format("{} advertises {}", join(yes), codec_ext(c))};
+    if (!lacking.empty())
+        return {"no", std::format("{} lacks {}", join(lacking), codec_ext(c))};
+    return {"unknown", "NVIDIA driver exposes no Vulkan video encode to read codecs from"};
+}
+
+Verdict judge_vaapi(const Evidence& ev, Codec c) {
+    if (!ev.vainfo_ran)
+        return {"unknown", "vainfo not installed, so no entrypoint was read"};
+    if (c != Codec::H264)
+        return {"unknown", "only the H.264 entrypoint is checked (VAAPI section)"};
+    std::vector<std::string> yes;
+    for (const VaapiNode& n : ev.vaapi)
+        if (n.h264_encode)
+            yes.push_back(n.path);
+    if (!yes.empty())
+        return {"claimed", std::format("{} advertises an H.264 encode entrypoint", join(yes))};
+    return {"no", "no render node advertises an H.264 encode entrypoint"};
+}
+
+// The QSV section really does encode -- one second of H.264 -- so h264_qsv is the one encoder in
+// this table the probe has run. Session creation comes before any codec is chosen, so when it
+// fails it fails for HEVC and AV1 as well; that is a measured failure, not an inference.
+Verdict judge_qsv(const Evidence& ev, Codec c) {
+    if (!ev.qsv_ran)
+        return {"unknown", "ffmpeg CLI not found, so no QSV session was tried"};
+    if (ev.qsv.empty())
+        return {"no", "no Intel render node"};
+
+    std::vector<std::string> ok;
+    std::vector<std::string> failed;
+    for (const QsvNode& n : ev.qsv) {
+        if (n.ok)
+            ok.push_back(n.needs_ihd ? n.path + " (with LIBVA_DRIVER_NAME=iHD)" : n.path);
+        else
+            failed.push_back(n.path);
+    }
+    if (ok.empty()) {
+        return c == Codec::H264
+            ? Verdict{"FAILED", std::format("tried on {}: no QSV session (QSV section)", join(failed))}
+            : Verdict{"FAILED", std::format("no QSV session on {}, so no QSV codec can run",
+                                            join(failed))};
+    }
+    if (c == Codec::H264)
+        return {"ran", std::format("encoded 1 s of H.264 on {}", join(ok))};
+    return {"unknown", std::format("QSV session works on {}; only H.264 was run", join(ok))};
+}
+
+void probe_encoders(const Evidence& ev, const std::vector<DrmNode>& drm_nodes) {
     section("encoders (libavcodec)");
     out("  libavcodec {}.{}.{}", LIBAVCODEC_VERSION_MAJOR, LIBAVCODEC_VERSION_MINOR,
         LIBAVCODEC_VERSION_MICRO);
     out("");
+    out("  \"built\" means only that this libavcodec was compiled with the encoder. It is a fact");
+    out("  about the ffmpeg build, NOT a claim that the encoder works on this machine (ADR-0008).");
+    out("  \"this machine\" says what the sections above found, and how:");
+    out("    ran      the probe encoded frames with it here");
+    out("    FAILED   the probe tried it, or what it needs, here and it failed");
+    out("    no       a driver reports no hardware encoder for this codec here");
+    out("    claimed  a driver advertises it; the probe never opened it, so it is unproven");
+    out("    unknown  nothing in this probe can tell");
+    out("    software CPU encoder; no hardware to check");
+    out("");
 
-    static constexpr std::array<const char*, 12> kNames{
-        "h264_nvenc", "hevc_nvenc", "av1_nvenc",
-        "h264_vaapi", "hevc_vaapi", "av1_vaapi",
-        "h264_qsv",   "hevc_qsv",   "av1_qsv",
-        "libx264",    "libsvtav1",  "aac",
+    struct Entry {
+        const char* name;
+        Family family;
+        Codec codec;
     };
-    for (const char* name : kNames) {
-        const AVCodec* c = avcodec_find_encoder_by_name(name);
-        out("  {:<14} {}", name, (c != nullptr) ? "present" : "-");
+    static constexpr std::array<Entry, 15> kEncoders{{
+        {"h264_vulkan", Family::Vulkan,   Codec::H264},
+        {"hevc_vulkan", Family::Vulkan,   Codec::Hevc},
+        {"av1_vulkan",  Family::Vulkan,   Codec::Av1},
+        {"h264_nvenc",  Family::Nvenc,    Codec::H264},
+        {"hevc_nvenc",  Family::Nvenc,    Codec::Hevc},
+        {"av1_nvenc",   Family::Nvenc,    Codec::Av1},
+        {"h264_vaapi",  Family::Vaapi,    Codec::H264},
+        {"hevc_vaapi",  Family::Vaapi,    Codec::Hevc},
+        {"av1_vaapi",   Family::Vaapi,    Codec::Av1},
+        {"h264_qsv",    Family::Qsv,      Codec::H264},
+        {"hevc_qsv",    Family::Qsv,      Codec::Hevc},
+        {"av1_qsv",     Family::Qsv,      Codec::Av1},
+        {"libx264",     Family::Software, Codec::H264},
+        {"libsvtav1",   Family::Software, Codec::Av1},
+        {"aac",         Family::Software, Codec::Audio},
+    }};
+
+    out("  {:<13} {:<6} {}", "encoder", "built", "this machine");
+    for (const Entry& e : kEncoders) {
+        if (avcodec_find_encoder_by_name(e.name) == nullptr) {
+            out("  {:<13} {:<6} {:<8} {}", e.name, "no", "-", "not compiled into this libavcodec");
+            continue;
+        }
+        Verdict v{"software", "CPU encoder; no hardware to check"};
+        switch (e.family) {
+        case Family::Vulkan:   v = judge_vulkan(ev, e.codec); break;
+        case Family::Nvenc:    v = judge_nvenc(ev, drm_nodes, e.codec); break;
+        case Family::Vaapi:    v = judge_vaapi(ev, e.codec); break;
+        case Family::Qsv:      v = judge_qsv(ev, e.codec); break;
+        case Family::Software: break;
+        }
+        out("  {:<13} {:<6} {:<8} {}", e.name, "yes", v.status, v.why);
     }
     out("");
+    out("  note: *_nvenc is judged from the NVIDIA driver's Vulkan video extensions, which report");
+    out("        the same encoder hardware. NVENC itself is never opened by the probe.");
+    out("  note: av1_vulkan writes bitstreams dav1d cannot parse even where a driver claims AV1");
+    out("        (ADR-0006). Do not read \"claimed\" there as usable.");
+    out("  note: QSV is not a Libertas encode path (ADR-0008); it is listed because a working-");
+    out("        looking QSV entry is exactly the confusion that ADR records.");
     out("  note: NVENC concurrent-session capacity is NOT probed yet. Per the plan it must be");
     out("        MEASURED (not hardcoded) before per-destination multistream encode is offered.");
 }
@@ -395,13 +618,14 @@ void probe_portal(Findings& f) {
 // On a dual-GPU box, nvidia-vaapi-driver can claim VAAPI for *every* render node, including the
 // Intel one, and NVDEC is decode-only. That surfaces as "No usable encoding entrypoint found".
 // See ADR-0006. We must therefore pick the driver per device rather than trusting libva's default.
-void probe_vaapi(Findings& f, const std::vector<DrmNode>& nodes) {
+void probe_vaapi(Findings& f, Evidence& ev, const std::vector<DrmNode>& nodes) {
     section("VAAPI drivers per render node");
 
     if (!have_exe("vainfo")) {
         out("  vainfo not installed - cannot verify VAAPI driver binding (install libva-utils)");
         return;
     }
+    ev.vainfo_ran = true;
 
     bool any_encode = false;
     for (const DrmNode& n : nodes) {
@@ -419,6 +643,7 @@ void probe_vaapi(Findings& f, const std::vector<DrmNode>& nodes) {
 
         out("  {:<22} default driver : {}", n.path, drv.empty() ? "(none)" : drv);
         out("  {:<22} H264 encode    : {}", "", has_enc ? "yes" : "NO");
+        VaapiNode& rec = ev.vaapi.emplace_back(VaapiNode{.path = n.path, .h264_encode = has_enc});
 
         // If the default binding cannot encode, try the vendor-appropriate driver explicitly.
         if (!has_enc) {
@@ -433,6 +658,7 @@ void probe_vaapi(Findings& f, const std::vector<DrmNode>& nodes) {
                     "| grep -c 'VAProfileH264High.*VAEntrypointEncSlice'", forced, n.path).c_str());
                 if (!fenc.empty() && fenc != "0") {
                     any_encode = true;
+                    rec.h264_encode = true;
                     out("  {:<22} with LIBVA_DRIVER_NAME={}: {} -- H264 encode yes", "", forced,
                         fdrv);
                     warn_line(f, std::format(
@@ -453,13 +679,14 @@ void probe_vaapi(Findings& f, const std::vector<DrmNode>& nodes) {
 
 // QSV sits on oneVPL over VAAPI, so the nvidia-vaapi-driver hijack (ADR-0006/0007) stops it from
 // even creating a session. This is the author's production Twitch encoder, so it is probed directly.
-void probe_qsv(Findings& f, const std::vector<DrmNode>& nodes) {
+void probe_qsv(Findings& f, Evidence& ev, const std::vector<DrmNode>& nodes) {
     section("QSV encode sessions");
 
     if (!have_exe("ffmpeg")) {
         out("  ffmpeg CLI not found - skipping QSV session check");
         return;
     }
+    ev.qsv_ran = true;
 
     // A one-second 640x360 encode to /dev/null is enough to prove a session can be created.
     const auto qsv_cmd = [](const std::string& node, const char* env_prefix) {
@@ -475,8 +702,10 @@ void probe_qsv(Findings& f, const std::vector<DrmNode>& nodes) {
             continue;
         probed_any = true;
 
+        QsvNode& rec = ev.qsv.emplace_back(QsvNode{.path = n.path});
         const std::string plain = capture_cmd(qsv_cmd(n.path, "").c_str());
         if (plain.empty()) {
+            rec.ok = true;
             out("  {:<22} QSV session (default env)      : OK", n.path);
             continue;
         }
@@ -485,6 +714,8 @@ void probe_qsv(Findings& f, const std::vector<DrmNode>& nodes) {
 
         const std::string forced = capture_cmd(qsv_cmd(n.path, "LIBVA_DRIVER_NAME=iHD ").c_str());
         if (forced.empty()) {
+            rec.ok = true;
+            rec.needs_ihd = true;
             out("  {:<22} QSV with LIBVA_DRIVER_NAME=iHD : OK", "");
             warn_line(f, std::format(
                 "{}: QSV requires LIBVA_DRIVER_NAME=iHD. Libertas sets this per encode worker "
@@ -539,12 +770,13 @@ int probe_main(bool strict) {
     out("libertas probe - environment report");
     out("(capture/composite/encode relevant facts; attach this to any bug report)");
 
+    Evidence ev;
     probe_session(f);
     const std::vector<DrmNode> drm_nodes = probe_drm();
-    probe_vulkan(f, drm_nodes);
-    probe_encoders();
-    probe_vaapi(f, drm_nodes);
-    probe_qsv(f, drm_nodes);
+    probe_vulkan(f, ev, drm_nodes);
+    probe_vaapi(f, ev, drm_nodes);
+    probe_qsv(f, ev, drm_nodes);
+    probe_encoders(ev, drm_nodes);
     probe_pipewire();
     probe_portal(f);
     probe_theme();
