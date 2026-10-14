@@ -311,9 +311,9 @@ Item {
                             hoverEnabled: true
                             enabled: Document.selectedScene !== ""
                             onClicked: {
-                                Document.addSourceAsLayer(dialog.titleOf(dialog.selectedType),
-                                                          dialog.selectedType,
-                                                          dialog.makeVisible);
+                                Document.addNewSourceToScene(dialog.titleOf(dialog.selectedType),
+                                                             dialog.selectedType,
+                                                             dialog.makeVisible);
                                 dialog.close();
                             }
                         }
@@ -412,7 +412,7 @@ Item {
                                     hoverEnabled: true
                                     onClicked: dialog.selectedSource = tile.modelData.id
                                     onDoubleClicked: {
-                                        Document.addExistingSourceAsLayer(tile.modelData.id,
+                                        Document.addExistingSourceToScene(tile.modelData.id,
                                                                           dialog.makeVisible);
                                         dialog.close();
                                     }
@@ -480,7 +480,7 @@ Item {
                     minimumWidth: 110
                     enabled: dialog.selectedSource !== "" && Document.selectedScene !== ""
                     onClicked: {
-                        Document.addExistingSourceAsLayer(dialog.selectedSource,
+                        Document.addExistingSourceToScene(dialog.selectedSource,
                                                           dialog.makeVisible);
                         dialog.close();
                     }

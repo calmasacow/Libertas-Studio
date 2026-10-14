@@ -111,13 +111,13 @@ Project golden_project() {
     camera.settings.emplace("full_range", false);
     p.sources.push_back(camera);
 
-    // The emergency scene: one layer, one looping local clip (ADR-0025).
+    // The emergency scene: one source, one looping local clip (ADR-0025).
     Scene emergency;
     emergency.id = fixed_id(0x40);
     emergency.name = "Emergency";
-    Node card = make_node(NodeKind::Layer, "Card");
+    Node card = make_node(NodeKind::Source, "Card");
     card.id = fixed_id(0x41);
-    std::get<LayerData>(card.data).source = clip.id;
+    std::get<SourceData>(card.data).source = clip.id;
     emergency.roots.push_back(std::move(card));
 
     Scene live;
@@ -129,16 +129,16 @@ Project golden_project() {
     group.blend.mode = BlendMode::Multiply;
     group.blend.opacity = 0.8;
 
-    Node cam_layer = make_node(NodeKind::Layer, "Camera");
-    cam_layer.id = fixed_id(0x52);
-    cam_layer.transform.position = Vec2{120.0, 64.0};
-    cam_layer.transform.scale = Vec2{0.5, 0.5};
-    cam_layer.layout.fit = FitMode::Cover;
-    cam_layer.layout.size = Vec2{640.0, 360.0};
-    cam_layer.layout.crop = CropRect{8.0, 0.0, 8.0, 0.0};
-    std::get<LayerData>(cam_layer.data).source = camera.id;
-    std::get<LayerData>(cam_layer.data).audio.bus = program.id;
-    std::get<LayerData>(cam_layer.data).audio.gain_db = -3.0;
+    Node cam_node = make_node(NodeKind::Source, "Camera");
+    cam_node.id = fixed_id(0x52);
+    cam_node.transform.position = Vec2{120.0, 64.0};
+    cam_node.transform.scale = Vec2{0.5, 0.5};
+    cam_node.layout.fit = FitMode::Cover;
+    cam_node.layout.size = Vec2{640.0, 360.0};
+    cam_node.layout.crop = CropRect{8.0, 0.0, 8.0, 0.0};
+    std::get<SourceData>(cam_node.data).source = camera.id;
+    std::get<SourceData>(cam_node.data).audio.bus = program.id;
+    std::get<SourceData>(cam_node.data).audio.gain_db = -3.0;
 
     Effect stroke;
     stroke.id = fixed_id(0x53);
@@ -150,7 +150,7 @@ Project golden_project() {
     stroke.params.emplace("offset", Vec2{1.0, -1.0});
     stroke.params.emplace("link", fixed_id(0x52));
     stroke.params.emplace("note", std::string{"keeps the camera readable on a bright scene"});
-    cam_layer.effects.push_back(std::move(stroke));
+    cam_node.effects.push_back(std::move(stroke));
 
     // The portrait canvas sees the camera somewhere else; this is what makes vertical one scene
     // rather than two (ADR-0021).
@@ -159,9 +159,9 @@ Project golden_project() {
     moved.position = Vec2{40.0, 1200.0};
     moved.scale = Vec2{0.8, 0.8};
     portrait.transform = moved;
-    cam_layer.canvas_overrides.emplace(vertical.id, portrait);
+    cam_node.canvas_overrides.emplace(vertical.id, portrait);
 
-    group.children()->push_back(std::move(cam_layer));
+    group.children()->push_back(std::move(cam_node));
 
     Node adjust = make_node(NodeKind::Adjustment, "Grade");
     adjust.id = fixed_id(0x54);

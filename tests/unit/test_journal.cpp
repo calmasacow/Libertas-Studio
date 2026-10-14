@@ -48,7 +48,7 @@ private:
 Project starter() {
     Project p = make_default_project("Show");
     p.scenes[0].name = "Intro";
-    p.scenes[0].roots.push_back(make_node(NodeKind::Layer, "Camera"));
+    p.scenes[0].roots.push_back(make_node(NodeKind::Source, "Camera"));
     return p;
 }
 
@@ -296,7 +296,7 @@ LTEST_CASE(a_journal_left_from_an_older_generation_is_not_replayed) {
         auto j = Journal::open(journal_path(sd.project()));
         REQUIRE(j.has_value());
         REQUIRE(j->record(AddNode{scene, std::nullopt, 0,
-                                  make_node(NodeKind::Layer, "ghost")}, 1).has_value());
+                                  make_node(NodeKind::Source, "ghost")}, 1).has_value());
     }
     p.generation = 5; // pretend several saves have happened since
     REQUIRE(save_project(p, sd.project()).has_value());

@@ -8,7 +8,7 @@ import Libertas
 
 /// What is in the project, and what is wrong with it.
 ///
-/// This was called "Stats", which it never was: it counts scenes and layers and lists the
+/// This was called "Stats", which it never was: it counts scenes and sources and lists the
 /// document's problems. Broadcast statistics -- frame times, dropped frames, encoder and network
 /// health -- are a different panel with a different job, and are not shown here even partially.
 Item {
@@ -45,8 +45,8 @@ Item {
 
             StatRow {
                 width: parent.width
-                label: qsTr("Layers here")
-                value: Document.layers.rowCount()
+                label: qsTr("Sources here")
+                value: Document.nodes.rowCount()
             }
 
             StatRow {

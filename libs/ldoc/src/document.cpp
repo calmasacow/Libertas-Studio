@@ -129,15 +129,15 @@ std::vector<Problem> check_emergency_scene(const Project& project, const Id& sce
         return out;
     }
 
-    std::size_t media_layers = 0;
-    std::size_t total_layers = 0;
+    std::size_t media_nodes = 0;
+    std::size_t total_nodes = 0;
     visit(scene->roots, [&](const Node& n) {
-        const auto* layer = std::get_if<LayerData>(&n.data);
-        if (!layer)
+        const auto* placed = std::get_if<SourceData>(&n.data);
+        if (!placed)
             return;
-        ++total_layers;
-        if (!layer->source) {
-            // A layer bound to nothing draws nothing, which makes the safety net exactly as
+        ++total_nodes;
+        if (!placed->source) {
+            // A source node bound to nothing draws nothing, which makes the safety net exactly as
             // useful as not having one -- while looking, in the scene list, as though it is set.
             out.push_back(Problem{Severity::Warning,
                                   std::format("'{}' in the emergency scene is not bound to "
@@ -146,7 +146,7 @@ std::vector<Problem> check_emergency_scene(const Project& project, const Id& sce
                                   n.id});
             return;
         }
-        const Source* src = project.source(*layer->source);
+        const Source* src = project.source(*placed->source);
         if (!src) {
             out.push_back(Problem{Severity::Warning,
                                   std::format("'{}' in the emergency scene has no source", n.name),
@@ -164,7 +164,7 @@ std::vector<Problem> check_emergency_scene(const Project& project, const Id& sce
         }
         if (src->type != "source.media")
             return;
-        ++media_layers;
+        ++media_nodes;
 
         // The safe state can last minutes. A clip that plays once and cuts to black is a net
         // that expires, usually just as it is finally doing its job.
@@ -180,18 +180,18 @@ std::vector<Problem> check_emergency_scene(const Project& project, const Id& sce
                                   n.id});
     });
 
-    if (total_layers == 0) {
+    if (total_nodes == 0) {
         out.push_back(Problem{Severity::Warning,
                               std::format("the emergency scene '{}' has nothing in it",
                                           scene->name),
                               scene->id});
-    } else if (media_layers > 1 || total_layers > 1) {
+    } else if (media_nodes > 1 || total_nodes > 1) {
         // Not an error: a logo over a clip is reasonable. But the net is reliable in proportion
         // to how little it depends on, and one pre-rendered clip can carry any branding wanted.
         out.push_back(Problem{Severity::Warning,
-                              std::format("the emergency scene '{}' has {} layers; one looping "
+                              std::format("the emergency scene '{}' has {} sources; one looping "
                                           "clip is the most reliable shape for it",
-                                          scene->name, total_layers),
+                                          scene->name, total_nodes),
                               scene->id});
     }
     return out;
@@ -245,7 +245,7 @@ Scene duplicate_scene(const Scene& scene, std::string new_name) {
     copy.name = std::move(new_name);
     std::map<Id, Id> remap;
     copy.roots = duplicate(scene.roots, &remap);
-    // Audio overrides are keyed by layer id, so they have to follow the remap or they would
+    // Audio overrides are keyed by node id, so they have to follow the remap or they would
     // silently apply to nothing.
     for (const auto& [node_id, ov] : scene.audio_overrides) {
         const auto it = remap.find(node_id);
@@ -428,8 +428,8 @@ private:
                 // with no reference set at all, and the only difference is that this one records
                 // that something was deleted. Making it an error would mean a scene could not be
                 // deleted while anything cloned it and a source could not be removed while any
-                // layer used it -- a web of refusals that makes ordinary editing a puzzle. The
-                // operator is told what is missing and can fix it; nothing silently renders
+                // source node used it -- a web of refusals that makes ordinary editing a puzzle.
+                // The operator is told what is missing and can fix it; nothing silently renders
                 // wrong. Errors are reserved for documents that cannot be rendered as written.
                 if (kind) {
                     if (!exists_as(r.id, kind))
@@ -451,7 +451,7 @@ private:
                                            "not in it",
                                            s.name, node_id.to_string()));
                 if (ov.bus && !exists_as(*ov.bus, "bus"))
-                    warn(s.id, std::format("scene '{}' routes a layer to bus {}, which does not "
+                    warn(s.id, std::format("scene '{}' routes a source to bus {}, which does not "
                                            "exist",
                                            s.name, ov.bus->to_string()));
             }

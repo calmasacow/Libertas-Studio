@@ -28,7 +28,10 @@ std::string_view name_of(const std::array<std::pair<T, std::string_view>, N>& ta
 
 constexpr std::array<std::pair<NodeKind, std::string_view>, 6> kNodeKinds = {{
     {NodeKind::Group, "group"},
-    {NodeKind::Layer, "layer"},
+    // The pre-ADR-0028 word, still on the wire: it changes with its migration in the format bump
+    // ADR-0027 and ADR-0028 share, not on its own. Anything showing a kind to the operator
+    // should not read this table, because it is the file format's vocabulary, not the screen's.
+    {NodeKind::Source, "layer"},
     {NodeKind::Adjustment, "adjustment"},
     {NodeKind::Mask, "mask"},
     {NodeKind::Reference, "reference"},
@@ -69,8 +72,8 @@ NodeKind Node::kind() const {
             using T = std::decay_t<decltype(d)>;
             if constexpr (std::is_same_v<T, GroupData>)
                 return NodeKind::Group;
-            else if constexpr (std::is_same_v<T, LayerData>)
-                return NodeKind::Layer;
+            else if constexpr (std::is_same_v<T, SourceData>)
+                return NodeKind::Source;
             else if constexpr (std::is_same_v<T, AdjustmentData>)
                 return NodeKind::Adjustment;
             else if constexpr (std::is_same_v<T, MaskData>)
@@ -99,7 +102,7 @@ Node make_node(NodeKind kind, std::string name) {
     n.name = std::move(name);
     switch (kind) {
     case NodeKind::Group:      n.data = GroupData{}; break;
-    case NodeKind::Layer:      n.data = LayerData{}; break;
+    case NodeKind::Source:     n.data = SourceData{}; break;
     case NodeKind::Adjustment: n.data = AdjustmentData{}; break;
     case NodeKind::Mask:       n.data = MaskData{}; break;
     case NodeKind::Reference:  n.data = ReferenceData{}; break;
@@ -219,12 +222,12 @@ void collect_references(const std::vector<Node>& roots, std::vector<Reference>& 
     visit(roots, [&out](const Node& n) {
         if (const auto* ref = std::get_if<ReferenceData>(&n.data))
             out.push_back(Reference{ref->target, RefKind::Node, n.id});
-        if (const auto* layer = std::get_if<LayerData>(&n.data)) {
-            if (layer->source)
-                out.push_back(Reference{*layer->source, RefKind::Source, n.id});
-            if (layer->audio.bus)
-                out.push_back(Reference{*layer->audio.bus, RefKind::Bus, n.id});
-            for (const Send& s : layer->audio.sends)
+        if (const auto* placed = std::get_if<SourceData>(&n.data)) {
+            if (placed->source)
+                out.push_back(Reference{*placed->source, RefKind::Source, n.id});
+            if (placed->audio.bus)
+                out.push_back(Reference{*placed->audio.bus, RefKind::Bus, n.id});
+            for (const Send& s : placed->audio.sends)
                 out.push_back(Reference{s.to, RefKind::Bus, n.id});
         }
         if (const auto* pre = std::get_if<PrecompData>(&n.data))

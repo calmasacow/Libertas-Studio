@@ -41,7 +41,7 @@ class Document : public QObject {
     QML_SINGLETON
 
     Q_PROPERTY(QAbstractItemModel* scenes READ scenesModel CONSTANT)
-    Q_PROPERTY(QAbstractItemModel* layers READ layersModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* nodes READ nodesModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* sources READ sourcesModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* buses READ busesModel CONSTANT)
     /// The scene list filtered to the starred ones. A second model rather than a filter proxy
@@ -62,10 +62,10 @@ class Document : public QObject {
     Q_PROPERTY(QString redoDescription READ redoDescription NOTIFY changed)
 
     Q_PROPERTY(QString selectedScene READ selectedScene NOTIFY selectionChanged)
-    Q_PROPERTY(QString selectedLayer READ selectedLayer NOTIFY selectionChanged)
-    /// Everything the properties panel shows about the selected layer, or empty when nothing is
+    Q_PROPERTY(QString selectedNode READ selectedNode NOTIFY selectionChanged)
+    /// Everything the properties panel shows about the selected node, or empty when nothing is
     /// selected.
-    Q_PROPERTY(QVariantMap layerProperties READ layerProperties NOTIFY selectionChanged)
+    Q_PROPERTY(QVariantMap nodeProperties READ nodeProperties NOTIFY selectionChanged)
 
     Q_PROPERTY(QStringList problems READ problems NOTIFY changed)
     Q_PROPERTY(QStringList blendModes READ blendModes CONSTANT)
@@ -80,7 +80,7 @@ public:
     static Document* create(QQmlEngine*, QJSEngine*);
 
     [[nodiscard]] QAbstractItemModel* scenesModel() { return &scenes_; }
-    [[nodiscard]] QAbstractItemModel* layersModel() { return &layers_; }
+    [[nodiscard]] QAbstractItemModel* nodesModel() { return &nodes_; }
     [[nodiscard]] QAbstractItemModel* sourcesModel() { return &sources_; }
     [[nodiscard]] QAbstractItemModel* busesModel() { return &buses_; }
     [[nodiscard]] QAbstractItemModel* favouriteScenesModel() { return &favourites_; }
@@ -96,15 +96,15 @@ public:
     [[nodiscard]] QString undoDescription() const;
     [[nodiscard]] QString redoDescription() const;
     [[nodiscard]] QString selectedScene() const { return selected_scene_; }
-    [[nodiscard]] QString selectedLayer() const { return selected_layer_; }
-    [[nodiscard]] QVariantMap layerProperties() const;
+    [[nodiscard]] QString selectedNode() const { return selected_node_; }
+    [[nodiscard]] QVariantMap nodeProperties() const;
     [[nodiscard]] QStringList problems() const;
     [[nodiscard]] QStringList blendModes() const;
 
     // ---- selection (UI state, not document state) -------------------------------------------
 
     Q_INVOKABLE void selectScene(const QString& id);
-    Q_INVOKABLE void selectLayer(const QString& id);
+    Q_INVOKABLE void selectNode(const QString& id);
 
     // ---- scenes -----------------------------------------------------------------------------
 
@@ -132,14 +132,14 @@ public:
     Q_PROPERTY(QVariantList sourceTypes READ sourceTypes CONSTANT)
     [[nodiscard]] QVariantList sourceTypes() const;
 
-    /// Put a new source of this type into the current scene: make the source, make the layer,
-    /// bind them. One `Batch`, so it is one undo step -- nobody pressing Ctrl+Z after adding a
-    /// camera wants the layer back without its source.
-    Q_INVOKABLE void addSourceAsLayer(const QString& name, const QString& type,
-                                      bool visible = true);
+    /// Put a new source of this type into the current scene: make the source, make a source
+    /// node, bind them. One `Batch`, so it is one undo step -- nobody pressing Ctrl+Z after
+    /// adding a camera wants the node back without its source.
+    Q_INVOKABLE void addNewSourceToScene(const QString& name, const QString& type,
+                                         bool visible = true);
     /// Put a source the project already has into the current scene. Also one step, and
     /// deliberately does not create a second source: one camera, opened once, in six scenes.
-    Q_INVOKABLE void addExistingSourceAsLayer(const QString& sourceId, bool visible = true);
+    Q_INVOKABLE void addExistingSourceToScene(const QString& sourceId, bool visible = true);
 
     /// Every source of one type, for the add dialog's right-hand grid. Each entry carries what
     /// the tile needs to draw itself: `id`, `name`, `typeTitle`, `useCount`, `selfContained`,
@@ -177,11 +177,14 @@ public:
     Q_INVOKABLE void applySourceSettings(const QString& id, const QString& name,
                                          const QVariantMap& values);
 
+    /// Add a source to the *project* only: nothing appears in any scene. Not `addSourceNode`,
+    /// which is the other half -- a node in the current scene, bound to nothing -- and not
+    /// `addNewSourceToScene`, which is both at once and is what the add dialog uses.
     Q_INVOKABLE void addSource(const QString& name, const QString& type);
     Q_INVOKABLE void removeSource(const QString& id);
     Q_INVOKABLE void renameSource(const QString& id, const QString& name);
-    /// Bind the selected layer to this source, or to nothing when the id is empty.
-    Q_INVOKABLE void bindSelectedLayer(const QString& sourceId);
+    /// Bind the selected source node to this source, or to nothing when the id is empty.
+    Q_INVOKABLE void bindSelectedNode(const QString& sourceId);
 
     // ---- buses (the audio graph) -------------------------------------------------------------
     //
@@ -206,11 +209,11 @@ public:
     Q_INVOKABLE void setBusMute(const QString& id, bool mute);
     Q_INVOKABLE void setBusSolo(const QString& id, bool solo);
 
-    /// Send the selected layer's audio to this bus, or to nothing when the id is empty.
+    /// Send the selected source node's audio to this bus, or to nothing when the id is empty.
     /// Unrouted is not the same as muted, and the mixer says which it is.
-    Q_INVOKABLE void routeSelectedLayer(const QString& busId);
-    Q_INVOKABLE void setSelectedLayerGain(double gainDb);
-    Q_INVOKABLE void setSelectedLayerMute(bool mute);
+    Q_INVOKABLE void routeSelectedNode(const QString& busId);
+    Q_INVOKABLE void setSelectedNodeGain(double gainDb);
+    Q_INVOKABLE void setSelectedNodeMute(bool mute);
 
     // ---- decks and outputs (the controls panel) ---------------------------------------------
     //
@@ -250,29 +253,33 @@ public:
                                           const QString& url);
     Q_INVOKABLE void setOutputCredentialRef(const QString& id, const QString& ref);
 
-    // ---- layers -----------------------------------------------------------------------------
+    // ---- the nodes of the current scene ------------------------------------------------------
+    //
+    // "Node" rather than "source" in these names because they act on whatever is selected,
+    // groups included, and match the `SetNode*` commands underneath. Only `addSourceNode` is
+    // about one kind: a source node bound to nothing yet, for `bindSelectedNode` to fill.
 
-    Q_INVOKABLE void addLayer(const QString& name);
+    Q_INVOKABLE void addSourceNode(const QString& name);
     Q_INVOKABLE void addGroup(const QString& name);
-    Q_INVOKABLE void removeLayer(const QString& id);
-    Q_INVOKABLE void renameLayer(const QString& id, const QString& name);
-    Q_INVOKABLE void setLayerVisible(const QString& id, bool visible);
-    Q_INVOKABLE void setLayerLocked(const QString& id, bool locked);
+    Q_INVOKABLE void removeNode(const QString& id);
+    Q_INVOKABLE void renameNode(const QString& id, const QString& name);
+    Q_INVOKABLE void setNodeVisible(const QString& id, bool visible);
+    Q_INVOKABLE void setNodeLocked(const QString& id, bool locked);
     /// Negative moves towards the front of the list, which is towards the top of the stack.
-    Q_INVOKABLE void moveLayer(const QString& id, int delta);
+    Q_INVOKABLE void moveNode(const QString& id, int delta);
 
-    // ---- the selected layer's properties -----------------------------------------------------
+    // ---- the selected node's properties ------------------------------------------------------
 
-    Q_INVOKABLE void setLayerPosition(double x, double y);
-    Q_INVOKABLE void setLayerScale(double x, double y);
-    Q_INVOKABLE void setLayerRotation(double degrees);
-    Q_INVOKABLE void setLayerOpacity(double opacity);
-    Q_INVOKABLE void setLayerBlendMode(const QString& mode);
+    Q_INVOKABLE void setNodePosition(double x, double y);
+    Q_INVOKABLE void setNodeScale(double x, double y);
+    Q_INVOKABLE void setNodeRotation(double degrees);
+    Q_INVOKABLE void setNodeOpacity(double opacity);
+    Q_INVOKABLE void setNodeBlendMode(const QString& mode);
     /// How the content fills the node's box, which is a different thing from where the box sits.
-    Q_INVOKABLE void setLayerFit(const QString& fit);
-    Q_INVOKABLE void setLayerBoxSize(double w, double h);
-    Q_INVOKABLE void setLayerCrop(double left, double top, double right, double bottom);
-    Q_INVOKABLE void setLayerAlignment(double x, double y);
+    Q_INVOKABLE void setNodeFit(const QString& fit);
+    Q_INVOKABLE void setNodeBoxSize(double w, double h);
+    Q_INVOKABLE void setNodeCrop(double left, double top, double right, double bottom);
+    Q_INVOKABLE void setNodeAlignment(double x, double y);
 
     Q_PROPERTY(QStringList fitModes READ fitModes CONSTANT)
     [[nodiscard]] QStringList fitModes() const;
@@ -303,7 +310,7 @@ private:
     void rebuild();
     void run(const ldoc::Command& command);
     [[nodiscard]] const ldoc::Scene* current_scene() const;
-    [[nodiscard]] const ldoc::Node* current_layer() const;
+    [[nodiscard]] const ldoc::Node* current_node() const;
     /// The canvas the shell is currently working against. One canvas until Phase 2 gives the UI
     /// a way to choose; taking the first is honest rather than pretending otherwise.
     [[nodiscard]] const ldoc::Canvas* current_canvas() const;
@@ -323,14 +330,14 @@ private:
     std::unique_ptr<lsession::Session> session_;
     SceneModel scenes_;
     SceneModel favourites_;
-    LayerModel layers_;
+    NodeModel nodes_;
     SourceModel sources_;
     BusModel buses_;
     DeckModel decks_;
     OutputModel outputs_;
 
     QString selected_scene_;
-    QString selected_layer_;
+    QString selected_node_;
     QTimer autosave_;
 };
 

@@ -13,7 +13,7 @@ namespace libertas::ui {
 struct SceneRow {
     QString id;
     QString name;
-    int layerCount = 0;
+    int nodeCount = 0;
     /// On air on at least one deck.
     bool isProgram = false;
     bool isPreview = false;
@@ -33,7 +33,7 @@ public:
     enum Role {
         IdRole = Qt::UserRole + 1,
         NameRole,
-        LayerCountRole,
+        NodeCountRole,
         IsProgramRole,
         IsPreviewRole,
         IsEmergencyRole,
@@ -53,26 +53,27 @@ private:
     std::vector<SceneRow> rows_;
 };
 
-struct LayerRow {
+struct NodeRow {
     QString id;
     QString name;
+    /// The screen's word for the kind, which for a source node is not yet the file's.
     QString kind;
-    /// What the layer is bound to, for the second line of the row. Empty when nothing is.
+    /// What the source node is bound to, for the second line of the row. Empty when nothing is.
     QString sourceName;
     /// The id of that source, so a row can open its settings without a lookup by name --
     /// names are not unique and two cameras called "Cam" are a normal thing to have.
     QString sourceId;
-    /// Depth in the scene tree; a layers panel is a flattened tree with indentation.
+    /// Depth in the scene tree; the Sources panel is a flattened tree with indentation.
     int depth = 0;
     bool visible = true;
     bool locked = false;
     bool isGroup = false;
     int effectCount = 0;
 
-    friend bool operator==(const LayerRow&, const LayerRow&) = default;
+    friend bool operator==(const NodeRow&, const NodeRow&) = default;
 };
 
-class LayerModel : public RowModelBase {
+class NodeModel : public RowModelBase {
     Q_OBJECT
 
 public:
@@ -95,19 +96,19 @@ public:
     [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
     [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
 
-    void set_rows(std::vector<LayerRow> rows) { sync(rows_, std::move(rows)); }
-    [[nodiscard]] const std::vector<LayerRow>& rows() const { return rows_; }
+    void set_rows(std::vector<NodeRow> rows) { sync(rows_, std::move(rows)); }
+    [[nodiscard]] const std::vector<NodeRow>& rows() const { return rows_; }
 
 private:
-    std::vector<LayerRow> rows_;
+    std::vector<NodeRow> rows_;
 };
 
 struct SourceRow {
     QString id;
     QString name;
     QString type;
-    /// How many layers across the whole project bind to it. Sources are project-level, so this
-    /// is the number that says whether removing one is safe.
+    /// How many source nodes across the whole project bind to it. Sources are project-level, so
+    /// this is the number that says whether removing one is safe.
     int useCount = 0;
     /// Safe to put in an emergency scene (ADR-0025).
     bool selfContained = false;
@@ -149,11 +150,11 @@ struct BusRow {
     bool mute = false;
     bool solo = false;
     int channels = 2;
-    /// How many layers, across every scene, route here. The mixer shows it because a bus with
+    /// How many source nodes, across every scene, route here. The mixer shows it because a bus with
     /// nothing feeding it looks identical to a working one until the show starts.
     int feedCount = 0;
     int sendCount = 0;
-    /// This bus is where the selected layer's audio goes, so the strip can say so.
+    /// This bus is where the selected node's audio goes, so the strip can say so.
     bool carriesSelection = false;
 
     friend bool operator==(const BusRow&, const BusRow&) = default;

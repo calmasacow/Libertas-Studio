@@ -16,7 +16,7 @@ QVariant SceneModel::data(const QModelIndex& index, int role) const {
     switch (role) {
     case IdRole:          return r->id;
     case NameRole:        return r->name;
-    case LayerCountRole:  return r->layerCount;
+    case NodeCountRole:   return r->nodeCount;
     case IsProgramRole:   return r->isProgram;
     case IsPreviewRole:   return r->isPreview;
     case IsEmergencyRole: return r->isEmergency;
@@ -27,19 +27,19 @@ QVariant SceneModel::data(const QModelIndex& index, int role) const {
 
 QHash<int, QByteArray> SceneModel::roleNames() const {
     return {
-        {IdRole, "sceneId"},        {NameRole, "name"},
-        {LayerCountRole, "layerCount"}, {IsProgramRole, "isProgram"},
-        {IsPreviewRole, "isPreview"},   {IsEmergencyRole, "isEmergency"},
+        {IdRole, "sceneId"},          {NameRole, "name"},
+        {NodeCountRole, "nodeCount"}, {IsProgramRole, "isProgram"},
+        {IsPreviewRole, "isPreview"}, {IsEmergencyRole, "isEmergency"},
         {IsFavouriteRole, "isFavourite"},
     };
 }
 
-int LayerModel::rowCount(const QModelIndex& parent) const {
+int NodeModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : static_cast<int>(rows_.size());
 }
 
-QVariant LayerModel::data(const QModelIndex& index, int role) const {
-    const LayerRow* r = at(rows_, index);
+QVariant NodeModel::data(const QModelIndex& index, int role) const {
+    const NodeRow* r = at(rows_, index);
     if (!r)
         return {};
     switch (role) {
@@ -57,12 +57,12 @@ QVariant LayerModel::data(const QModelIndex& index, int role) const {
     }
 }
 
-QHash<int, QByteArray> LayerModel::roleNames() const {
+QHash<int, QByteArray> NodeModel::roleNames() const {
     return {
-        {IdRole, "layerId"},     {NameRole, "name"},
+        {IdRole, "nodeId"},      {NameRole, "name"},
         {KindRole, "kind"},      {SourceNameRole, "sourceName"},
         {SourceIdRole, "sourceId"},
-        {DepthRole, "depth"},    {VisibleRole, "layerVisible"},
+        {DepthRole, "depth"},    {VisibleRole, "nodeVisible"},
         {LockedRole, "locked"},  {IsGroupRole, "isGroup"},
         {EffectCountRole, "effectCount"},
     };

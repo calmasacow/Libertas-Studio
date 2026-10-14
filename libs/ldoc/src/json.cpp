@@ -204,7 +204,7 @@ Jv enc_node_data(const Node& n) {
                     kids.append(enc(c));
                 o["children"] = kids;
                 o["isolate"] = d.isolate;
-            } else if constexpr (std::is_same_v<T, LayerData>) {
+            } else if constexpr (std::is_same_v<T, SourceData>) {
                 o["source"] = d.source ? enc(*d.source) : Jv{Json::nullValue};
                 o["audio"] = enc(d.audio);
             } else if constexpr (std::is_same_v<T, AdjustmentData>) {
@@ -766,12 +766,12 @@ NodeData dec_node_data(Rd& rd, NodeKind kind, const Jv& parent, std::string_view
         }
         return g;
     }
-    case NodeKind::Layer: {
-        LayerData l;
-        l.source = rd.id_opt(d, "source", path);
+    case NodeKind::Source: {
+        SourceData s;
+        s.source = rd.id_opt(d, "source", path);
         if (const Jv* a = rd.object(d, "audio", path))
-            l.audio = dec_audio_routing(rd, *a, path);
-        return l;
+            s.audio = dec_audio_routing(rd, *a, path);
+        return s;
     }
     case NodeKind::Adjustment:
         return AdjustmentData{};

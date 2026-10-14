@@ -26,7 +26,7 @@ Item {
     //
     // A hidden item is still a built item: the first version instantiated all three document
     // panels in *every* panel frame, so a six-panel workspace held six scene lists and six
-    // layer lists, each with its own ListView over the same model. Only one was ever visible.
+    // source lists, each with its own ListView over the same model. Only one was ever visible.
     Loader {
         id: panelLoader
 

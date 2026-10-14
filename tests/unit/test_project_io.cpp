@@ -47,12 +47,12 @@ private:
 Project two_scene_project() {
     Project p = make_default_project("Show");
     p.scenes[0].name = "Intro";
-    p.scenes[0].roots.push_back(make_node(NodeKind::Layer, "camera"));
+    p.scenes[0].roots.push_back(make_node(NodeKind::Source, "camera"));
 
     Scene second;
     second.id = Id::generate();
     second.name = "Gameplay";
-    second.roots.push_back(make_node(NodeKind::Layer, "capture"));
+    second.roots.push_back(make_node(NodeKind::Source, "capture"));
     p.scenes.push_back(std::move(second));
     return p;
 }

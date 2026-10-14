@@ -141,9 +141,9 @@ ldoc::Scene rich_scene(const ldoc::Id& canvas, const ldoc::Id& source) {
     s.name = "Everything";
 
     ldoc::Node group = ldoc::make_node(ldoc::NodeKind::Group, "Group");
-    ldoc::Node layer = ldoc::make_node(ldoc::NodeKind::Layer, "Camera");
-    std::get<ldoc::LayerData>(layer.data).source = source;
-    std::get<ldoc::LayerData>(layer.data).audio.gain_db = -3.0;
+    ldoc::Node camera = ldoc::make_node(ldoc::NodeKind::Source, "Camera");
+    std::get<ldoc::SourceData>(camera.data).source = source;
+    std::get<ldoc::SourceData>(camera.data).audio.gain_db = -3.0;
 
     ldoc::Effect e;
     e.id = ldoc::Id::generate();
@@ -153,13 +153,13 @@ ldoc::Scene rich_scene(const ldoc::Id& canvas, const ldoc::Id& source) {
     e.params.emplace("color", ldoc::Rgba::from_srgb8(10, 200, 30));
     e.params.emplace("offset", ldoc::Vec2{1.0, -1.0});
     e.params.emplace("link", ldoc::Id::generate());
-    layer.effects.push_back(std::move(e));
+    camera.effects.push_back(std::move(e));
 
     ldoc::CanvasOverride ov;
     ov.visible = false;
-    layer.canvas_overrides.emplace(canvas, ov);
+    camera.canvas_overrides.emplace(canvas, ov);
 
-    group.children()->push_back(std::move(layer));
+    group.children()->push_back(std::move(camera));
     group.children()->push_back(ldoc::make_node(ldoc::NodeKind::Adjustment, "Adjust"));
     s.roots.push_back(std::move(group));
 
@@ -234,7 +234,7 @@ LTEST_CASE(the_command_parser_survives_damaged_input) {
     // Journal lines are replayed on open, so a damaged one is read during recovery -- the moment
     // something has already gone wrong.
     const ldoc::Project p = rich_project();
-    ldoc::Node n = ldoc::make_node(ldoc::NodeKind::Layer, "Added");
+    ldoc::Node n = ldoc::make_node(ldoc::NodeKind::Source, "Added");
     const ldoc::Command cmd = ldoc::AddNode{p.scenes[0].id, std::nullopt, 0, std::move(n)};
     hammer("command json", ldoc::command_to_json(cmd),
            [](const std::string& t) { return ldoc::command_from_json(t); });

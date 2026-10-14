@@ -31,6 +31,16 @@ std::optional<ldoc::Id> parse_id(const QString& s) {
     return ldoc::Id::parse(to_std(s));
 }
 
+/// A node's kind as the screen says it. `ldoc::to_string` is the file format's word, and for a
+/// source node that is still "layer" until the format bump ADR-0027 and ADR-0028 share -- which
+/// the properties panel would otherwise print. When the bump lands this is `to_string` again.
+QString kind_str(ldoc::NodeKind k) {
+    if (k == ldoc::NodeKind::Source)
+        return QStringLiteral("source");
+    const auto s = ldoc::to_string(k);
+    return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size()));
+}
+
 } // namespace
 
 void Document::configure(std::filesystem::path project_dir) {
@@ -129,9 +139,9 @@ const ldoc::Scene* Document::current_scene() const {
     return id ? session_->project().scene(*id) : nullptr;
 }
 
-const ldoc::Node* Document::current_layer() const {
+const ldoc::Node* Document::current_node() const {
     const ldoc::Scene* s = current_scene();
-    const auto id = parse_id(selected_layer_);
+    const auto id = parse_id(selected_node_);
     if (!s || !id)
         return nullptr;
     return ldoc::find_node(s->roots, *id);
@@ -142,15 +152,14 @@ const ldoc::Canvas* Document::current_canvas() const {
     return canvases.empty() ? nullptr : &canvases.front();
 }
 
-QVariantMap Document::layerProperties() const {
+QVariantMap Document::nodeProperties() const {
     QVariantMap m;
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!n)
         return m;
     m["id"] = id_str(n->id);
     m["name"] = qstr(n->name);
-    m["kind"] = QString::fromUtf8(ldoc::to_string(n->kind()).data(),
-                                  static_cast<qsizetype>(ldoc::to_string(n->kind()).size()));
+    m["kind"] = kind_str(n->kind());
     m["visible"] = n->visible;
     m["locked"] = n->locked;
     m["positionX"] = n->transform.position.x;
@@ -174,23 +183,23 @@ QVariantMap Document::layerProperties() const {
     m["alignY"] = n->layout.alignment.y;
     m["effectCount"] = static_cast<int>(n->effects.size());
 
-    // Audio, for the mixer's selected-layer strip. A layer with no bus is unrouted, which is a
+    // Audio, for the mixer's selected-node strip. A source node with no bus is unrouted, which is a
     // different thing from muted -- so both are reported rather than collapsed into one flag.
-    if (const auto* layer = std::get_if<ldoc::LayerData>(&n->data)) {
+    if (const auto* placed = std::get_if<ldoc::SourceData>(&n->data)) {
         m["hasAudio"] = true;
-        // What the settings dialog is opened against. Empty when the layer is bound to nothing,
+        // What the settings dialog is opened against. Empty when the node is bound to nothing,
         // which is what disables the gear rather than opening an empty panel.
-        m["sourceId"] = layer->source ? id_str(*layer->source) : QString{};
-        m["audioBus"] = layer->audio.bus ? id_str(*layer->audio.bus) : QString{};
-        m["audioGain"] = layer->audio.gain_db;
-        m["audioMute"] = layer->audio.mute;
-        m["audioSendCount"] = static_cast<int>(layer->audio.sends.size());
+        m["sourceId"] = placed->source ? id_str(*placed->source) : QString{};
+        m["audioBus"] = placed->audio.bus ? id_str(*placed->audio.bus) : QString{};
+        m["audioGain"] = placed->audio.gain_db;
+        m["audioMute"] = placed->audio.mute;
+        m["audioSendCount"] = static_cast<int>(placed->audio.sends.size());
         QString bus_name;
-        if (layer->audio.bus) {
+        if (placed->audio.bus) {
             const ldoc::Project& p = session_->project();
             bus_name = QStringLiteral("(missing bus)");
             for (const ldoc::Bus& b : p.buses) {
-                if (b.id == *layer->audio.bus)
+                if (b.id == *placed->audio.bus)
                     bus_name = qstr(b.name);
             }
         }
@@ -210,7 +219,7 @@ void Document::rebuild() {
     // Repair the selection *before* building anything from it.
     //
     // A selected thing can be deleted by a command or brought back by an undo, so selection is
-    // validated on every change rather than trusted. Doing it afterwards left the layer list
+    // validated on every change rather than trusted. Doing it afterwards left the Sources list
     // built from a scene that had just been removed -- empty, while a different scene was
     // selected -- and nothing triggered another rebuild, so the panel stayed empty until the
     // operator clicked something.
@@ -220,10 +229,10 @@ void Document::rebuild() {
     // selected" with a full scene list beside them, and nothing but a click gets out of it.
     if (!current_scene()) {
         selected_scene_ = p.scenes.empty() ? QString{} : id_str(p.scenes.front().id);
-        selected_layer_.clear();
+        selected_node_.clear();
     }
-    if (!selected_layer_.isEmpty() && !current_layer())
-        selected_layer_.clear();
+    if (!selected_node_.isEmpty() && !current_node())
+        selected_node_.clear();
 
     std::vector<SceneRow> scenes;
     for (const ldoc::Scene& s : p.scenes) {
@@ -232,7 +241,7 @@ void Document::rebuild() {
         row.name = qstr(s.name);
         int count = 0;
         ldoc::visit(s.roots, [&count](const ldoc::Node&) { ++count; });
-        row.layerCount = count;
+        row.nodeCount = count;
         for (const ldoc::Deck& d : p.decks) {
             row.isProgram = row.isProgram || (d.program_scene && *d.program_scene == s.id);
             row.isPreview = row.isPreview || (d.preview_scene && *d.preview_scene == s.id);
@@ -250,42 +259,41 @@ void Document::rebuild() {
     favourites_.set_rows(std::move(favourites));
     scenes_.set_rows(std::move(scenes));
 
-    std::vector<LayerRow> layers;
+    std::vector<NodeRow> rows;
     if (const ldoc::Scene* s = current_scene()) {
-        // Flattened depth-first, which is what a layers panel is: the tree with indentation.
+        // Flattened depth-first, which is what the Sources panel is: the tree with indentation.
         const std::function<void(const std::vector<ldoc::Node>&, int)> walk =
             [&](const std::vector<ldoc::Node>& nodes, int depth) {
                 for (const ldoc::Node& n : nodes) {
-                    LayerRow row;
+                    NodeRow row;
                     row.id = id_str(n.id);
                     row.name = qstr(n.name);
-                    const auto kind = ldoc::to_string(n.kind());
-                    row.kind = QString::fromUtf8(kind.data(), static_cast<qsizetype>(kind.size()));
+                    row.kind = kind_str(n.kind());
                     row.depth = depth;
                     row.visible = n.visible;
                     row.locked = n.locked;
                     row.isGroup = n.is_group();
                     row.effectCount = static_cast<int>(n.effects.size());
-                    if (const auto* layer = std::get_if<ldoc::LayerData>(&n.data)) {
-                        if (layer->source) {
+                    if (const auto* placed = std::get_if<ldoc::SourceData>(&n.data)) {
+                        if (placed->source) {
                             // The id is carried even when the source has gone: a row that says
                             // "(missing source)" with no id would look identical to an unbound
                             // one, and they want different things done to them.
-                            row.sourceId = id_str(*layer->source);
-                            if (const ldoc::Source* src = p.source(*layer->source))
+                            row.sourceId = id_str(*placed->source);
+                            if (const ldoc::Source* src = p.source(*placed->source))
                                 row.sourceName = qstr(src->name);
                             else
                                 row.sourceName = QStringLiteral("(missing source)");
                         }
                     }
-                    layers.push_back(std::move(row));
+                    rows.push_back(std::move(row));
                     if (const auto* kids = n.children())
                         walk(*kids, depth + 1);
                 }
             };
         walk(s->roots, 0);
     }
-    layers_.set_rows(std::move(layers));
+    nodes_.set_rows(std::move(rows));
 
     std::vector<SourceRow> sources;
     for (const ldoc::Source& src : p.sources) {
@@ -296,8 +304,8 @@ void Document::rebuild() {
         row.selfContained = ldoc::is_self_contained(src.type);
         for (const ldoc::Scene& s : p.scenes) {
             ldoc::visit(s.roots, [&](const ldoc::Node& n) {
-                const auto* layer = std::get_if<ldoc::LayerData>(&n.data);
-                if (layer && layer->source && *layer->source == src.id)
+                const auto* placed = std::get_if<ldoc::SourceData>(&n.data);
+                if (placed && placed->source && *placed->source == src.id)
                     ++row.useCount;
             });
         }
@@ -322,14 +330,14 @@ void Document::rebuild() {
         // strip answers is whether anything in the show feeds it at all.
         for (const ldoc::Scene& sc : p.scenes) {
             ldoc::visit(sc.roots, [&](const ldoc::Node& n) {
-                const auto* layer = std::get_if<ldoc::LayerData>(&n.data);
-                if (layer && layer->audio.bus && *layer->audio.bus == b.id)
+                const auto* placed = std::get_if<ldoc::SourceData>(&n.data);
+                if (placed && placed->audio.bus && *placed->audio.bus == b.id)
                     ++row.feedCount;
             });
         }
-        if (const ldoc::Node* sel = current_layer()) {
-            const auto* layer = std::get_if<ldoc::LayerData>(&sel->data);
-            row.carriesSelection = layer && layer->audio.bus && *layer->audio.bus == b.id;
+        if (const ldoc::Node* sel = current_node()) {
+            const auto* placed = std::get_if<ldoc::SourceData>(&sel->data);
+            row.carriesSelection = placed && placed->audio.bus && *placed->audio.bus == b.id;
         }
         buses.push_back(std::move(row));
     }
@@ -418,14 +426,14 @@ void Document::selectScene(const QString& id) {
     if (selected_scene_ == id)
         return;
     selected_scene_ = id;
-    selected_layer_.clear();
+    selected_node_.clear();
     rebuild();
 }
 
-void Document::selectLayer(const QString& id) {
-    if (selected_layer_ == id)
+void Document::selectNode(const QString& id) {
+    if (selected_node_ == id)
         return;
-    selected_layer_ = id;
+    selected_node_ = id;
     emit selectionChanged();
 }
 
@@ -785,7 +793,8 @@ QVariantList Document::sourceTypes() const {
 
 namespace {
 
-/// Where a new layer goes: inside the selected group if one is selected, otherwise at the top.
+/// Where a new source node goes: inside the selected group if one is selected, otherwise at the
+/// top.
 struct Placement {
     std::optional<ldoc::Id> parent;
     std::size_t index = 0;
@@ -793,7 +802,7 @@ struct Placement {
 
 } // namespace
 
-void Document::addSourceAsLayer(const QString& name, const QString& type, bool visible) {
+void Document::addNewSourceToScene(const QString& name, const QString& type, bool visible) {
     const ldoc::Scene* scene = current_scene();
     if (!scene) {
         emit notice(QStringLiteral("There is no scene to add a source to."));
@@ -815,23 +824,23 @@ void Document::addSourceAsLayer(const QString& name, const QString& type, bool v
     src.settings = default_settings(src.type);
     const ldoc::Id source_id = src.id;
 
-    ldoc::Node layer = ldoc::make_node(ldoc::NodeKind::Layer, src.name);
-    layer.visible = visible;
-    const ldoc::Id layer_id = layer.id;
+    ldoc::Node node = ldoc::make_node(ldoc::NodeKind::Source, src.name);
+    node.visible = visible;
+    const ldoc::Id node_id = node.id;
 
     Placement where;
-    if (const ldoc::Node* sel = current_layer(); sel && sel->is_group())
+    if (const ldoc::Node* sel = current_node(); sel && sel->is_group())
         where.parent = sel->id;
 
     run(ldoc::make_batch({ldoc::AddSource{std::move(src), p.sources.size()},
-                          ldoc::AddNode{scene->id, where.parent, where.index, std::move(layer)},
-                          ldoc::SetLayerSource{scene->id, layer_id, source_id}},
+                          ldoc::AddNode{scene->id, where.parent, where.index, std::move(node)},
+                          ldoc::SetNodeSource{scene->id, node_id, source_id}},
                          std::format("Add {}", name.isEmpty() ? std::string{"source"}
                                                               : to_std(name))));
-    selectLayer(id_str(layer_id));
+    selectNode(id_str(node_id));
 }
 
-void Document::addExistingSourceAsLayer(const QString& sourceId, bool visible) {
+void Document::addExistingSourceToScene(const QString& sourceId, bool visible) {
     const ldoc::Scene* scene = current_scene();
     const auto parsed = parse_id(sourceId);
     if (!scene || !parsed)
@@ -842,18 +851,18 @@ void Document::addExistingSourceAsLayer(const QString& sourceId, bool visible) {
         return;
     }
 
-    ldoc::Node layer = ldoc::make_node(ldoc::NodeKind::Layer, existing->name);
-    layer.visible = visible;
-    const ldoc::Id layer_id = layer.id;
+    ldoc::Node node = ldoc::make_node(ldoc::NodeKind::Source, existing->name);
+    node.visible = visible;
+    const ldoc::Id node_id = node.id;
 
     Placement where;
-    if (const ldoc::Node* sel = current_layer(); sel && sel->is_group())
+    if (const ldoc::Node* sel = current_node(); sel && sel->is_group())
         where.parent = sel->id;
 
-    run(ldoc::make_batch({ldoc::AddNode{scene->id, where.parent, where.index, std::move(layer)},
-                          ldoc::SetLayerSource{scene->id, layer_id, *parsed}},
+    run(ldoc::make_batch({ldoc::AddNode{scene->id, where.parent, where.index, std::move(node)},
+                          ldoc::SetNodeSource{scene->id, node_id, *parsed}},
                          std::format("Add {}", existing->name)));
-    selectLayer(id_str(layer_id));
+    selectNode(id_str(node_id));
 }
 
 
@@ -881,8 +890,8 @@ QVariantMap Document::source_tile(const ldoc::Source& src) const {
     int uses = 0;
     for (const ldoc::Scene& sc : p.scenes) {
         ldoc::visit(sc.roots, [&](const ldoc::Node& n) {
-            const auto* layer = std::get_if<ldoc::LayerData>(&n.data);
-            if (layer && layer->source && *layer->source == src.id)
+            const auto* placed = std::get_if<ldoc::SourceData>(&n.data);
+            if (placed && placed->source && *placed->source == src.id)
                 ++uses;
         });
     }
@@ -1025,17 +1034,17 @@ void Document::renameSource(const QString& id, const QString& name) {
     run(ldoc::SetSource{std::move(copy)});
 }
 
-void Document::bindSelectedLayer(const QString& sourceId) {
+void Document::bindSelectedNode(const QString& sourceId) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!s || !n)
         return;
-    if (!std::holds_alternative<ldoc::LayerData>(n->data)) {
-        emit notice(QStringLiteral("Only a layer can be bound to an input."));
+    if (!std::holds_alternative<ldoc::SourceData>(n->data)) {
+        emit notice(QStringLiteral("That is not a source, so nothing can be bound to it."));
         return;
     }
-    run(ldoc::SetLayerSource{s->id, n->id,
-                             sourceId.isEmpty() ? std::nullopt : parse_id(sourceId)});
+    run(ldoc::SetNodeSource{s->id, n->id,
+                            sourceId.isEmpty() ? std::nullopt : parse_id(sourceId)});
 }
 
 // ---- buses ------------------------------------------------------------------------------------
@@ -1143,35 +1152,35 @@ void Document::setBusSolo(const QString& id, bool solo) {
     edit_bus(id, [solo](ldoc::Bus& b) { b.solo = solo; });
 }
 
-/// Same shape for the selected layer's own routing, for the same reason.
+/// Same shape for the selected source node's own routing, for the same reason.
 void Document::edit_selected_audio(const std::function<void(ldoc::AudioRouting&)>& change) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!s || !n)
         return;
-    const auto* layer = std::get_if<ldoc::LayerData>(&n->data);
-    if (!layer) {
-        emit notice(QStringLiteral("Only a layer has audio of its own."));
+    const auto* placed = std::get_if<ldoc::SourceData>(&n->data);
+    if (!placed) {
+        emit notice(QStringLiteral("Only a source has audio of its own."));
         return;
     }
-    ldoc::AudioRouting next = layer->audio;
+    ldoc::AudioRouting next = placed->audio;
     change(next);
-    if (next == layer->audio)
+    if (next == placed->audio)
         return;
     run(ldoc::SetNodeAudio{s->id, n->id, std::move(next)});
 }
 
-void Document::routeSelectedLayer(const QString& busId) {
+void Document::routeSelectedNode(const QString& busId) {
     edit_selected_audio([&](ldoc::AudioRouting& a) {
         a.bus = busId.isEmpty() ? std::nullopt : parse_id(busId);
     });
 }
 
-void Document::setSelectedLayerGain(double gainDb) {
+void Document::setSelectedNodeGain(double gainDb) {
     edit_selected_audio([gainDb](ldoc::AudioRouting& a) { a.gain_db = gainDb; });
 }
 
-void Document::setSelectedLayerMute(bool mute) {
+void Document::setSelectedNodeMute(bool mute) {
     edit_selected_audio([mute](ldoc::AudioRouting& a) { a.mute = mute; });
 }
 
@@ -1388,12 +1397,12 @@ void Document::setOutputCredentialRef(const QString& id, const QString& ref) {
     edit_output(id, [&](ldoc::Output& o) { o.destination.credential_ref = to_std(ref); });
 }
 
-// ---- layers -----------------------------------------------------------------------------------
+// ---- the nodes of the current scene -----------------------------------------------------------
 
 namespace {
 
 /// Where a new node goes: inside the selected group if one is selected, otherwise at the top of
-/// the scene. Top, because `roots[0]` is the front-most layer and a new thing should be visible.
+/// the scene. Top, because `roots[0]` is the front-most node and a new thing should be visible.
 struct Destination {
     std::optional<ldoc::Id> parent;
     std::size_t index = 0;
@@ -1401,19 +1410,19 @@ struct Destination {
 
 } // namespace
 
-void Document::addLayer(const QString& name) {
+void Document::addSourceNode(const QString& name) {
     const ldoc::Scene* s = current_scene();
     if (!s)
         return;
-    ldoc::Node n = ldoc::make_node(ldoc::NodeKind::Layer,
-                                   name.isEmpty() ? std::string{"Layer"} : to_std(name));
+    ldoc::Node n = ldoc::make_node(ldoc::NodeKind::Source,
+                                   name.isEmpty() ? std::string{"Source"} : to_std(name));
     const QString id = id_str(n.id);
 
     Destination dest;
-    if (const ldoc::Node* sel = current_layer(); sel && sel->is_group())
+    if (const ldoc::Node* sel = current_node(); sel && sel->is_group())
         dest.parent = sel->id;
     run(ldoc::AddNode{s->id, dest.parent, dest.index, std::move(n)});
-    selectLayer(id);
+    selectNode(id);
 }
 
 void Document::addGroup(const QString& name) {
@@ -1424,44 +1433,44 @@ void Document::addGroup(const QString& name) {
                                    name.isEmpty() ? std::string{"Group"} : to_std(name));
     const QString id = id_str(n.id);
     run(ldoc::AddNode{s->id, std::nullopt, 0, std::move(n)});
-    selectLayer(id);
+    selectNode(id);
 }
 
-void Document::removeLayer(const QString& id) {
+void Document::removeNode(const QString& id) {
     const ldoc::Scene* s = current_scene();
     const auto parsed = parse_id(id);
     if (s && parsed)
         run(ldoc::RemoveNode{s->id, *parsed});
 }
 
-void Document::renameLayer(const QString& id, const QString& name) {
+void Document::renameNode(const QString& id, const QString& name) {
     const ldoc::Scene* s = current_scene();
     const auto parsed = parse_id(id);
     if (s && parsed)
         run(ldoc::RenameNode{s->id, *parsed, to_std(name)});
 }
 
-void Document::setLayerVisible(const QString& id, bool visible) {
+void Document::setNodeVisible(const QString& id, bool visible) {
     const ldoc::Scene* s = current_scene();
     const auto parsed = parse_id(id);
     if (s && parsed)
         run(ldoc::SetNodeVisible{s->id, *parsed, visible});
 }
 
-void Document::setLayerLocked(const QString& id, bool locked) {
+void Document::setNodeLocked(const QString& id, bool locked) {
     const ldoc::Scene* s = current_scene();
     const auto parsed = parse_id(id);
     if (s && parsed)
         run(ldoc::SetNodeLocked{s->id, *parsed, locked});
 }
 
-void Document::moveLayer(const QString& id, int delta) {
+void Document::moveNode(const QString& id, int delta) {
     const ldoc::Scene* s = current_scene();
     const auto parsed = parse_id(id);
     if (!s || !parsed || delta == 0)
         return;
 
-    // Find the node's siblings so the move stays within its own level: a layers panel's up and
+    // Find the node's siblings so the move stays within its own level: the Sources panel's up and
     // down move a thing within its group, not out of it.
     const std::function<bool(const std::vector<ldoc::Node>&, std::optional<ldoc::Id>)> search =
         [&](const std::vector<ldoc::Node>& nodes,
@@ -1487,9 +1496,9 @@ void Document::moveLayer(const QString& id, int delta) {
 
 // ---- properties -------------------------------------------------------------------------------
 
-void Document::setLayerPosition(double x, double y) {
+void Document::setNodePosition(double x, double y) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!s || !n)
         return;
     ldoc::Transform t = n->transform;
@@ -1497,9 +1506,9 @@ void Document::setLayerPosition(double x, double y) {
     run(ldoc::SetNodeTransform{s->id, n->id, t});
 }
 
-void Document::setLayerScale(double x, double y) {
+void Document::setNodeScale(double x, double y) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!s || !n)
         return;
     ldoc::Transform t = n->transform;
@@ -1507,9 +1516,9 @@ void Document::setLayerScale(double x, double y) {
     run(ldoc::SetNodeTransform{s->id, n->id, t});
 }
 
-void Document::setLayerRotation(double degrees) {
+void Document::setNodeRotation(double degrees) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!s || !n)
         return;
     ldoc::Transform t = n->transform;
@@ -1517,9 +1526,9 @@ void Document::setLayerRotation(double degrees) {
     run(ldoc::SetNodeTransform{s->id, n->id, t});
 }
 
-void Document::setLayerOpacity(double opacity) {
+void Document::setNodeOpacity(double opacity) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!s || !n)
         return;
     ldoc::Blend b = n->blend;
@@ -1536,9 +1545,9 @@ QStringList Document::fitModes() const {
     return out;
 }
 
-void Document::setLayerFit(const QString& fit) {
+void Document::setNodeFit(const QString& fit) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     const auto parsed = ldoc::fit_mode_from_string(to_std(fit));
     if (!s || !n || !parsed)
         return;
@@ -1547,9 +1556,9 @@ void Document::setLayerFit(const QString& fit) {
     run(ldoc::SetNodeLayout{s->id, n->id, l});
 }
 
-void Document::setLayerBoxSize(double w, double h) {
+void Document::setNodeBoxSize(double w, double h) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!s || !n)
         return;
     ldoc::Layout l = n->layout;
@@ -1557,9 +1566,9 @@ void Document::setLayerBoxSize(double w, double h) {
     run(ldoc::SetNodeLayout{s->id, n->id, l});
 }
 
-void Document::setLayerCrop(double left, double top, double right, double bottom) {
+void Document::setNodeCrop(double left, double top, double right, double bottom) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!s || !n)
         return;
     ldoc::Layout l = n->layout;
@@ -1568,9 +1577,9 @@ void Document::setLayerCrop(double left, double top, double right, double bottom
     run(ldoc::SetNodeLayout{s->id, n->id, l});
 }
 
-void Document::setLayerAlignment(double x, double y) {
+void Document::setNodeAlignment(double x, double y) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     if (!s || !n)
         return;
     ldoc::Layout l = n->layout;
@@ -1578,9 +1587,9 @@ void Document::setLayerAlignment(double x, double y) {
     run(ldoc::SetNodeLayout{s->id, n->id, l});
 }
 
-void Document::setLayerBlendMode(const QString& mode) {
+void Document::setNodeBlendMode(const QString& mode) {
     const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_layer();
+    const ldoc::Node* n = current_node();
     const auto parsed = ldoc::blend_mode_from_string(to_std(mode));
     if (!s || !n || !parsed)
         return;

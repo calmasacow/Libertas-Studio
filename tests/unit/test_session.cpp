@@ -48,7 +48,7 @@ private:
 ldoc::Project starter() {
     ldoc::Project p = ldoc::make_default_project("Show");
     p.scenes[0].name = "Intro";
-    p.scenes[0].roots.push_back(ldoc::make_node(ldoc::NodeKind::Layer, "Camera"));
+    p.scenes[0].roots.push_back(ldoc::make_node(ldoc::NodeKind::Source, "Camera"));
     return p;
 }
 

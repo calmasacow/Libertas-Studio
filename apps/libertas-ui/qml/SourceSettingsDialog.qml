@@ -279,7 +279,7 @@ Item {
                 width: scroll.width
                 spacing: 4
 
-                // The source's own name, which is a different thing from the layer's: one
+                // The source's own name, which is a different thing from the source node's: one
                 // camera can sit in six scenes under six labels, and this is the camera.
                 TextLine {
                     objectName: "sourceNameField"
@@ -295,8 +295,8 @@ Item {
                     width: parent.width
                     text: dialog.known
                         ? (dialog.details.useCount === 1
-                            ? qsTr("Used by one layer. Changing it changes that layer.")
-                            : qsTr("Used by %1 layers. Changing it changes all of them.")
+                            ? qsTr("Used in one place. Changing it changes it there.")
+                            : qsTr("Used in %1 places. Changing it changes all of them.")
                                   .arg(dialog.details.useCount))
                         : ""
                     visible: dialog.known && dialog.details.useCount > 0

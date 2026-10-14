@@ -57,7 +57,7 @@ std::size_t error_count(const Project& p) {
         [](const Problem& x) { return x.severity == Severity::Error; }));
 }
 
-Node layer(std::string name) { return make_node(NodeKind::Layer, std::move(name)); }
+Node source_node(std::string name) { return make_node(NodeKind::Source, std::move(name)); }
 Node group(std::string name) { return make_node(NodeKind::Group, std::move(name)); }
 
 void add_child(Node& parent, Node child) {
@@ -100,7 +100,7 @@ bool same_shape(const Node& a, const Node& b) {
     return true;
 }
 
-/// A scene tree with groups, layers, effects, references and canvas overrides, built from a
+/// A scene tree with groups, source nodes, effects, references and canvas overrides, built from a
 /// fixed seed so a failure is reproducible.
 std::vector<Node> random_tree(std::mt19937& rng, int depth, const Id& canvas_id,
                               const Id& outside_target) {
@@ -123,7 +123,7 @@ std::vector<Node> random_tree(std::mt19937& rng, int depth, const Id& canvas_id,
         } else if (roll < 72) {
             n = make_node(NodeKind::Mask, "mask");
         } else {
-            n = layer(std::format("layer-{}", rng() % 1000));
+            n = source_node(std::format("source-{}", rng() % 1000));
         }
 
         n.blend.opacity = static_cast<double>(rng() % 101) / 100.0;
@@ -240,14 +240,14 @@ LTEST_CASE(enum_names_round_trip) {
 }
 
 LTEST_CASE(only_a_group_can_hold_children) {
-    // The kind-specific payload is a variant so that a Layer with children is not representable.
+    // The kind-specific payload is a variant so that a source node with children is not representable.
     // A validator that has to reject such a thing is a validator that will be run too late.
     Node g = group("g");
     REQUIRE(g.children() != nullptr);
-    add_child(g, layer("a"));
+    add_child(g, source_node("a"));
     CHECK_EQ(g.children()->size(), std::size_t{1});
 
-    for (const NodeKind k : {NodeKind::Layer, NodeKind::Adjustment, NodeKind::Mask,
+    for (const NodeKind k : {NodeKind::Source, NodeKind::Adjustment, NodeKind::Mask,
                              NodeKind::Reference, NodeKind::Precomp}) {
         const Node n = make_node(k, "x");
         CHECK_MSG(n.children() == nullptr, "{} reports children", to_string(k));
@@ -255,13 +255,13 @@ LTEST_CASE(only_a_group_can_hold_children) {
     }
 }
 
-LTEST_CASE(traversal_is_depth_first_with_the_topmost_layer_first) {
-    // roots[0] is what a layers panel shows at the top. If this order ever flips, every piece of
+LTEST_CASE(traversal_is_depth_first_with_the_topmost_node_first) {
+    // roots[0] is what the Sources panel shows at the top. If this order ever flips, every piece of
     // UI has to reverse the list and one of them will forget.
     Node top = group("top");
-    add_child(top, layer("top-a"));
-    add_child(top, layer("top-b"));
-    Node bottom = layer("bottom");
+    add_child(top, source_node("top-a"));
+    add_child(top, source_node("top-b"));
+    Node bottom = source_node("bottom");
 
     std::vector<Node> roots;
     roots.push_back(std::move(top));
@@ -282,12 +282,12 @@ LTEST_CASE(duplication_mints_new_ids_for_everything_it_copies) {
     e.id = Id::generate();
     e.type = "effect.stroke";
     g.effects.push_back(e);
-    add_child(g, layer("a"));
-    add_child(g, layer("b"));
+    add_child(g, source_node("a"));
+    add_child(g, source_node("b"));
 
     std::vector<Id> original;
     collect_defined_ids({g}, original);
-    REQUIRE(original.size() == 4); // the group, its effect, and two layers
+    REQUIRE(original.size() == 4); // the group, its effect, and two source nodes
 
     std::map<Id, Id> remap;
     const Node copy = duplicate(g, &remap);
@@ -307,11 +307,11 @@ LTEST_CASE(duplication_rewrites_inside_references_and_preserves_outside_ones) {
     // Both halves matter. A group containing a Reference to one of its own members should give a
     // group referring to the *copy*; a Reference pointing at something elsewhere in the scene
     // should still point at that same thing.
-    Node outside = layer("outside");
+    Node outside = source_node("outside");
     const Id outside_id = outside.id;
 
     Node g = group("g");
-    add_child(g, layer("inside"));
+    add_child(g, source_node("inside"));
     const Id inside_id = g.children()->at(0).id;
 
     Node ref_in = make_node(NodeKind::Reference, "ref-inside");
@@ -335,15 +335,15 @@ LTEST_CASE(duplication_rewrites_inside_references_and_preserves_outside_ones) {
 }
 
 LTEST_CASE(duplication_leaves_project_level_references_alone) {
-    // Duplicating a layer that shows a camera must show that camera, not open a second one.
+    // Duplicating a source node that shows a camera must show that camera, not open a second one.
     const Id source_id = Id::generate();
     const Id bus_id = Id::generate();
     const Id scene_id = Id::generate();
     const Id canvas_id = Id::generate();
 
-    Node l = layer("cam");
-    std::get<LayerData>(l.data).source = source_id;
-    std::get<LayerData>(l.data).audio.bus = bus_id;
+    Node l = source_node("cam");
+    std::get<SourceData>(l.data).source = source_id;
+    std::get<SourceData>(l.data).audio.bus = bus_id;
     CanvasOverride ov;
     ov.visible = false;
     l.canvas_overrides.emplace(canvas_id, ov);
@@ -356,9 +356,9 @@ LTEST_CASE(duplication_leaves_project_level_references_alone) {
     add_child(g, std::move(pre));
 
     const Node copy = duplicate(g);
-    const auto& copied_layer = std::get<LayerData>(copy.children()->at(0).data);
-    CHECK(copied_layer.source.value() == source_id);
-    CHECK(copied_layer.audio.bus.value() == bus_id);
+    const auto& copied_node = std::get<SourceData>(copy.children()->at(0).data);
+    CHECK(copied_node.source.value() == source_id);
+    CHECK(copied_node.audio.bus.value() == bus_id);
     CHECK(copy.children()->at(0).canvas_overrides.contains(canvas_id));
     CHECK(std::get<PrecompData>(copy.children()->at(1).data).scene == scene_id);
 }
@@ -368,7 +368,7 @@ LTEST_CASE(an_effect_mask_follows_the_copy_when_the_mask_is_inside_it) {
     add_child(g, make_node(NodeKind::Mask, "m"));
     const Id mask_id = g.children()->at(0).id;
 
-    Node l = layer("l");
+    Node l = source_node("l");
     Effect e;
     e.id = Id::generate();
     e.type = "effect.blur";
@@ -381,7 +381,7 @@ LTEST_CASE(an_effect_mask_follows_the_copy_when_the_mask_is_inside_it) {
     CHECK(copy.children()->at(1).effects[0].mask.value() == copied_mask);
 
     // And a mask that lives outside the copied subtree is left pointing where it was.
-    Node lone = layer("lone");
+    Node lone = source_node("lone");
     Effect out_e;
     out_e.id = Id::generate();
     out_e.type = "effect.blur";
@@ -462,7 +462,7 @@ LTEST_CASE(duplicating_a_scene_carries_its_audio_routing_with_it) {
     const Id bus_id = p.buses[0].id;
 
     Scene& s = p.scenes[0];
-    s.roots.push_back(layer("mic"));
+    s.roots.push_back(source_node("mic"));
     const Id mic_id = s.roots[0].id;
     AudioOverride ov;
     ov.gain_db = -6.0;
@@ -495,8 +495,8 @@ LTEST_CASE(validation_reports_every_problem_not_just_the_first) {
 
 LTEST_CASE(a_duplicate_id_anywhere_in_the_project_is_an_error) {
     Project p = make_default_project("Show");
-    p.scenes[0].roots.push_back(layer("a"));
-    p.scenes[0].roots.push_back(layer("b"));
+    p.scenes[0].roots.push_back(source_node("a"));
+    p.scenes[0].roots.push_back(source_node("b"));
     p.scenes[0].roots[1].id = p.scenes[0].roots[0].id;
     CHECK_EQ(error_count(p), std::size_t{1});
     CHECK(errors_of(p).find("is used by both") != std::string::npos);
@@ -509,20 +509,20 @@ LTEST_CASE(a_duplicate_id_anywhere_in_the_project_is_an_error) {
 
 LTEST_CASE(a_nil_id_is_an_error) {
     Project p = make_default_project("Show");
-    p.scenes[0].roots.push_back(layer("a"));
+    p.scenes[0].roots.push_back(source_node("a"));
     p.scenes[0].roots[0].id = Id::nil();
     CHECK(!is_valid(p));
     CHECK(errors_of(p).find("no id") != std::string::npos);
 }
 
 LTEST_CASE(a_dangling_reference_is_reported_as_a_warning_not_an_error) {
-    // Deliberately not an error. A layer whose source was deleted draws nothing, exactly as a
-    // layer with no source does; the only difference is that this one records a deletion.
-    // Refusing to open would mean a source could not be removed while any layer used it, which
+    // Deliberately not an error. A source node whose source was deleted draws nothing, exactly
+    // as one with no source does; the only difference is that this one records a deletion.
+    // Refusing to open would mean a source could not be removed while any node used it, which
     // makes ordinary editing a puzzle. Errors are for documents that cannot be rendered at all.
     Project p = make_default_project("Show");
-    Node l = layer("cam");
-    std::get<LayerData>(l.data).source = Id::generate(); // no such source
+    Node l = source_node("cam");
+    std::get<SourceData>(l.data).source = Id::generate(); // no such source
     p.scenes[0].roots.push_back(std::move(l));
     CHECK_MSG(is_valid(p), "{}", errors_of(p));
     CHECK_EQ(warning_count(p), std::size_t{1});
@@ -530,10 +530,10 @@ LTEST_CASE(a_dangling_reference_is_reported_as_a_warning_not_an_error) {
 
     // Pointing at something that exists but is the wrong kind is caught the same way.
     Project q = make_default_project("Show");
-    Node l2 = layer("cam");
-    std::get<LayerData>(l2.data).source = q.canvases[0].id;
+    Node l2 = source_node("cam");
+    std::get<SourceData>(l2.data).source = q.canvases[0].id;
     q.scenes[0].roots.push_back(std::move(l2));
-    CHECK_MSG(warning_count(q) == 1, "a layer using a canvas as its source went unreported");
+    CHECK_MSG(warning_count(q) == 1, "a source node using a canvas as its source went unreported");
 }
 
 LTEST_CASE(a_deck_without_a_canvas_is_an_error_but_without_a_scene_is_not) {
@@ -662,7 +662,7 @@ LTEST_CASE(scene_audio_routing_for_a_node_that_is_not_there_is_a_warning_not_an_
 
 namespace {
 
-/// A project whose canvas has a proper safety net: one scene, one layer, one looping local clip.
+/// A project whose canvas has a proper safety net: one scene, one source, one looping local clip.
 struct WithEmergencyScene {
     Project project;
     Id canvas;
@@ -686,8 +686,8 @@ struct WithEmergencyScene {
         Scene s;
         s.id = Id::generate();
         s.name = "Emergency";
-        Node l = layer("Card");
-        std::get<LayerData>(l.data).source = source;
+        Node l = source_node("Card");
+        std::get<SourceData>(l.data).source = source;
         node = l.id;
         s.roots.push_back(std::move(l));
         scene = s.id;
@@ -755,26 +755,26 @@ LTEST_CASE(an_empty_or_crowded_emergency_scene_is_reported) {
     CHECK(check_emergency_scene(p, empty.id).front().message.find("nothing in it") !=
           std::string::npos);
 
-    // More layers is not an error -- a logo over a clip is reasonable -- but the net is reliable
+    // More sources is not an error -- a logo over a clip is reasonable -- but the net is reliable
     // in proportion to how little it depends on, and one pre-rendered clip can carry branding.
     WithEmergencyScene f;
     Scene* s = f.project.scene(f.scene);
     REQUIRE(s != nullptr);
-    s->roots.push_back(layer("Extra"));
+    s->roots.push_back(source_node("Extra"));
     const auto problems = check_emergency_scene(f.project, f.scene);
-    // Two complaints: the extra layer is bound to nothing, and the scene is no longer one clip.
+    // Two complaints: the extra source node is bound to nothing, and the scene is no longer one clip.
     REQUIRE(problems.size() == 2);
-    CHECK(problems.back().message.find("layers") != std::string::npos);
+    CHECK(problems.back().message.find("sources") != std::string::npos);
 }
 
-LTEST_CASE(a_layer_bound_to_nothing_is_not_a_safety_net) {
+LTEST_CASE(a_source_node_bound_to_nothing_is_not_a_safety_net) {
     // It draws nothing, which makes the net exactly as useful as not having one -- while looking
     // in the scene list as though it is set, which is worse.
     Project p = make_default_project("Show");
     Scene s;
     s.id = Id::generate();
     s.name = "Emergency";
-    s.roots.push_back(layer("Card"));
+    s.roots.push_back(source_node("Card"));
     p.canvases[0].emergency_scene = s.id;
     p.scenes.push_back(std::move(s));
 

@@ -32,7 +32,7 @@ Item {
             required property int index
             required property string sceneId
             required property string name
-            required property int layerCount
+            required property int nodeCount
             required property bool isProgram
             required property bool isPreview
             required property bool isEmergency
@@ -81,7 +81,7 @@ Item {
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !rename.visible
-                    text: row.layerCount === 0 ? qsTr("empty") : row.layerCount
+                    text: row.nodeCount === 0 ? qsTr("empty") : row.nodeCount
                     font.pixelSize: 10
                     color: row.selected ? Theme.c.window : Theme.c.textMuted
                     opacity: 0.7

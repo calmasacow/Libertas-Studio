@@ -11,11 +11,11 @@ import Libertas
 /// Anything that can go into a scene is a source -- a capture card, a webcam, a browser, a flat
 /// colour. They differ by *type*, not by kind, and there is no second word for any of them.
 ///
-/// The document calls a placed source a *layer*, which is the one place the code and the screen
-/// use different words, and it is deliberate: placing a source gives it a transform, effects,
-/// blend and per-canvas overrides that the source itself does not have. Same thing, two amounts
-/// of information. That is why `Document.layers` feeds the list while `Document.sources` feeds
-/// the "existing" half of the add menu -- the first is this scene, the second is the project.
+/// Each row is a *source node* -- a source placed in this scene -- or a group of them. Which of
+/// the two "source" things is which is explained once, in `ldoc/node.hpp` at `SourceData`, where
+/// the types meet. Here it is enough that `Document.nodes` feeds the list while
+/// `Document.sources` feeds the "existing" half of the add menu -- the first is this scene, the
+/// second is the project.
 ///
 /// The top row is the front-most source, matching `roots[0]` in the document (ADR-0021).
 /// Reversing it for display would mean every other piece of UI reverses it too, and one of them
@@ -26,12 +26,12 @@ Item {
     /// The add menu is open. Closed by picking something, or by the + again.
     property bool adding: false
 
-    /// The layer whose name is being typed over, or empty. Held here rather than in the row so
+    /// The node whose name is being typed over, or empty. Held here rather than in the row so
     /// that something outside the row -- F2 -- can start a rename, and so that two rows cannot
     /// both be in edit at once.
     property string renaming: ""
 
-    /// Open a source's settings. Takes the source id rather than the layer's, because that is
+    /// Open a source's settings. Takes the source id rather than the node's, because that is
     /// what is being configured: one camera in six scenes has one set of settings, and editing
     /// it from any of the six is editing the same thing.
     function configure(sourceId) {
@@ -44,8 +44,8 @@ Item {
     // the pointer is.
     Shortcut {
         sequence: "F2"
-        enabled: Document.selectedLayer !== ""
-        onActivated: panel.renaming = Document.selectedLayer
+        enabled: Document.selectedNode !== ""
+        onActivated: panel.renaming = Document.selectedNode
     }
 
     Text {
@@ -65,7 +65,7 @@ Item {
         anchors.bottom: footer.top
         clip: true
         visible: Document.selectedScene !== ""
-        model: Document.layers
+        model: Document.nodes
         boundsBehavior: Flickable.StopAtBounds
 
         delegate: Rectangle {
@@ -74,19 +74,19 @@ Item {
             objectName: "sourceRow"
 
             required property int index
-            required property string layerId
+            required property string nodeId
             required property string name
             required property string kind
             required property string sourceName
             required property string sourceId
             required property int depth
-            required property bool layerVisible
+            required property bool nodeVisible
             required property bool locked
             required property bool isGroup
             required property int effectCount
 
-            readonly property bool selected: Document.selectedLayer === row.layerId
-            readonly property bool editing: panel.renaming === row.layerId
+            readonly property bool selected: Document.selectedNode === row.nodeId
+            readonly property bool editing: panel.renaming === row.nodeId
 
             width: ListView.view.width
             height: 26
@@ -99,17 +99,17 @@ Item {
 
                 anchors.fill: parent
                 hoverEnabled: true
-                onClicked: Document.selectLayer(row.layerId)
+                onClicked: Document.selectNode(row.nodeId)
                 // Double-click opens the settings for what the row is bound to, which is what
-                // OBS does and what the operator asked for. A group, or a layer bound to
+                // OBS does and what the operator asked for. A group, or a source node bound to
                 // nothing, has no settings to open -- so there it still starts a rename, which
                 // is the only thing a double-click could usefully mean on one.
                 onDoubleClicked: {
-                    Document.selectLayer(row.layerId);
+                    Document.selectNode(row.nodeId);
                     if (row.sourceId !== "")
                         panel.configure(row.sourceId);
                     else
-                        panel.renaming = row.layerId;
+                        panel.renaming = row.nodeId;
                 }
             }
 
@@ -128,10 +128,10 @@ Item {
 
                 Text {
                     anchors.centerIn: parent
-                    text: row.layerVisible ? "◉" : "○"
+                    text: row.nodeVisible ? "◉" : "○"
                     font.pixelSize: 12
                     color: row.selected ? Theme.c.window
-                         : row.layerVisible ? Theme.c.text
+                         : row.nodeVisible ? Theme.c.text
                          : Theme.c.textMuted
                 }
 
@@ -140,7 +140,7 @@ Item {
 
                     anchors.fill: parent
                     hoverEnabled: true
-                    onClicked: Document.setLayerVisible(row.layerId, !row.layerVisible)
+                    onClicked: Document.setNodeVisible(row.nodeId, !row.nodeVisible)
                 }
             }
 
@@ -159,7 +159,7 @@ Item {
                     font.pixelSize: 12
                     font.weight: row.isGroup ? Font.DemiBold : Font.Normal
                     color: row.selected ? Theme.c.window
-                         : row.layerVisible ? Theme.c.text
+                         : row.nodeVisible ? Theme.c.text
                          : Theme.c.textMuted
                     elide: Text.ElideRight
                 }
@@ -198,7 +198,7 @@ Item {
                 onAccepted: {
                     panel.renaming = "";
                     if (text !== row.name)
-                        Document.renameLayer(row.layerId, text);
+                        Document.renameNode(row.nodeId, text);
                 }
                 onActiveFocusChanged: {
                     if (!activeFocus && row.editing)
@@ -217,7 +217,7 @@ Item {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: row.kind !== "layer"
+                    visible: row.kind !== "source"
                     text: row.kind
                     font.pixelSize: 9
                     color: row.selected ? Theme.c.window : Theme.c.textMuted
@@ -247,7 +247,7 @@ Item {
                         anchors.fill: parent
                         anchors.margins: -4
                         hoverEnabled: true
-                        onClicked: Document.setLayerLocked(row.layerId, !row.locked)
+                        onClicked: Document.setNodeLocked(row.nodeId, !row.locked)
                     }
                 }
             }
@@ -313,8 +313,8 @@ Item {
             ToolButton {
                 label: "−"
                 tip: qsTr("Remove")
-                enabled: Document.selectedLayer !== ""
-                onClicked: Document.removeLayer(Document.selectedLayer)
+                enabled: Document.selectedNode !== ""
+                onClicked: Document.removeNode(Document.selectedNode)
             }
 
             ToolButton {
@@ -325,19 +325,19 @@ Item {
             }
 
             // The gear, where OBS puts it: what the selected row is *bound to*, not the row.
-            // Disabled on a group and on a layer bound to nothing, because neither has
+            // Disabled on a group and on a source node bound to nothing, because neither has
             // anything to configure, and the tip says which it is rather than leaving a dead
             // button to be poked at.
             ToolButton {
                 objectName: "sourceSettingsButton"
                 label: "⚙"
-                tip: Document.selectedLayer === "" ? qsTr("Settings")
-                   : Document.layerProperties.sourceId === ""
+                tip: Document.selectedNode === "" ? qsTr("Settings")
+                   : Document.nodeProperties.sourceId === ""
                      ? qsTr("This has no source to configure")
-                     : qsTr("Settings for %1").arg(Document.layerProperties.name)
-                enabled: Document.selectedLayer !== "" &&
-                         Document.layerProperties.sourceId !== ""
-                onClicked: panel.configure(Document.layerProperties.sourceId)
+                     : qsTr("Settings for %1").arg(Document.nodeProperties.name)
+                enabled: Document.selectedNode !== "" &&
+                         Document.nodeProperties.sourceId !== ""
+                onClicked: panel.configure(Document.nodeProperties.sourceId)
             }
         }
 
@@ -350,15 +350,15 @@ Item {
             ToolButton {
                 label: "▲"
                 tip: qsTr("Move forward")
-                enabled: Document.selectedLayer !== ""
-                onClicked: Document.moveLayer(Document.selectedLayer, -1)
+                enabled: Document.selectedNode !== ""
+                onClicked: Document.moveNode(Document.selectedNode, -1)
             }
 
             ToolButton {
                 label: "▼"
                 tip: qsTr("Move back")
-                enabled: Document.selectedLayer !== ""
-                onClicked: Document.moveLayer(Document.selectedLayer, 1)
+                enabled: Document.selectedNode !== ""
+                onClicked: Document.moveNode(Document.selectedNode, 1)
             }
         }
     }

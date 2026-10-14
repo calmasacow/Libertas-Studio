@@ -205,7 +205,7 @@ Jv body(const SetCanvasEmergencyScene& c) {
     return o;
 }
 
-Jv body(const SetLayerSource& c) {
+Jv body(const SetNodeSource& c) {
     Jv o{Json::objectValue};
     o["scene"] = detail::enc(c.scene);
     o["node"] = detail::enc(c.node);
@@ -455,9 +455,9 @@ std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
         out = SetDeckPreview{rd.id(o, "deck", path), rd.id_opt(o, "scene", path)};
     } else if (name == "canvas.set-emergency-scene") {
         out = SetCanvasEmergencyScene{rd.id(o, "canvas", path), rd.id_opt(o, "scene", path)};
-    } else if (name == "layer.set-source") {
-        out = SetLayerSource{rd.id(o, "scene", path), rd.id(o, "node", path),
-                             rd.id_opt(o, "source", path)};
+    } else if (name == "layer.set-source") { // see SetNodeSource for why not "node."
+        out = SetNodeSource{rd.id(o, "scene", path), rd.id(o, "node", path),
+                            rd.id_opt(o, "source", path)};
     } else if (name == "source.add") {
         const Jv* sv = rd.object(o, "source", path);
         if (!sv)

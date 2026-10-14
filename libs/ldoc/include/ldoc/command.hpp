@@ -136,9 +136,9 @@ struct SetNodeBlend {
     friend bool operator==(const SetNodeBlend&, const SetNodeBlend&) = default;
 };
 
-/// A layer's own audio routing: which bus it feeds, its sends, its fader and its mute.
+/// A source node's own audio routing: which bus it feeds, its sends, its fader and its mute.
 ///
-/// Only a Layer has anywhere to keep this, so it is refused on anything else: a group has no
+/// Only a source node has anywhere to keep this, so it is refused on anything else: a group has no
 /// audio field, which means there would be nothing for the inverse to restore.
 struct SetNodeAudio {
     Id scene;
@@ -190,15 +190,19 @@ struct SetEffectEnabled {
     friend bool operator==(const SetEffectEnabled&, const SetEffectEnabled&) = default;
 };
 
-/// Bind a layer to a source, or to nothing.
+/// Bind a source node to a source, or to nothing.
 ///
-/// Sources are project-level, so this is a reference rather than ownership: two layers binding
-/// the same source show one camera, not two.
-struct SetLayerSource {
+/// Sources are project-level, so this is a reference rather than ownership: two source nodes
+/// binding the same source show one camera, not two.
+///
+/// Its wire name is still `layer.set-source`, the only command name carrying the old word. It
+/// becomes `node.set-source` in the format bump ADR-0027 and ADR-0028 share, because the journal
+/// and the websocket API read it too and the name is a promise to both.
+struct SetNodeSource {
     Id scene;
     Id node;
     std::optional<Id> source;
-    friend bool operator==(const SetLayerSource&, const SetLayerSource&) = default;
+    friend bool operator==(const SetNodeSource&, const SetNodeSource&) = default;
 };
 
 // ---- sources --------------------------------------------------------------------------------
@@ -327,17 +331,17 @@ struct SetCanvasEmergencyScene {
 
 /// Several commands that are one thing the operator did, and therefore one undo step.
 ///
-/// "Add a camera" is three commands -- make the source, make the layer, bind them -- and nobody
-/// pressing Ctrl+Z after that wants the layer back without its source. So the group applies and
-/// reverses as a unit.
+/// "Add a camera" is three commands -- make the source, make the source node, bind them --
+/// and nobody pressing Ctrl+Z after that wants the node back without its source. So the group
+/// applies and reverses as a unit.
 ///
 /// `apply()` is all-or-nothing: if any member is refused, the ones already applied are reversed
 /// before the error comes back, so a half-applied batch cannot exist. The inverse is the members'
 /// inverses *in reverse order*, which is the only order that can work -- the bind has to come
-/// undone before the layer it bound does.
+/// undone before the node it bound does.
 ///
 /// `description` is the purpose, not a list. The undo menu should read "Add Camera", not
-/// "Add source; Add layer; Bind layer".
+/// "Add source; Add node; Bind node".
 ///
 /// The body is held indirectly, and that is a language constraint rather than a choice: a Batch
 /// is one of `Command`'s alternatives, so it cannot contain a `std::vector<Command>` directly --
@@ -363,7 +367,7 @@ using Command =
                  SetNodeLayout, SetNodeBlend, SetNodeAudio, SetCanvasOverride, AddEffect,
                  RemoveEffect, SetEffectParams, SetEffectEnabled, SetDeck, SetDeckProgram,
                  SetDeckPreview,
-                 SetCanvasEmergencyScene, SetLayerSource, AddSource, RemoveSource, SetSource,
+                 SetCanvasEmergencyScene, SetNodeSource, AddSource, RemoveSource, SetSource,
                  AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus, SetBus, AddOutput,
                  RemoveOutput, SetOutput, SetProjectSettings, Batch>;
 

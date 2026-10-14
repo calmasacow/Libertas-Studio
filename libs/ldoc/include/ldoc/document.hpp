@@ -77,7 +77,7 @@ struct Bus {
     friend bool operator==(const Bus&, const Bus&) = default;
 };
 
-/// Per-scene audio routing for one layer, as a set of deltas.
+/// Per-scene audio routing for one source node, as a set of deltas.
 struct AudioOverride {
     std::optional<Id> bus;
     std::optional<double> gain_db;
@@ -93,9 +93,9 @@ struct AudioOverride {
 struct Scene {
     Id id;
     std::string name;
-    /// `roots[0]` is the topmost layer. See GroupData::children.
+    /// `roots[0]` is the topmost node. See GroupData::children.
     std::vector<Node> roots;
-    /// Keyed by the layer node's id.
+    /// Keyed by the source node's id.
     std::map<Id, AudioOverride> audio_overrides;
     /// Marked by the operator as one they reach for. Part of the document rather than of the
     /// workspace, because it is a property of the show -- it should follow the project to
@@ -122,7 +122,8 @@ struct Deck {
 
 /// An instance of something that produces pixels or audio.
 ///
-/// Project-level rather than per-layer, so two layers showing the same camera open one device.
+/// Project-level rather than per-placement, so two source nodes showing the same camera open
+/// one device. See SourceData in `node.hpp` for which of the two "source" types is which.
 /// The `type` resolves against a manifest, like an effect does.
 struct Source {
     Id id;

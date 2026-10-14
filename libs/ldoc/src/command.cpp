@@ -146,7 +146,9 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetDeckPreview>) return "deck.set-preview";
             else if constexpr (std::is_same_v<T, SetCanvasEmergencyScene>)
                 return "canvas.set-emergency-scene";
-            else if constexpr (std::is_same_v<T, SetLayerSource>) return "layer.set-source";
+            // The pre-ADR-0028 word, kept on the wire until the shared format bump: see
+            // SetNodeSource.
+            else if constexpr (std::is_same_v<T, SetNodeSource>) return "layer.set-source";
             else if constexpr (std::is_same_v<T, AddSource>) return "source.add";
             else if constexpr (std::is_same_v<T, RemoveSource>) return "source.remove";
             else if constexpr (std::is_same_v<T, SetSource>) return "source.set";
@@ -181,23 +183,23 @@ std::string describe(const Command& command) {
             else if constexpr (std::is_same_v<T, AddNode>)
                 return std::format("Add {}", quoted(c.node.name));
             else if constexpr (std::is_same_v<T, RemoveNode>)
-                return "Remove layer";
+                return "Remove from scene";
             else if constexpr (std::is_same_v<T, MoveNode>)
-                return "Move layer";
+                return "Move source";
             else if constexpr (std::is_same_v<T, RenameNode>)
-                return std::format("Rename layer to {}", quoted(c.name));
+                return std::format("Rename source to {}", quoted(c.name));
             else if constexpr (std::is_same_v<T, SetNodeVisible>)
-                return c.visible ? "Show layer" : "Hide layer";
+                return c.visible ? "Show source" : "Hide source";
             else if constexpr (std::is_same_v<T, SetNodeLocked>)
-                return c.locked ? "Lock layer" : "Unlock layer";
+                return c.locked ? "Lock source" : "Unlock source";
             else if constexpr (std::is_same_v<T, SetNodeTransform>)
-                return "Transform layer";
+                return "Transform source";
             else if constexpr (std::is_same_v<T, SetNodeLayout>)
-                return "Change layer fit";
+                return "Change source fit";
             else if constexpr (std::is_same_v<T, SetNodeBlend>)
                 return "Change blending";
             else if constexpr (std::is_same_v<T, SetNodeAudio>)
-                return c.audio.bus ? "Route layer audio" : "Unroute layer audio";
+                return c.audio.bus ? "Route source audio" : "Unroute source audio";
             else if constexpr (std::is_same_v<T, SetDeck>)
                 return std::format("Configure deck {}", quoted(c.value.name));
             else if constexpr (std::is_same_v<T, SetSceneFavourite>)
@@ -220,8 +222,8 @@ std::string describe(const Command& command) {
                 return c.scene ? "Set preview scene" : "Clear preview scene";
             else if constexpr (std::is_same_v<T, SetCanvasEmergencyScene>)
                 return c.scene ? "Set emergency scene" : "Clear emergency scene";
-            else if constexpr (std::is_same_v<T, SetLayerSource>)
-                return c.source ? "Bind layer to a source" : "Unbind layer";
+            else if constexpr (std::is_same_v<T, SetNodeSource>)
+                return c.source ? "Bind to a source" : "Unbind source";
             else if constexpr (std::is_same_v<T, AddSource>)
                 return std::format("Add source {}", quoted(c.source.name));
             else if constexpr (std::is_same_v<T, RemoveSource>)
@@ -538,19 +540,19 @@ struct Apply {
         auto n = find_in_scene(**scene, c.node);
         if (!n)
             return std::unexpected(n.error());
-        // Only a layer has somewhere to put this. A group has no audio field at all, so there
+        // Only a source node has somewhere to put this. A group has no audio field at all, so there
         // would be nothing for the inverse to restore -- that is the model refusing the state,
         // not this command inventing a rule (ADR-0023).
-        auto* l = std::get_if<LayerData>(&(*n)->data);
+        auto* l = std::get_if<SourceData>(&(*n)->data);
         if (!l)
             return std::unexpected(
                 std::format("{} has no audio of its own to route", quoted((*n)->name)));
-        // The bus is a reference, not a precondition: a layer routed at a bus that no longer
-        // exists is a warning from validate(), so refusing it here would leave an undo that
+        // The bus is a reference, not a precondition: a source node routed at a bus that no
+        // longer exists is a warning from validate(), so refusing it here would leave an undo that
         // cannot be applied. A send to itself is structural, and is refused.
         for (const Send& send : c.audio.sends) {
             if (send.to == c.node)
-                return std::unexpected("a layer cannot send to itself");
+                return std::unexpected("a source node cannot send to itself");
         }
         Applied out{SetNodeAudio{c.scene, c.node, l->audio}, describe(c)};
         l->audio = c.audio;
@@ -651,21 +653,21 @@ struct Apply {
         return out;
     }
 
-    std::expected<Applied, std::string> operator()(const SetLayerSource& c) const {
+    std::expected<Applied, std::string> operator()(const SetNodeSource& c) const {
         auto scene = find_scene(p, c.scene);
         if (!scene)
             return std::unexpected(scene.error());
         auto n = find_in_scene(**scene, c.node);
         if (!n)
             return std::unexpected(n.error());
-        auto* layer = std::get_if<LayerData>(&(*n)->data);
-        if (!layer)
+        auto* placed = std::get_if<SourceData>(&(*n)->data);
+        if (!placed)
             return std::unexpected(
-                std::format("{} is not a layer, so nothing can be bound to it",
+                std::format("{} is not a source node, so nothing can be bound to it",
                             quoted((*n)->name)));
         // The source is a reference, not a precondition: see the note on Apply.
-        Applied out{SetLayerSource{c.scene, c.node, layer->source}, describe(c)};
-        layer->source = c.source;
+        Applied out{SetNodeSource{c.scene, c.node, placed->source}, describe(c)};
+        placed->source = c.source;
         return out;
     }
 
@@ -690,9 +692,9 @@ struct Apply {
         if (it == p.sources.end())
             return std::unexpected(std::format("there is no source {}", c.source.to_string()));
         const auto index = static_cast<std::size_t>(it - p.sources.begin());
-        // Layers still bound to it are left pointing at nothing, which validate() reports as a
-        // warning. Refusing the removal instead would mean a source could never be deleted while
-        // anything used it -- see ADR-0023.
+        // Source nodes still bound to it are left pointing at nothing, which validate() reports
+        // as a warning. Refusing the removal instead would mean a source could never be deleted
+        // while anything used it -- see ADR-0023.
         Applied out{AddSource{*it, index}, std::format("Remove source {}", quoted(it->name))};
         p.sources.erase(it);
         return out;
@@ -788,8 +790,8 @@ struct Apply {
                                      [&c](const Bus& b) { return b.id == c.bus; });
         if (it == p.buses.end())
             return std::unexpected(std::format("there is no bus {}", c.bus.to_string()));
-        // Layers routed to it and sends into it are left dangling, which validate() reports as a
-        // warning -- the same line as a source. Refusing would mean a bus could never be removed
+        // Source nodes routed to it and sends into it are left dangling, which validate()
+        // reports as a warning -- the same line as a source. Refusing would mean a bus could never be removed
         // while anything named it.
         const auto index = static_cast<std::size_t>(it - p.buses.begin());
         Applied out{AddBus{*it, index}, std::format("Remove bus {}", quoted(it->name))};

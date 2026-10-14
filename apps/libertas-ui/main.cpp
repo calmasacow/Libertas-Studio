@@ -554,8 +554,8 @@ int main(int argc, char** argv) {
         // mutable Project and every one of these is a command going to the session.
         const auto scene_rows = [&] { return collect(window->contentItem(),
                                                      QStringLiteral("sceneRow")).size(); };
-        const auto layer_rows = [&] { return collect(window->contentItem(),
-                                                     QStringLiteral("sourceRow")).size(); };
+        const auto node_rows = [&] { return collect(window->contentItem(),
+                                                    QStringLiteral("sourceRow")).size(); };
 
         settle();
         // Counts are relative, because --check may be run against a project it has already been
@@ -572,25 +572,25 @@ int main(int argc, char** argv) {
         report(scene_rows() == scenes_before + 1, "and the list redrew");
         report(document.dirty(), "which made the document dirty");
 
-        const int layers_before = document.layersModel()->rowCount();
-        document.addLayer(QStringLiteral("Camera"));
+        const int nodes_before = document.nodesModel()->rowCount();
+        document.addSourceNode(QStringLiteral("Camera"));
         settle();
-        report(document.layersModel()->rowCount() == layers_before + 1,
-               "a layer can be added to it");
-        report(layer_rows() == layers_before + 1, "and the layers panel redrew");
-        report(!document.selectedLayer().isEmpty(), "with the new layer selected");
+        report(document.nodesModel()->rowCount() == nodes_before + 1,
+               "a source node can be added to it");
+        report(node_rows() == nodes_before + 1, "and the Sources panel redrew");
+        report(!document.selectedNode().isEmpty(), "with the new source node selected");
 
-        const QVariantMap props = document.layerProperties();
+        const QVariantMap props = document.nodeProperties();
         report(props.value("name").toString() == QLatin1String("Camera"),
-               "the properties panel sees the selected layer");
+               "the properties panel sees the selected node");
         report(props.value("visible").toBool(), "and its state");
 
-        document.setLayerOpacity(0.5);
-        document.setLayerBlendMode(QStringLiteral("multiply"));
+        document.setNodeOpacity(0.5);
+        document.setNodeBlendMode(QStringLiteral("multiply"));
         settle();
-        report(qFuzzyCompare(document.layerProperties().value("opacity").toDouble(), 0.5),
+        report(qFuzzyCompare(document.nodeProperties().value("opacity").toDouble(), 0.5),
                "a property edit reaches the document");
-        report(document.layerProperties().value("blendMode").toString() ==
+        report(document.nodeProperties().value("blendMode").toString() ==
                    QLatin1String("multiply"),
                "including the blend mode");
 
@@ -598,15 +598,15 @@ int main(int argc, char** argv) {
         report(document.canUndo(), "and is undoable");
         document.undo();
         settle();
-        report(document.layerProperties().value("blendMode").toString() ==
+        report(document.nodeProperties().value("blendMode").toString() ==
                    QLatin1String("normal"),
                "Ctrl+Z puts it back");
         document.redo();
         settle();
 
-        document.setLayerVisible(document.selectedLayer(), false);
+        document.setNodeVisible(document.selectedNode(), false);
         settle();
-        report(!document.layerProperties().value("visible").toBool(), "a layer can be hidden");
+        report(!document.nodeProperties().value("visible").toBool(), "a source node can be hidden");
 
         // The emergency scene (ADR-0025): designating one reports why it is a poor safety net
         // rather than accepting it silently.
@@ -628,10 +628,10 @@ int main(int argc, char** argv) {
         report(document.scenesModel()->rowCount() == scenes_before, "a scene can be removed");
         report(!document.selectedScene().isEmpty(),
                "and the selection moves to one that still exists");
-        report(document.selectedLayer().isEmpty(), "with the layer selection cleared");
-        // And the layer list has to be rebuilt for the scene that is *now* selected, not left
+        report(document.selectedNode().isEmpty(), "with the node selection cleared");
+        // And the node list has to be rebuilt for the scene that is *now* selected, not left
         // empty from the one that was removed.
-        report(document.layersModel()->rowCount() ==
+        report(document.nodesModel()->rowCount() ==
                    [&] {
                        int n = 0;
                        for (const ldoc::Scene& s : document.projectForBindings().scenes)
@@ -641,7 +641,7 @@ int main(int argc, char** argv) {
                                ldoc::visit(s.roots, [&n](const ldoc::Node&) { ++n; });
                        return n;
                    }(),
-               "and the layer list follows the scene that is now selected");
+               "and the node list follows the scene that is now selected");
 
         if (!document.projectPath().startsWith(QLatin1Char('('))) {
             document.save();
@@ -650,15 +650,15 @@ int main(int argc, char** argv) {
         }
 
         // ---- layout properties, which are a different thing from transform ----------------
-        document.addLayer(QStringLiteral("Fitted"));
+        document.addSourceNode(QStringLiteral("Fitted"));
         settle();
-        report(document.layerProperties().value("fit").toString() == QLatin1String("natural"),
-               "a new layer takes its source's natural size");
-        document.setLayerFit(QStringLiteral("cover"));
-        document.setLayerBoxSize(1920, 1080);
-        document.setLayerCrop(10, 20, 0, 0);
+        report(document.nodeProperties().value("fit").toString() == QLatin1String("natural"),
+               "a new source node takes its source's natural size");
+        document.setNodeFit(QStringLiteral("cover"));
+        document.setNodeBoxSize(1920, 1080);
+        document.setNodeCrop(10, 20, 0, 0);
         settle();
-        const QVariantMap fitted = document.layerProperties();
+        const QVariantMap fitted = document.nodeProperties();
         report(fitted.value("fit").toString() == QLatin1String("cover") &&
                    qFuzzyCompare(fitted.value("boxWidth").toDouble(), 1920.0) &&
                    qFuzzyCompare(fitted.value("cropTop").toDouble(), 20.0),
@@ -720,8 +720,8 @@ int main(int argc, char** argv) {
         // ---- sources ----------------------------------------------------------------------
         //
         // One panel and one word. Adding a source puts it in the project *and* in the scene, as
-        // one undoable step -- nobody pressing Ctrl+Z after adding a camera wants the layer back
-        // without its source, or the source back with no layer.
+        // one undoable step -- nobody pressing Ctrl+Z after adding a camera wants the node back
+        // without its source, or the source back with no node.
         const int sources_before = document.sourcesModel()->rowCount();
         const auto source_at = [&](int row, int role) {
             return document.sourcesModel()->data(document.sourcesModel()->index(row, 0),
@@ -750,17 +750,17 @@ int main(int argc, char** argv) {
             static_cast<int>(document.sourcesOfType(QStringLiteral("source.v4l2")).size());
         const int colours_before =
             static_cast<int>(document.sourcesOfType(QStringLiteral("source.color")).size());
-        const int layers_before_source = document.layersModel()->rowCount();
+        const int nodes_before_source = document.nodesModel()->rowCount();
         const QString undo_before_source = document.undoDescription();
-        document.addSourceAsLayer(QStringLiteral("Desk Cam"), QStringLiteral("source.v4l2"));
+        document.addNewSourceToScene(QStringLiteral("Desk Cam"), QStringLiteral("source.v4l2"));
         settle();
         report(document.sourcesModel()->rowCount() == sources_before + 1,
                "adding a source puts it in the project");
-        report(document.layersModel()->rowCount() == layers_before_source + 1,
+        report(document.nodesModel()->rowCount() == nodes_before_source + 1,
                "and in the scene");
         const QString cam_id = source_at(sources_before, 1).toString();
-        const QString cam_layer = document.selectedLayer();
-        report(document.layerProperties().value("name").toString() == QLatin1String("Desk Cam"),
+        const QString cam_node = document.selectedNode();
+        report(document.nodeProperties().value("name").toString() == QLatin1String("Desk Cam"),
                "with the new one selected");
         report(source_at(sources_before, 4).toInt() == 1,
                "bound to it, which the use count reflects");
@@ -780,38 +780,38 @@ int main(int argc, char** argv) {
         document.undo();
         settle();
         report(document.sourcesModel()->rowCount() == sources_before &&
-                   document.layersModel()->rowCount() == layers_before_source,
-               "one undo removes the source and the layer together");
+                   document.nodesModel()->rowCount() == nodes_before_source,
+               "one undo removes the source and the source node together");
         document.redo();
         settle();
 
         // An existing source goes into the scene again without being created twice: one camera,
         // opened once, in as many scenes as you like.
-        const int layers_before_reuse = document.layersModel()->rowCount();
-        document.addExistingSourceAsLayer(cam_id);
+        const int nodes_before_reuse = document.nodesModel()->rowCount();
+        document.addExistingSourceToScene(cam_id);
         settle();
         report(document.sourcesModel()->rowCount() == sources_before + 1,
                "adding an existing source does not create a second one");
-        report(document.layersModel()->rowCount() == layers_before_reuse + 1,
-               "but does add another layer");
+        report(document.nodesModel()->rowCount() == nodes_before_reuse + 1,
+               "but does add another source node");
         report(source_at(sources_before, 4).toInt() == 2, "and the use count says two");
         document.undo();
         settle();
 
         // Explicitly, because the undo above moved the selection -- unbinding "whatever is
         // selected" would have been unbinding something else.
-        document.selectLayer(cam_layer);
+        document.selectNode(cam_node);
         settle();
-        document.bindSelectedLayer(QString{});
+        document.bindSelectedNode(QString{});
         settle();
         report(source_at(sources_before, 4).toInt() == 0,
-               "unbinding the layer releases the source");
+               "unbinding the source node releases the source");
         report(source_at(sources_before, 5).toBool() == false,
                "a camera is not safe for an emergency scene");
 
         // A colour is the one source this build can preview honestly, so the dialog shows its
         // real swatch; everything else falls back to the type glyph and says so by having none.
-        document.addSourceAsLayer(QStringLiteral("Backdrop"), QStringLiteral("source.color"));
+        document.addNewSourceToScene(QStringLiteral("Backdrop"), QStringLiteral("source.color"));
         settle();
         {
             const QVariantList colours = document.sourcesOfType(QStringLiteral("source.color"));
@@ -831,9 +831,10 @@ int main(int argc, char** argv) {
         }
 
         // A source added with the visibility box cleared arrives hidden.
-        document.addSourceAsLayer(QStringLiteral("Hidden"), QStringLiteral("source.color"), false);
+        document.addNewSourceToScene(QStringLiteral("Hidden"), QStringLiteral("source.color"),
+                                     false);
         settle();
-        report(!document.layerProperties().value("visible").toBool(),
+        report(!document.nodeProperties().value("visible").toBool(),
                "a source added with 'make visible' cleared arrives hidden");
         document.undo();
         document.undo();
@@ -846,12 +847,12 @@ int main(int argc, char** argv) {
         // one command, with every value stored as the kind its field declares. A colour that
         // arrives as a string, or a count that arrives as a double, is a project that reloads
         // as something else.
-        document.addSourceAsLayer(QStringLiteral("Lower Third"),
-                                  QStringLiteral("source.browser"));
+        document.addNewSourceToScene(QStringLiteral("Lower Third"),
+                                     QStringLiteral("source.browser"));
         settle();
-        const QString browser_id = document.layerProperties().value("sourceId").toString();
-        const QString browser_layer = document.selectedLayer();
-        report(!browser_id.isEmpty(), "a layer carries the id of the source it is bound to");
+        const QString browser_id = document.nodeProperties().value("sourceId").toString();
+        const QString browser_node = document.selectedNode();
+        report(!browser_id.isEmpty(), "a source node carries the id of the source it is bound to");
 
         for (const QVariant& v : document.sourceTypes()) {
             const QString type = v.toMap().value("id").toString();
@@ -926,10 +927,10 @@ int main(int argc, char** argv) {
         // A colour has to reach the document as a colour, because that is what the compositor
         // will read -- and a hex string that cannot be read is refused rather than becoming
         // black, which is a difference nobody notices until the show.
-        document.addSourceAsLayer(QStringLiteral("Card"), QStringLiteral("source.color"));
+        document.addNewSourceToScene(QStringLiteral("Card"), QStringLiteral("source.color"));
         settle();
         {
-            const QString card_id = document.layerProperties().value("sourceId").toString();
+            const QString card_id = document.nodeProperties().value("sourceId").toString();
             QVariantMap settings = document.sourceDetails(card_id).value("settings").toMap();
             report(settings.value("color").toString().startsWith('#'),
                    "a colour reaches the panel as hex, which is what a human types");
@@ -959,19 +960,19 @@ int main(int argc, char** argv) {
         }
 
         // The gear, and what disables it. A group has nothing bound to it, and neither does a
-        // bare layer -- so neither has settings, and the button says so instead of opening an
+        // bare source node -- so neither has settings, and the button says so instead of opening an
         // empty panel.
         {
             const QList<QQuickItem*> gears =
                 collect(window->contentItem(), QStringLiteral("sourceSettingsButton"));
             report(gears.size() == 1, "the Sources panel has a gear in its footer");
-            document.selectLayer(browser_layer);
+            document.selectNode(browser_node);
             settle();
             report(!gears.isEmpty() && gears.front()->isEnabled(),
-                   "enabled on a layer that is bound to a source");
+                   "enabled on a source node that is bound to a source");
             document.addGroup(QStringLiteral("Overlays"));
             settle();
-            report(document.layerProperties().value("sourceId").toString().isEmpty(),
+            report(document.nodeProperties().value("sourceId").toString().isEmpty(),
                    "a group is bound to nothing");
             report(!gears.isEmpty() && !gears.front()->isEnabled(),
                    "so the gear is disabled on one");
@@ -1017,14 +1018,14 @@ int main(int argc, char** argv) {
             }
         }
 
-        document.selectLayer(browser_layer);
+        document.selectNode(browser_node);
         settle();
 
         // ---- the audio mixer -------------------------------------------------------------
         //
         // No audio host exists yet, so what is checked here is the document half: the buses, the
-        // faders, and which bus a layer's audio goes to. All of it is commands, so all of it has
-        // to undo.
+        // faders, and which bus a source node's audio goes to. All of it is commands, so all of
+        // it has to undo.
         const auto bus_strips = [&] { return collect(window->contentItem(),
                                                      QStringLiteral("busStrip")); };
         const auto bus_at = [&](int row, int role) {
@@ -1176,74 +1177,74 @@ int main(int argc, char** argv) {
         settle();
         report(bus_at(buses_before, 5).toDouble() <= 1.0, "a pan outside the range is clamped");
 
-        // Routing: a layer's audio has to be able to reach a bus, and be taken off it again.
-        document.addLayer(QStringLiteral("Mic"));
+        // Routing: a source node's audio has to be able to reach a bus, and be taken off it again.
+        document.addSourceNode(QStringLiteral("Mic"));
         settle();
-        if (!document.selectedLayer().isEmpty()) {
-            report(document.layerProperties().value("hasAudio").toBool(),
-                   "a layer has audio of its own");
-            report(document.layerProperties().value("audioBus").toString().isEmpty(),
+        if (!document.selectedNode().isEmpty()) {
+            report(document.nodeProperties().value("hasAudio").toBool(),
+                   "a source node has audio of its own");
+            report(document.nodeProperties().value("audioBus").toString().isEmpty(),
                    "and starts routed nowhere, which is not the same as muted");
 
-            document.routeSelectedLayer(new_bus);
+            document.routeSelectedNode(new_bus);
             settle();
-            report(document.layerProperties().value("audioBus").toString() == new_bus,
+            report(document.nodeProperties().value("audioBus").toString() == new_bus,
                    "it can be routed to a bus");
             report(bus_at(buses_before, 9).toInt() == 1,
                    "which the bus strip counts as something feeding it");
             report(bus_at(buses_before, 11).toBool(),
                    "and marks as carrying the selection");
 
-            document.setSelectedLayerGain(-3.0);
-            document.setSelectedLayerMute(true);
+            document.setSelectedNodeGain(-3.0);
+            document.setSelectedNodeMute(true);
             settle();
-            report(qFuzzyCompare(document.layerProperties().value("audioGain").toDouble(), -3.0),
-                   "the layer has its own fader");
-            report(document.layerProperties().value("audioMute").toBool(),
+            report(qFuzzyCompare(document.nodeProperties().value("audioGain").toDouble(), -3.0),
+                   "the source node has its own fader");
+            report(document.nodeProperties().value("audioMute").toBool(),
                    "and its own mute");
 
             document.undo();
             settle();
-            report(!document.layerProperties().value("audioMute").toBool(),
+            report(!document.nodeProperties().value("audioMute").toBool(),
                    "both of which undo");
 
             // Removing the bus underneath it is allowed: a dangling route is a warning, not an
-            // error, and the strip has to stop claiming the layer feeds it.
+            // error, and the strip has to stop claiming the node feeds it.
             document.removeBus(new_bus);
             settle();
             report(document.busesModel()->rowCount() == buses_before,
-                   "a bus can be removed while a layer still routes to it");
-            report(document.layerProperties().value("audioBusName").toString() ==
+                   "a bus can be removed while a source node still routes to it");
+            report(document.nodeProperties().value("audioBusName").toString() ==
                        QLatin1String("(missing bus)"),
-                   "and the layer says its bus is gone rather than looking unrouted");
+                   "and the node says its bus is gone rather than looking unrouted");
             report(!document.problems().isEmpty(), "which validate() reports as a problem");
 
             document.undo();
             settle();
             report(document.busesModel()->rowCount() == buses_before + 1,
                    "undo brings the bus back");
-            report(document.layerProperties().value("audioBusName").toString() ==
+            report(document.nodeProperties().value("audioBusName").toString() ==
                        QLatin1String("Game"),
-                   "with the layer routed to it again");
+                   "with the node routed to it again");
 
-            document.routeSelectedLayer(QString{});
+            document.routeSelectedNode(QString{});
             settle();
-            report(document.layerProperties().value("audioBus").toString().isEmpty(),
-                   "and a layer can be taken off its bus");
+            report(document.nodeProperties().value("audioBus").toString().isEmpty(),
+                   "and a source node can be taken off its bus");
         }
 
         // A group has no audio, and saying so is better than silently doing nothing.
         document.addGroup(QStringLiteral("Overlays"));
         settle();
-        if (!document.selectedLayer().isEmpty() &&
-            document.layerProperties().value("kind").toString() == QLatin1String("group")) {
-            report(!document.layerProperties().value("hasAudio").toBool(),
+        if (!document.selectedNode().isEmpty() &&
+            document.nodeProperties().value("kind").toString() == QLatin1String("group")) {
+            report(!document.nodeProperties().value("hasAudio").toBool(),
                    "a group has no audio of its own");
             QString refusal;
             QMetaObject::Connection gc = QObject::connect(
                 &document, &libertas::ui::Document::notice,
                 [&refusal](const QString& t) { refusal = t; });
-            document.routeSelectedLayer(new_bus);
+            document.routeSelectedNode(new_bus);
             settle();
             QObject::disconnect(gc);
             report(!refusal.isEmpty(), "and routing one says so rather than failing quietly");
@@ -1451,7 +1452,7 @@ int main(int argc, char** argv) {
                    "and back down again");
         }
 
-        // An input can be removed even while a layer still uses it.
+        // An input can be removed even while a source node still uses it.
         const int inputs_now = document.sourcesModel()->rowCount();
         if (inputs_now > 0) {
             const QString doomed =
@@ -1479,13 +1480,13 @@ int main(int argc, char** argv) {
             settle();
             report(document.scenesModel()->rowCount() == 0, "every scene can be removed");
             report(document.selectedScene().isEmpty(), "leaving nothing selected");
-            report(document.layersModel()->rowCount() == 0, "and no layers");
-            report(document.layerProperties().isEmpty(), "and no properties to show");
+            report(document.nodesModel()->rowCount() == 0, "and no nodes");
+            report(document.nodeProperties().isEmpty(), "and no properties to show");
             // Adding one again has to work from empty.
-            document.addLayer(QStringLiteral("orphan"));
+            document.addSourceNode(QStringLiteral("orphan"));
             settle();
-            report(document.layersModel()->rowCount() == 0,
-                   "a layer cannot be added when there is no scene to add it to");
+            report(document.nodesModel()->rowCount() == 0,
+                   "a source node cannot be added when there is no scene to add it to");
 
             document.addScene(QStringLiteral("Recovered"));
             settle();

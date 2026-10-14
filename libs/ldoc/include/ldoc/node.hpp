@@ -39,7 +39,7 @@ struct Send {
 };
 
 struct AudioRouting {
-    /// Absent means the layer's audio is not routed anywhere -- silent, not "default bus".
+    /// Absent means the source node's audio is not routed anywhere -- silent, not "default bus".
     /// Defaulting would make a muted source and an unrouted source indistinguishable.
     std::optional<Id> bus;
     std::vector<Send> sends;
@@ -53,8 +53,12 @@ enum class NodeKind : std::uint8_t {
     /// A real container with its own transform, opacity, blend and effects -- not OBS's
     /// presentation-only grouping.
     Group,
-    /// Binds a Source instance.
-    Layer,
+    /// A source placed in this scene, bound to a project-level Source. See SourceData.
+    ///
+    /// Serialised as `"layer"`, the word this kind had before ADR-0028. The string changes in
+    /// the format bump ADR-0027 and ADR-0028 share, with its migration, and not before: changing
+    /// it alone would be a second bump that the shared one exists to prevent.
+    Source,
     /// Effects only, applied to the composite beneath it. What makes blend modes genuinely
     /// useful, and what OBS has no equivalent of.
     Adjustment,
@@ -72,9 +76,9 @@ enum class NodeKind : std::uint8_t {
 struct Node;
 
 struct GroupData {
-    /// **`children[0]` is the topmost layer**, drawn last.
+    /// **`children[0]` is the topmost node**, drawn last.
     ///
-    /// The order a layers panel shows, so what the operator reads top-to-bottom is what the list
+    /// The order the Sources panel shows, so what the operator reads top-to-bottom is what the list
     /// holds front-to-back. Choosing the other convention means every piece of UI reverses the
     /// list and one of them eventually forgets.
     std::vector<Node> children;
@@ -84,13 +88,28 @@ struct GroupData {
     friend bool operator==(const GroupData&, const GroupData&) = default;
 };
 
-struct LayerData {
-    /// The Source instance this layer shows. Sources live at project level, so two layers -- or
-    /// two scenes -- can show one capture without opening the device twice.
+/// The payload of a **source node**: a source placed in a scene.
+///
+/// There are two things here and one word for them (ADR-0028), so which is which:
+///
+/// - A **source** (`ldoc::Source`, in `Project::sources`) is *what* something is -- a camera, a
+///   browser, a flat colour -- with its type and settings. It is opened once.
+/// - A **source node** (a `Node` of kind `NodeKind::Source`, carrying this) is *where* it is and
+///   what is being done to it in one scene: transform, layout, blend, effects, per-canvas
+///   overrides, and its own audio routing.
+///
+/// Read aloud: a source node is bound to a source. One camera in six scenes is one Source and
+/// six source nodes, which is why these are two types rather than one -- a merged type would
+/// have to carry either one transform shared by six scenes or a map of them keyed by scene,
+/// which is this type in disguise. The screen calls both "source"; the code has to be able to
+/// tell them apart, and `Source` against `SourceData` is where it does.
+struct SourceData {
+    /// The Source this node shows, or nothing. A reference rather than ownership, so two source
+    /// nodes -- in one scene or in two -- can show one capture without opening the device twice.
     std::optional<Id> source;
     AudioRouting audio;
 
-    friend bool operator==(const LayerData&, const LayerData&) = default;
+    friend bool operator==(const SourceData&, const SourceData&) = default;
 };
 
 struct AdjustmentData {
@@ -157,15 +176,15 @@ struct CanvasOverride {
     friend bool operator==(const CanvasOverride&, const CanvasOverride&) = default;
 };
 
-using NodeData = std::variant<GroupData, LayerData, AdjustmentData, MaskData, ReferenceData,
+using NodeData = std::variant<GroupData, SourceData, AdjustmentData, MaskData, ReferenceData,
                               PrecompData>;
 
 /// A node in a scene tree.
 ///
-/// Kind-specific fields live in a variant rather than side by side in one flat struct, so a Layer
-/// cannot carry children and a Reference cannot carry a source. States that mean nothing should
-/// not be representable; a validator that has to reject them is a validator that will be run too
-/// late somewhere.
+/// Kind-specific fields live in a variant rather than side by side in one flat struct, so a
+/// source node cannot carry children and a Reference cannot carry a source. States that mean
+/// nothing should not be representable; a validator that has to reject them is a validator that
+/// will be run too late somewhere.
 struct Node {
     Id id;
     std::string name;
@@ -208,9 +227,9 @@ void visit(const std::vector<Node>& roots, const std::function<void(const Node&)
 /// *copy*, while duplicating a group whose Reference points at something elsewhere in the scene
 /// should still point at that same thing.
 ///
-/// A Layer's `source` is deliberately **not** remapped. Sources are project-level instances, and
-/// duplicating a layer that shows a camera should show that camera, not open a second one.
-/// Likewise a Precomp's `scene` and the canvas ids in `canvas_overrides`.
+/// A source node's `source` is deliberately **not** remapped. Sources are project-level
+/// instances, and duplicating a source node that shows a camera should show that camera, not
+/// open a second one. Likewise a Precomp's `scene` and the canvas ids in `canvas_overrides`.
 ///
 /// Preserving ids across a copy guarantees collisions and is a correctness bug, not a
 /// convenience.

@@ -6,13 +6,13 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Libertas
 
-/// The bus graph: one strip per bus, and the selected layer's own routing beside it.
+/// The bus graph: one strip per bus, and the selected source's own routing beside it.
 ///
 /// There are no meters, and the panel says so rather than drawing some. Nothing in this build
 /// makes a sound -- there is no audio host yet -- so a moving meter here would be an animation on
 /// a timer, and the panel would look finished while being incapable. What *is* real is everything
 /// the document holds: the buses, their kinds, faders, pans, mutes and solos, which bus each
-/// layer feeds, and the count of layers feeding each bus. All of it is commands, so all of it
+/// source node feeds, and the count of them feeding each bus. All of it is commands, so all of it
 /// undoes.
 ///
 /// A dragged fader runs a command per move and the session collapses the run into one undo
@@ -24,7 +24,7 @@ Item {
 
     property bool adding: false
     /// Below this the routing line goes, because a strip's fader matters more than a sentence
-    /// about the selected layer -- the arrow on each strip still routes it. 130 is the panel's
+    /// about the selected source -- the arrow on each strip still routes it. 130 is the panel's
     /// minimum height in llayout, and this has to leave a usable strip at that size.
     readonly property bool showRouting: panel.height >= 150
     /// dB at the top and bottom of a fader. -60 reads as off without being a special case.
@@ -189,7 +189,7 @@ Item {
                     visible: !strip.compact
                     text: strip.feedCount === 0
                         ? qsTr("nothing feeding")
-                        : qsTr("%n layer(s)", "", strip.feedCount)
+                        : qsTr("%n source(s)", "", strip.feedCount)
                     font.pixelSize: 9
                     color: strip.feedCount === 0 ? Theme.c.warning : Theme.c.textMuted
                     opacity: strip.feedCount === 0 ? 0.9 : 0.7
@@ -344,10 +344,10 @@ Item {
 
                         ToolButton {
                             label: "→"
-                            tip: qsTr("Send the selected layer's audio here")
-                            enabled: Document.selectedLayer !== "" &&
-                                     Document.layerProperties.hasAudio === true
-                            onClicked: Document.routeSelectedLayer(strip.busId)
+                            tip: qsTr("Send the selected source's audio here")
+                            enabled: Document.selectedNode !== "" &&
+                                     Document.nodeProperties.hasAudio === true
+                            onClicked: Document.routeSelectedNode(strip.busId)
                         }
                     }
                 }
@@ -399,7 +399,7 @@ Item {
         }
     }
 
-    // Where the selected layer's audio goes. Routing lives here rather than in the properties
+    // Where the selected source's audio goes. Routing lives here rather than in the properties
     // panel because the question "which bus is this on" is answered by looking at the buses.
     Rectangle {
         id: routing
@@ -431,9 +431,9 @@ Item {
             color: Theme.c.textMuted
             elide: Text.ElideRight
             text: {
-                if (Document.selectedLayer === "")
-                    return qsTr("Select a layer to route its audio.");
-                const props = Document.layerProperties;
+                if (Document.selectedNode === "")
+                    return qsTr("Select a source to route its audio.");
+                const props = Document.nodeProperties;
                 if (props.hasAudio !== true)
                     return qsTr("%1 has no audio of its own.").arg(props.name);
                 if (props.audioBus === "")
@@ -458,20 +458,20 @@ Item {
 
             ToolButton {
                 label: "M"
-                tip: qsTr("Mute the selected layer")
-                enabled: Document.layerProperties.hasAudio === true
-                active: Document.layerProperties.audioMute === true
+                tip: qsTr("Mute the selected source")
+                enabled: Document.nodeProperties.hasAudio === true
+                active: Document.nodeProperties.audioMute === true
                 activeColor: Theme.c.error
-                onClicked: Document.setSelectedLayerMute(
-                    Document.layerProperties.audioMute !== true)
+                onClicked: Document.setSelectedNodeMute(
+                    Document.nodeProperties.audioMute !== true)
             }
 
             ToolButton {
                 label: "⊘"
-                tip: qsTr("Unroute the selected layer")
-                enabled: Document.layerProperties.hasAudio === true &&
-                         Document.layerProperties.audioBus !== ""
-                onClicked: Document.routeSelectedLayer("")
+                tip: qsTr("Unroute the selected source")
+                enabled: Document.nodeProperties.hasAudio === true &&
+                         Document.nodeProperties.audioBus !== ""
+                onClicked: Document.routeSelectedNode("")
             }
         }
     }

@@ -94,3 +94,27 @@ and redo return the project byte for byte — passes unchanged over the renamed 
 
 **What does not change.** Nothing the operator sees. That is the point of doing it: the screen was
 already right.
+
+## Implementation note — the C++ landed first, the wire format did not
+
+*Added 2026-10-13.* The rename in the code is done: `NodeKind::Source`, `SourceData`,
+`SetNodeSource`, and in `libertas-ui` `Document.nodes`, `nodeProperties`, `selectedNode`,
+`addSourceNode` and the `setNode*` family. The layer/source explanation now lives at `SourceData`
+in `libs/ldoc/include/ldoc/node.hpp`.
+
+**The serialised strings were deliberately left alone**, and that is not an oversight. A node
+still reads and writes `"kind": "layer"`, `SetNodeSource` still travels as `layer.set-source` in
+the journal and on the websocket API, and `kSchemaVersion` is unchanged. Changing them here would
+have meant a format bump now and another for ADR-0027 — the two migrations the Consequences above
+exist to prevent. The words on the wire change in the single combined bump, with its migration and
+the tests listed above. Each place the old string survives carries a comment saying so.
+
+The four `layer.*` action ids in `lsession` also keep the old word: they are keys in the operator's
+bindings file, which no schema version covers, so renaming them would silently drop a chosen key.
+Their display names say "source".
+
+One thing above turned out not to be quite true: the screen was *not* already entirely right. The
+undo history ("Hide layer"), the Properties panel's empty state and its kind field, the mixer's
+routing line and tips, the Info panel's count, the settings dialog's use count and the shortcut
+names all still said "layer". They say "source" now, following the operator's call that the word
+leaves the screen as well as the code.

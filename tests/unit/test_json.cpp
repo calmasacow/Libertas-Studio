@@ -31,8 +31,8 @@ Node random_node(std::mt19937& rng, int depth, const Id& canvas_id) {
             n.children()->push_back(random_node(rng, depth - 1, canvas_id));
         std::get<GroupData>(n.data).isolate = (rng() % 2) == 0;
     } else if (roll < 50) {
-        n = make_node(NodeKind::Layer, std::format("l{}", rng() % 100));
-        auto& ld = std::get<LayerData>(n.data);
+        n = make_node(NodeKind::Source, std::format("l{}", rng() % 100));
+        auto& ld = std::get<SourceData>(n.data);
         if (rng() % 2)
             ld.source = Id::generate();
         ld.audio.bus = Id::generate();
@@ -256,7 +256,7 @@ LTEST_CASE(every_parameter_type_survives_including_the_ambiguous_ones) {
     Scene s;
     s.id = Id::generate();
     s.name = "params";
-    Node n = make_node(NodeKind::Layer, "l");
+    Node n = make_node(NodeKind::Source, "l");
 
     const Id linked = Id::generate();
     Effect e;
@@ -303,7 +303,7 @@ LTEST_CASE(doubles_survive_exactly) {
     Scene s;
     s.id = Id::generate();
     s.name = "precision";
-    Node n = make_node(NodeKind::Layer, "l");
+    Node n = make_node(NodeKind::Source, "l");
     n.transform.position = Vec2{1.0 / 3.0, 0.1 + 0.2};
     n.transform.rotation_deg = 359.99999999999994;
     n.blend.opacity = 0.8999999999999999;
@@ -350,7 +350,7 @@ LTEST_CASE(an_unknown_enum_value_is_an_error_not_a_silent_default) {
     Scene s;
     s.id = Id::generate();
     s.name = "s";
-    s.roots.push_back(make_node(NodeKind::Layer, "l"));
+    s.roots.push_back(make_node(NodeKind::Source, "l"));
     std::string text = scene_to_json(s);
     const auto at = text.find("\"mode\" : \"normal\"");
     REQUIRE(at != std::string::npos);
@@ -378,7 +378,7 @@ LTEST_CASE(an_absent_field_takes_the_code_default) {
     CHECK(!n.locked);
     CHECK_EQ(n.blend.opacity, 1.0);
     CHECK(n.blend.mode == BlendMode::Normal);
-    CHECK(n.kind() == NodeKind::Layer);
+    CHECK(n.kind() == NodeKind::Source);
     CHECK(n.transform.scale == (Vec2{1.0, 1.0}));
 }
 

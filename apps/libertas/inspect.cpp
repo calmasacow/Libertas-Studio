@@ -30,18 +30,25 @@ std::string fps_text(const ldoc::Fps& f) {
                       : std::format("{}/{} ({:.3f})", f.num, f.den, f.hz());
 }
 
+/// The kind as the operator would say it. `ldoc::to_string` is the file format's word, and for a
+/// source node that is still "layer" until the format bump ADR-0027 and ADR-0028 share; this
+/// goes back to being `to_string` when it lands.
+std::string_view kind_word(ldoc::NodeKind k) {
+    return k == ldoc::NodeKind::Source ? std::string_view{"source"} : ldoc::to_string(k);
+}
+
 void print_tree(const std::vector<ldoc::Node>& nodes, const ldoc::Project& p, int depth) {
     for (const ldoc::Node& n : nodes) {
         std::string line(static_cast<std::size_t>(depth) * 2 + 4, ' ');
-        line += std::format("{} {}", ldoc::to_string(n.kind()), n.name.empty() ? "(unnamed)"
-                                                                               : n.name);
+        line += std::format("{} {}", kind_word(n.kind()),
+                            n.name.empty() ? "(unnamed)" : n.name);
         if (!n.visible)
             line += "  [hidden]";
         if (n.locked)
             line += "  [locked]";
-        if (const auto* layer = std::get_if<ldoc::LayerData>(&n.data)) {
-            if (layer->source) {
-                const ldoc::Source* src = p.source(*layer->source);
+        if (const auto* placed = std::get_if<ldoc::SourceData>(&n.data)) {
+            if (placed->source) {
+                const ldoc::Source* src = p.source(*placed->source);
                 line += src ? std::format("  <- {}", src->name) : "  <- (missing input)";
             }
         }
@@ -159,8 +166,8 @@ int inspect_project(const fs::path& dir, bool verbose) {
         int uses = 0;
         for (const ldoc::Scene& s : p.scenes)
             ldoc::visit(s.roots, [&](const ldoc::Node& n) {
-                const auto* layer = std::get_if<ldoc::LayerData>(&n.data);
-                if (layer && layer->source && *layer->source == src.id)
+                const auto* placed = std::get_if<ldoc::SourceData>(&n.data);
+                if (placed && placed->source && *placed->source == src.id)
                     ++uses;
             });
         std::printf("  %-28s %-22s used by %d%s\n", src.name.c_str(), src.type.c_str(), uses,

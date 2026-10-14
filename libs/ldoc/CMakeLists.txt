@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Libertas-Studio contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# The document model: the non-OBS-shaped scene/layer/bus/canvas model, shared by the UI, the
+# The document model: the non-OBS-shaped scene/node/source/bus/canvas model, shared by the UI, the
 # session process and the OBS importer. No Qt, no GPU, no FFmpeg -- the model has to be usable
 # from a headless importer and testable without any of them.
 

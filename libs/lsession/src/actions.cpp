@@ -22,13 +22,18 @@ const std::vector<ActionDef>& catalogue() {
         {"edit.undo", "Undo", "Editing", Scope::Application, ArgumentKind::None, "Ctrl+Z"},
         {"edit.redo", "Redo", "Editing", Scope::Application, ArgumentKind::None, "Ctrl+Shift+Z"},
         {"file.save", "Save", "Editing", Scope::Application, ArgumentKind::None, "Ctrl+S"},
-        {"layer.delete", "Delete Layer", "Editing", Scope::Application, ArgumentKind::None,
+        //
+        // These four act on the selected source node. Their ids keep the pre-ADR-0028 word
+        // because an id is what the operator's bindings file stores: renaming one would quietly
+        // unbind a key someone chose, with no migration to carry it over. Only the names, which
+        // are what the screen shows, follow the ADR.
+        {"layer.delete", "Remove From Scene", "Editing", Scope::Application, ArgumentKind::None,
          "Delete"},
-        {"layer.move-forward", "Bring Layer Forward", "Editing", Scope::Application,
+        {"layer.move-forward", "Bring Source Forward", "Editing", Scope::Application,
          ArgumentKind::None, "Ctrl+Up"},
-        {"layer.move-back", "Send Layer Back", "Editing", Scope::Application, ArgumentKind::None,
+        {"layer.move-back", "Send Source Back", "Editing", Scope::Application, ArgumentKind::None,
          "Ctrl+Down"},
-        {"layer.toggle-visible", "Toggle Layer Visibility", "Editing", Scope::Application,
+        {"layer.toggle-visible", "Toggle Source Visibility", "Editing", Scope::Application,
          ArgumentKind::None, ""},
 
         // --- the workspace, application scope ---------------------------------------------

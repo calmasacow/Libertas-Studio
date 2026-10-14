@@ -44,14 +44,14 @@ struct Fixture {
 
         Node g = make_node(NodeKind::Group, "Group");
         group = g.id;
-        Node a = make_node(NodeKind::Layer, "Camera");
+        Node a = make_node(NodeKind::Source, "Camera");
         child_a = a.id;
-        Node b = make_node(NodeKind::Layer, "Overlay");
+        Node b = make_node(NodeKind::Source, "Overlay");
         child_b = b.id;
         g.children()->push_back(std::move(a));
         g.children()->push_back(std::move(b));
 
-        Node l = make_node(NodeKind::Layer, "Background");
+        Node l = make_node(NodeKind::Source, "Background");
         loose = l.id;
         Effect e;
         e.id = Id::generate();
@@ -202,7 +202,7 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         RemoveScene{f.scene},
         RenameScene{f.scene, "Intro"},
         MoveScene{f.scene, 1},
-        AddNode{f.scene, f.group, 1, make_node(NodeKind::Layer, "New")},
+        AddNode{f.scene, f.group, 1, make_node(NodeKind::Source, "New")},
         RemoveNode{f.scene, f.child_a},
         MoveNode{f.scene, f.child_a, std::nullopt, 0},
         RenameNode{f.scene, f.loose, "Renamed"},
@@ -219,7 +219,7 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         SetDeckProgram{f.deck, std::nullopt},
         SetDeckPreview{f.deck, f.scene},
         SetCanvasEmergencyScene{f.canvas, f.scene},
-        SetLayerSource{f.scene, f.loose, f.existing_source},
+        SetNodeSource{f.scene, f.loose, f.existing_source},
         AddSource{src, 0},
         RemoveSource{f.existing_source},
         SetSource{changed},
@@ -269,7 +269,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
         fresh.id = Id::generate();
         fresh.name = std::format("Scene {}", rng() % 100);
         if (rng() % 2)
-            fresh.roots.push_back(make_node(NodeKind::Layer, "l"));
+            fresh.roots.push_back(make_node(NodeKind::Source, "l"));
         return AddScene{fresh, rng() % (p.scenes.size() + 1)};
     }
     case 2:
@@ -279,7 +279,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
     case 16:
         return MoveScene{scene.id, rng() % (p.scenes.size() + 2)};
     case 4: {
-        const NodeKind kind = (rng() % 4 == 0) ? NodeKind::Group : NodeKind::Layer;
+        const NodeKind kind = (rng() % 4 == 0) ? NodeKind::Group : NodeKind::Source;
         return AddNode{scene.id, (rng() % 2) ? std::optional<Id>{node} : std::nullopt,
                        rng() % 3, make_node(kind, std::format("n{}", rng() % 100))};
     }
@@ -438,7 +438,7 @@ LTEST_CASE(a_refused_command_changes_nothing) {
     const std::vector<Command> bad = {
         RenameScene{nowhere, "x"},
         RemoveScene{nowhere},
-        AddNode{nowhere, std::nullopt, 0, make_node(NodeKind::Layer, "n")},
+        AddNode{nowhere, std::nullopt, 0, make_node(NodeKind::Source, "n")},
         RemoveNode{f.scene, nowhere},
         RenameNode{f.scene, nowhere, "x"},
         SetNodeVisible{f.scene, nowhere, false},
@@ -450,7 +450,7 @@ LTEST_CASE(a_refused_command_changes_nothing) {
         SetDeckPreview{nowhere, std::nullopt},
         SetCanvasOverride{f.scene, nowhere, f.canvas, CanvasOverride{}},
         AddScene{Scene{}, 99},
-        AddNode{f.scene, std::nullopt, 99, make_node(NodeKind::Layer, "n")},
+        AddNode{f.scene, std::nullopt, 99, make_node(NodeKind::Source, "n")},
         AddEffect{f.scene, nowhere, 0, Effect{}},
     };
     for (const Command& c : bad) {
@@ -491,7 +491,7 @@ LTEST_CASE(a_node_cannot_be_added_with_an_id_the_project_already_uses) {
     // never be able to create it.
     Fixture f;
     const Project before = f.project;
-    Node clash = make_node(NodeKind::Layer, "clash");
+    Node clash = make_node(NodeKind::Source, "clash");
     clash.id = f.child_a;
     const auto r = apply(f.project, AddNode{f.scene, std::nullopt, 0, clash});
     CHECK(!r.has_value());
@@ -500,7 +500,7 @@ LTEST_CASE(a_node_cannot_be_added_with_an_id_the_project_already_uses) {
 
     // Including an id buried inside the subtree being added.
     Node g = make_node(NodeKind::Group, "g");
-    Node inner = make_node(NodeKind::Layer, "inner");
+    Node inner = make_node(NodeKind::Source, "inner");
     inner.id = f.loose;
     g.children()->push_back(std::move(inner));
     CHECK(!apply(f.project, AddNode{f.scene, std::nullopt, 0, g}).has_value());
@@ -511,7 +511,7 @@ LTEST_CASE(only_a_group_can_be_added_to) {
     Fixture f;
     const Project before = f.project;
     const auto r = apply(f.project, AddNode{f.scene, f.loose, 0,
-                                            make_node(NodeKind::Layer, "n")});
+                                            make_node(NodeKind::Source, "n")});
     CHECK(!r.has_value());
     CHECK(r.error().find("not a group") != std::string::npos);
     CHECK(f.project == before);
@@ -594,13 +594,13 @@ LTEST_CASE(history_undoes_and_redoes_in_order_with_descriptions) {
     REQUIRE(h.run(RenameNode{f.scene, f.loose, "First"}).has_value());
     REQUIRE(h.run(SetNodeVisible{f.scene, f.loose, false}).has_value());
     CHECK_EQ(h.undo_depth(), std::size_t{2});
-    // The description names the layer as it was called *when the command ran*, which is after
+    // The description names the node as it was called *when the command ran*, which is after
     // the rename above.
     CHECK_EQ(h.undo_description(), std::string("Hide 'First'"));
 
     REQUIRE(h.undo().has_value());
     CHECK(find_node(h.project().scenes[0].roots, f.loose)->visible);
-    CHECK_EQ(h.undo_description(), std::string("Rename layer to 'First'"));
+    CHECK_EQ(h.undo_description(), std::string("Rename source to 'First'"));
     CHECK_EQ(h.redo_description(), std::string("Hide 'First'"));
 
     REQUIRE(h.undo().has_value());
@@ -622,7 +622,7 @@ LTEST_CASE(a_refused_command_does_not_land_on_the_undo_stack) {
     REQUIRE(h.run(RenameNode{f.scene, f.loose, "Kept"}).has_value());
     CHECK(!h.run(RenameNode{f.scene, Id::generate(), "x"}).has_value());
     CHECK_EQ(h.undo_depth(), std::size_t{1});
-    CHECK_EQ(h.undo_description(), std::string("Rename layer to 'Kept'"));
+    CHECK_EQ(h.undo_description(), std::string("Rename source to 'Kept'"));
 }
 
 LTEST_CASE(a_new_command_discards_the_redo_tail) {
@@ -791,20 +791,20 @@ LTEST_CASE(designating_an_emergency_scene_is_an_ordinary_undoable_command) {
     CHECK(apply(f.project, SetCanvasEmergencyScene{f.canvas, Id::generate()}).has_value());
 }
 
-LTEST_CASE(a_layer_can_be_bound_to_a_source_and_unbound) {
+LTEST_CASE(a_source_node_can_be_bound_to_a_source_and_unbound) {
     Fixture f;
     DocumentHistory h{f.project};
-    REQUIRE(h.run(SetLayerSource{f.scene, f.loose, f.existing_source}).has_value());
+    REQUIRE(h.run(SetNodeSource{f.scene, f.loose, f.existing_source}).has_value());
     const Node* n = find_node(h.project().scenes[0].roots, f.loose);
     REQUIRE(n != nullptr);
-    CHECK(std::get<LayerData>(n->data).source.value() == f.existing_source);
+    CHECK(std::get<SourceData>(n->data).source.value() == f.existing_source);
 
     REQUIRE(h.undo().has_value());
-    CHECK(!std::get<LayerData>(find_node(h.project().scenes[0].roots, f.loose)->data)
+    CHECK(!std::get<SourceData>(find_node(h.project().scenes[0].roots, f.loose)->data)
                .source.has_value());
 
-    // A group is not a layer, so there is nothing to bind.
-    CHECK(!apply(f.project, SetLayerSource{f.scene, f.group, f.existing_source}).has_value());
+    // A group is not a source node, so there is nothing to bind.
+    CHECK(!apply(f.project, SetNodeSource{f.scene, f.group, f.existing_source}).has_value());
 }
 
 LTEST_CASE(a_canvas_that_something_renders_to_cannot_be_removed) {
@@ -824,10 +824,10 @@ LTEST_CASE(a_canvas_that_something_renders_to_cannot_be_removed) {
     });
 }
 
-LTEST_CASE(removing_a_source_leaves_its_layers_pointing_at_nothing_and_says_so) {
+LTEST_CASE(removing_a_source_leaves_its_nodes_pointing_at_nothing_and_says_so) {
     Fixture f;
     DocumentHistory h{f.project};
-    REQUIRE(h.run(SetLayerSource{f.scene, f.loose, f.existing_source}).has_value());
+    REQUIRE(h.run(SetNodeSource{f.scene, f.loose, f.existing_source}).has_value());
     REQUIRE(h.run(RemoveSource{f.existing_source}).has_value());
 
     CHECK_MSG(is_valid(h.project()), "a dangling source reference was treated as unrenderable");
@@ -881,10 +881,10 @@ LTEST_CASE(an_output_needs_a_canvas_but_a_bus_does_not_need_its_listeners) {
               "an output was enabled with nowhere to send to");
     CHECK(f.project == before);
 
-    // Removing a bus a layer routes to is allowed, and reported afterwards.
+    // Removing a bus a source node routes to is allowed, and reported afterwards.
     DocumentHistory h{f.project};
-    Node mic = make_node(NodeKind::Layer, "Mic");
-    std::get<LayerData>(mic.data).audio.bus = f.existing_bus;
+    Node mic = make_node(NodeKind::Source, "Mic");
+    std::get<SourceData>(mic.data).audio.bus = f.existing_bus;
     REQUIRE(h.run(AddNode{f.scene, std::nullopt, 0, std::move(mic)}).has_value());
     REQUIRE(h.run(RemoveBus{f.existing_bus}).has_value());
     CHECK_MSG(is_valid(h.project()), "a dangling bus reference was treated as unrenderable");
@@ -1010,21 +1010,21 @@ LTEST_CASE(a_batch_is_one_undo_step_that_restores_everything_it_changed) {
     cam.type = "source.v4l2";
     const Id cam_id = cam.id;
 
-    Node layer = make_node(NodeKind::Layer, "Desk Cam");
-    const Id layer_id = layer.id;
+    Node node = make_node(NodeKind::Source, "Desk Cam");
+    const Id node_id = node.id;
 
     REQUIRE(h.run(make_batch({AddSource{cam, f.project.sources.size()},
-                              AddNode{f.scene, std::nullopt, 0, layer},
-                              SetLayerSource{f.scene, layer_id, cam_id}},
+                              AddNode{f.scene, std::nullopt, 0, node},
+                              SetNodeSource{f.scene, node_id, cam_id}},
                              "Add Desk Cam"))
                 .has_value());
 
     CHECK_EQ(h.undo_depth(), std::size_t{1});
     CHECK_EQ(h.undo_description(), std::string{"Add Desk Cam"});
     CHECK(h.project().source(cam_id) != nullptr);
-    const Node* placed = find_node(h.project().scenes[0].roots, layer_id);
+    const Node* placed = find_node(h.project().scenes[0].roots, node_id);
     REQUIRE(placed != nullptr);
-    CHECK(std::get<LayerData>(placed->data).source.value() == cam_id);
+    CHECK(std::get<SourceData>(placed->data).source.value() == cam_id);
 
     REQUIRE(h.undo().has_value());
     CHECK_MSG(h.project() == start, "undoing a batch did not restore the project exactly");
@@ -1037,7 +1037,7 @@ LTEST_CASE(a_batch_is_one_undo_step_that_restores_everything_it_changed) {
 LTEST_CASE(a_batch_that_cannot_finish_leaves_nothing_behind) {
     // The property that makes a batch worth having rather than three calls: a refused member
     // must take the applied ones with it. Otherwise "add a camera" could leave a source with no
-    // layer, which is exactly the orphan this exists to prevent.
+    // source node, which is exactly the orphan this exists to prevent.
     Fixture f;
     const Project before = f.project;
 
