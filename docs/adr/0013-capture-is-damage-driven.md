@@ -32,6 +32,29 @@ The lesson is methodological and general: *inter-arrival time cannot measure a c
 damage-driven protocol.* It measures the content. The instrument must be the producer's own
 timestamp, and that instrument should have been in place before any number was reported.
 
+### Confirmed at scale, 2026-10-14
+
+Ten runs of 10,000 captures each on argus, against a *named* output (HDMI-A-1, 2560x1440 @
+59.95 Hz) with a deliberate damage source on it — 100,000 frames. Inter-arrival and the
+compositor's presented-frame interval agree in every single run:
+
+| | inter-arrival p99 | presented gap p99 | inter-arrival max |
+|---|---|---|---|
+| runs 01–06 | 23.29–23.68 ms | 23.63–23.91 ms | 39.89–50.15 ms |
+| runs 07–10 | 18.69–18.71 ms | 16.85–16.87 ms | 22.02–23.01 ms |
+
+The two groups differ because the damage source changed character part way through the series,
+for a reason that was not established — in the first six the *screen itself* was skipping a
+refresh at p99, and the capture path followed it to within 0.3 ms. In the last four the screen
+held every vsync and the capture path's worst frame in 40,000 was 23.0 ms, about one refresh
+interval of slop.
+
+Two things follow. The claim at the top of this section now rests on a hundred times the original
+sample. And **the 40–50 ms maxima in the first six runs are the content, not the capture path** —
+they are not ADR-0019's stall, which is a *convert*, measured with different instruments
+([ADR-0019](0019-obs-dual-gpu-goes-through-system-ram.md)). Reading them as the same fault was
+the first thing this ADR warns against.
+
 ## Consequence 1: this is correct behaviour, and we must not "fix" it
 
 `ext-image-copy-capture-v1` delivers a frame when the output is damaged. Burning GPU time copying
@@ -71,11 +94,35 @@ single-buffer design would then genuinely serialize the compositor against the e
 retained on that argument, not on a measurement, and that distinction is recorded rather than
 blurred.
 
+## Consequence 4: a timeout ends a wait; it is never a way to poll
+
+*Added 2026-10-14, measured on argus under Hyprland.*
+
+When the spikes gained an idle timeout — so that a still screen would be explained rather than
+hung on — the first version put it on the capture wait itself: time out, destroy the pending
+frame, ask for another. **That invents frames.** Once a pending `ext-image-copy-capture-v1` frame
+is destroyed, the compositor answers the next request immediately, with unchanged content. On a
+screen genuinely redrawing about every 5 s, a 1 s timeout reported a capture every 1002 ms —
+each one the timeout plus 2 ms — and filled the capture timings with the length of the timeout
+rather than with anything the screen did.
+
+That is the error at the top of this ADR arriving by a different door: a number that looks like a
+capture rate and is really a property of the measuring apparatus. So, for `lcapture`:
+
+- A capture wait either waits or gives up. If it gives up it says so and stops. It does not
+  re-request, and a bounded wait must never be used to sample.
+- A dry spell is noticed from the **encoder** side, which already owns a clock and the
+  last-good-frame rule (Consequence 1). It watches the capture sequence number stop advancing and
+  never touches the compositor to do it. `encode-spike` is written that way, and
+  `wlcap_capture_slot`'s header says so where someone would reach for the timeout.
+
 ## Still open
 
-- The ceiling under sustained synthetic damage was not isolated: the attempt to force constant
-  damage with `vkcube` put the window on a different output and the measurement was unchanged. A
-  controlled damage source on a *named* output is needed before quoting a maximum capture rate.
-  Until then the honest claim is "adds no measurable latency over presentation", not a fps number.
+- The ceiling under sustained synthetic damage is **still** not isolated, even after the
+  100,000-frame series above. That series did get a controlled damage source onto a named output,
+  which is what this item asked for — but the output refreshes at 59.95 Hz and the capture tracked
+  it exactly, so what it measured was the monitor, not a maximum. A ceiling needs a source that can
+  outrun the output, which means a high-refresh output or an offscreen one. Until then the honest
+  claim remains "adds no measurable latency over presentation", not a fps number.
 - Per-frame cost of the cross-GPU transfer at the output cadence (ADR-0012 still open).
 - Explicit sync via `linux_drm_syncobj_v1`; the spike still stalls on a fence.

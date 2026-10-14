@@ -196,6 +196,36 @@ stream**. That is the difference between a hitch and a failure, and it is by des
 luck. It stays on the list for Phase 1.5 and will likely be closed by pre-recorded command buffers
 and explicit sync, both of which remove the per-frame submission work entirely.
 
+#### Looked for properly, 2026-10-14, and not found
+
+The run above was ~8000 captures. This one was built for the question: ten runs of 6000 frames
+through `encode-spike` on argus, audio on, with the GPU deliberately left idle for 90 s between
+runs — the condition this ADR names as the leading suspect, given ten chances. **59,940 timed
+converts.** At the rate recorded above that predicts about fifteen events.
+
+```
+worst convert in the whole series : 5.721 ms = record 0.463 + submit 1.173 + gpu-wait 1.199 + copy 2.886
+second worst                      : 5.019 ms = record 0.289 + submit 0.156 + gpu-wait 1.663 + copy 2.911
+over the 16.667 ms budget         : 0 of 59,940, in every one of the ten runs
+mean 2.18 ms, p99 2.9 ms, run to run identical to within 0.01 ms
+```
+
+The `record` term — the 39.375 ms that *was* the stall — peaked at **0.463 ms**. The first run
+after each idle period looks like every other run.
+
+So the honest state has moved: from "~2 events in ~8000 captures, cause not established" to **not
+observed in 59,940, under the conditions that produced it**. That is a negative, not a fix.
+Nothing was changed to make it go away, so the most likely explanations are a driver or kernel
+update between then and now, or a condition in the original runs that has not been identified —
+and either way the cause is still not established. What is now unsupported is using this stall as
+the argument for explicit sync or pre-recorded command buffers; those have to be justified on
+their own merits.
+
+Two methodological notes, both mistakes made on the way here. The first attempt at this
+measurement ran `capture-spike`, which has no convert in it at all, and so could not have seen
+the fault whatever it printed. And `capture-spike`'s inter-arrival maxima of 40–50 ms on a
+damage-driven output look exactly like this stall and are not it; see ADR-0013.
+
 ### Where the time actually goes
 
 The same instrumentation answered a question nobody had asked. In normal operation:

@@ -135,17 +135,27 @@ Not blocked on design — blocked on something only the operator can approve or 
   no rework.
 - **Explicit sync via `linux_drm_syncobj_v1`.** Not a measurement that was waiting on a machine:
   nothing in this repository uses `syncobj` at all, so there is nothing to measure yet. It was
-  filed next to the 40 ms submission stall on the theory that it was the cure; the stall does
-  not reproduce on argus (below), so the case for building it has to be made again from
-  somewhere else before it is.
-- **The 40 ms submission stall still has no verdict, and a short run cannot give it one.**
-  ADR-0019 recorded it as roughly **2 events in 8000 captures**, not reproducible on demand, with
-  a driver or power-state transition after GPU idleness as the leading suspect. The runs on
-  2026-10-13 saw about a thousand captures across both machines and found nothing — which is
-  what that base rate predicts whether the fault is still there or not, so it is evidence of
-  almost nothing. A real answer needs **8000+ captures per machine**, ideally with the GPU left
-  idle first, which is minutes of continuous screen capture rather than ten seconds. Worth doing
-  deliberately, not worth inferring from the gate runs.
+  filed next to the 40 ms submission stall on the theory that it was the cure. The stall now has
+  a negative at a sample size that means something (below), so **the case for building explicit
+  sync has to be made from somewhere else** — the frame pacing it would buy, say — and not from
+  a fault that no longer shows up.
+- **A note ADR-0013 should carry, found on argus.** Under Hyprland, once a pending
+  `ext-image-copy-capture` frame is destroyed, the *next* request is answered immediately with
+  unchanged content. So a capture worker that implements a timeout as "cancel and ask again"
+  invents frames: measured at a 1 s timeout on a screen genuinely redrawing every ~5 s, it
+  reported a capture every 1002 ms, each one the timeout plus 2 ms, and filled the capture
+  timings with the timeout's own length. `lcapture` must not do this. `encode-spike` watches for
+  dry spells from the encoder side for exactly this reason, and `wlcap.hpp` says so at the
+  function — but it belongs in ADR-0013, where someone writing the real worker would look.
+- **`wlcap_capture_frame` still waits without a bound.** The single-shot variant has no callers,
+  so the idle timeout was not wired into it. Wire it, or delete it, before something starts using
+  it.
+- **The portal path would mislabel a still screen.** On the PipeWire/portal backend, zero frames
+  reports "timed out waiting for format negotiation" from the 8 s watchdog in `stream.cpp`, and
+  capture-spike's fallback ladder could then drop a modifier to try to fix something that was
+  never broken. It does not hang, and the case has not been seen (a portal screencast normally
+  sends a first frame), so this is a wrong *message* rather than a wrong outcome. It needs a
+  machine where someone can work the portal picker.
 
 When a destination is finally needed for a real push, point it at a **local MediaMTX container**.
 Never at a live key.
@@ -158,51 +168,177 @@ Never at a live key.
   `libertas-render`. The largest remaining piece of work; its transport foundation (`lipc`,
   ADR-0026) exists and is tested headless.
 
-## Answered, written up, not yet built
+## What the combined format bump still owes
 
-- **One word for a source, in the code too.** The operator's call on 2026-10-13: drop the
-  layer/source split from the code as well as the screen. Written up as
-  [ADR-0028](adr/0028-one-word-for-a-source.md) — the scene-tree node becomes a source node
-  (`NodeKind::Source`, `SourceData`) and the project-level `Source` keeps its name. Wide but
-  mechanical, and it rides ADR-0027's format bump so there is one migration rather than two.
+[ADR-0028](adr/0028-one-word-for-a-source.md) is **built in the C++ and not on the wire** — see
+"Done" below. Three things were deliberately left for the single bump ADR-0027 and ADR-0029 share,
+and they are listed here so the bump does not have to rediscover them:
 
-## Verified on argus and the dev box, 2026-10-13
+1. **`"kind": "layer"`.** A source node still serialises under the old word. One line in
+   `node.cpp`, and the migration that goes with it.
+2. **`layer.set-source` → `node.set-source`.** It is the only command still carrying the word, and
+   it is a format in two places: the crash-recovery journal and the websocket API, which
+   `command_name()` documents as stable. The reader should accept both names for a while rather
+   than refusing an older journal — crash recovery is the worst possible place for a strict
+   parser.
+3. **`kind_str()` in `document.cpp` and `kind_word()` in `inspect.cpp`.** Two small helpers that
+   return "source" where `ldoc::to_string(NodeKind)` still returns "layer", because that function
+   serves the file format and the screen at once. **Delete both when the wire word changes** and
+   go back to `to_string`; leaving them would quietly keep two vocabularies alive.
+
+Not part of the bump, and deliberately so: the four `layer.*` action ids in `lsession`
+(`layer.delete`, `layer.move-forward`, `layer.move-back`, `layer.toggle-visible`). They are keys
+in the operator's bindings TOML, which no `kSchemaVersion` covers, so renaming them would silently
+unbind keys the operator chose. Their display names already say "source". If they are ever
+renamed it needs either a migration of that file or an alias in `find_action`.
+
+## Verified on argus and the dev box, 2026-10-13 and 2026-10-14
 
 Reached as `ssh -o HostKeyAlias=argus calmasacow@192.168.1.245` (`argus.lan` no longer resolves,
-`argus.local` does). It builds with `-G "Unix Makefiles"`; there is no ninja. The source lives in
-`~/libertas-src` as a plain rsync'd copy with no git, built into `build-make`.
+`argus.local` does). It builds with `-G "Unix Makefiles"`; there is **no ninja**, so the presets
+in `CMakePresets.json` do not work there — configure by hand into `build-make`.
+
+The source now lives in **`~/Development/Libertas-Studio`**, a full clone with history, on
+branch `foundation`. The older `~/libertas-src` is a historyless rsync and is stale; ignore it.
+argus has **no git identity configured**, so commits there need
+`git -c user.name=... -c user.email=...`; nothing changed its config. Over SSH the environment
+has no `WAYLAND_DISPLAY` and `XDG_SESSION_TYPE=tty`, so anything touching the display needs
+`XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 XDG_SESSION_TYPE=wayland` — and
+`libertas probe` correctly exits 2 without them (ADR-0003), which is not a regression.
 
 - **Caught up from the `lsession` commit to the current tree**, uncommitted work included.
   Configure, build and all twenty tests green, including the shell self-check headless. Zero
   warnings, so `-Werror` holds there too. `QuickDialogs2` — the new dependency behind the Browse
   button — is present.
-- **`libertas probe` is clean** (exit 0, one warning: `XDG_SESSION_TYPE` reads `tty` over SSH).
+- **`libertas probe` is clean** (exit 0, one warning: QSV unavailable on `renderD129`).
   ADR-0008 still holds exactly: Vulkan video encode present on the RTX 2070, QSV failing on
   `renderD129` with `MFX session: -9` under both the default libva and `iHD`.
-  **Worth knowing:** the encoder table lists `av1_nvenc` and the three `*_qsv` entries as
-  "present" when none of them work on this machine. It reports what libavcodec was compiled
-  with, not what the hardware can do — which is the exact confusion ADR-0008 exists to correct.
+  The encoder table's "present" column, which said `av1_nvenc` and the three `*_qsv` entries were
+  present when none of them work there, **is fixed** — see "Done" below.
 - **`capture-spike` passes.** 300 frames in 5003.2 ms, 60.0 fps, real pixel content imported into
   Vulkan on an explicit modifier. Per frame mean 16.68 ms, p99 19.71, max 22.17.
 - **The encode gate passes, and the wall-clock accounting is verified.** 600 frames in 9.99 s
   (60.04 fps), `h264_nvenc` at 2560x1440. Audio held 9.984 s against 9.993 s of wall time, a drift
   of −8.7 ms over ten seconds. The accounting closes: capture loop 16.678 ms wall against 16.677
   named, 0% unaccounted; encode loop 1.493 against 1.429, 4%.
-- **Nothing resembling the 40 ms stall appeared**, on either machine — but see the open item
-  above before reading anything into that. argus: worst convert 4.008 ms, submit 1.208, 0 of 599
-  over budget. The dev box (RTX 5080, DP-1, same run with the operator's consent): worst convert
-  2.015 ms = record 0.044 + submit **0.019** + gpu-wait 0.291 + copy 1.660, 0 of 380 over budget,
-  wall-clock accounting 0% and 6% unaccounted, A/V drift −4.3 ms over ten seconds. The sample is
-  too small to close the item; it is recorded because it is the per-stage shape of a healthy run
-  on both machines, which is worth having written down.
+- **The 40 ms submission stall did not reproduce, at a sample size where that means something.**
+  [ADR-0019](adr/0019-obs-dual-gpu-goes-through-system-ram.md) put it at roughly **2 events in
+  8000 captures**, located in `record` — host-side command-buffer building inside
+  `vk_convert_nv12`, with the GPU itself taking 0.003 ms — and named a driver or power-state
+  transition after GPU idleness as the leading suspect. So: ten runs of 6000 frames through
+  `encode-spike`, which is the tool that times the convert, with audio on (ADR-0019 had already
+  tested and rejected the audio hypothesis, and both original events had it) and the GPU left
+  deliberately idle for 90 s between runs. **59,940 timed converts**, against a rate that
+  predicts about fifteen events.
 
-**A real trap for next time, and a tool bug.** Capture is damage-driven (ADR-0013), and nobody is
-sitting at argus — so the first run of `capture-spike` waited for ever on a screen that never
-changed, printing nothing and explaining nothing. Both spikes need something moving on the
-display; a `foot` window running a print loop is enough. The spikes should say so after a few
-seconds of no frames rather than hanging silently, which they do not.
+  | | worst in the series | ADR-0019's event |
+  |---|---|---|
+  | convert | 5.721 ms | 40.475 ms |
+  | its `record` term | **0.463 ms** | **39.375 ms** |
+
+  Two converts over 5 ms in 59,940. **Zero over the 16.667 ms budget, in every one of the ten
+  runs.** Mean convert 2.18 ms and p99 2.9 ms, identical run to run to within 0.01 ms, including
+  the first run after each idle period. Whatever ADR-0019 caught in October is not happening on
+  argus now.
+
+  **A correction to what this file said yesterday.** The run queued overnight used
+  `capture-spike`, which never converts — so whatever it printed, it could not have seen this
+  fault, and the script's own header said "ADR-0019's event is a ~40 ms convert" while running
+  the wrong tool. It was worth having anyway: it is the 100,000-capture confirmation now folded
+  into [ADR-0013](adr/0013-capture-is-damage-driven.md), and it is the reason the 40–50 ms
+  *inter-arrival* maxima it reported are known to be the content rather than the capture path.
+  But it was the wrong instrument for this question and was written up here as though it were
+  the right one.
+
+- **The per-stage shape of a healthy run**, worth having written down because it is what a sick
+  one would be compared against. argus: worst convert 4.008 ms, submit 1.208, 0 of 599 over
+  budget. The dev box (RTX 5080, DP-1, same run with the operator's consent): worst convert
+  2.015 ms = record 0.044 + submit **0.019** + gpu-wait 0.291 + copy 1.660, 0 of 380 over budget,
+  wall-clock accounting 0% and 6% unaccounted, A/V drift −4.3 ms over ten seconds.
+
+**A real trap, and the tool bug behind it — both now fixed.** Capture is damage-driven
+(ADR-0013), and nobody is sitting at argus, so the first run of `capture-spike` waited for ever
+on a screen that never changed, printing nothing and explaining nothing. Both spikes need
+something moving on the display; a `foot` window running a print loop is enough. They now say so
+instead of hanging — see "Done" below. Also worth knowing before planning a long run there:
+**argus's "idle" desktop is not still.** Something redraws HDMI-A-1 about every 5 s, confirmed
+against the compositor's own presentation timestamps, so a few thousand frames at that rate is
+hours rather than minutes.
 
 ## Done since this file was written
+
+### Landed overnight on argus, reviewed and merged 2026-10-14
+
+Three headless tasks ran unattended on argus while the dev box was off, each on its own branch
+from `foundation`. All three were reviewed here, rebuilt under the `linux-ci` preset (`-Werror`)
+and merged; twenty tests green.
+
+- **[ADR-0028](adr/0028-one-word-for-a-source.md), the C++ half.** `NodeKind::Layer` →
+  `Source`, `LayerData` → `SourceData`, `SetLayerSource` → `SetNodeSource`, and across the UI
+  bridge `Document.layers` → `nodes`, `selectedLayer` → `selectedNode`, `addLayer` →
+  `addSourceNode`, the whole `setLayer*` family → `setNode*`. The bridge says **node**, not
+  source, because those calls act on whatever is selected and that includes groups. The
+  layer/source explanation moved out of `SourcesPanel.qml` into `node.hpp` at `SourceData`.
+  The serialised words did not change — see "What the combined format bump still owes".
+
+  **The ADR was wrong about one thing, and it has been corrected in place:** it said nothing the
+  operator sees would change. In fact "layer" was on screen in the undo history, the Properties
+  panel, the mixer, the Info panel, the settings dialog, an emergency-scene warning and four
+  shortcut names. All now say "source". **One wording worth a second opinion:** `RemoveNode`'s
+  undo text is "Remove from scene" and the shortcut is "Remove From Scene", because
+  "Remove source" is already what `RemoveSource` means — deleting it from the project.
+
+- **The spikes no longer hang in silence on a still screen.** `--idle-timeout SECS` (default 10,
+  `0` waits for ever) on both spikes. `capture-spike` exits **7** with an error naming the cause,
+  so a script can tell "nothing moved" from "capture is broken"; `encode-spike` warns once when
+  captures dry up and once when they come back, and keeps encoding, because duplicating the last
+  frame is correct (ADR-0013). The timeout is deliberately *not* used to re-request a frame —
+  see the ADR-0013 note under "Needs the operator".
+
+  Two parsing faults were found here on review and fixed: `--idle-timeout nope` read as 0 and so
+  meant "wait for ever", restoring the exact hang the flag exists to end (`strtod` returns 0 for
+  text it cannot read, and the end pointer was being discarded); and `0.0004` truncated to 0 ms
+  and meant the same thing. Any positive value now means a timeout.
+
+- **`libertas probe` no longer prints "present" as though it meant "works".** The encoder table
+  now has two columns — **built**, a fact about this libavcodec, and **this machine**, which
+  cites what the Vulkan, VAAPI and QSV sections actually found: `ran`, `FAILED`, `no`, `claimed`,
+  `unknown` or `software`, each defined in a legend above the table. The table runs *after* those
+  sections so it can cite them, the Vulkan section now reports the per-codec encode extensions
+  rather than only `VK_KHR_video_encode_queue`, and `h264/hevc/av1_vulkan` were added because the
+  primary encode path (ADR-0006) was not in the list at all.
+
+  Checked on both machines, and the two now read differently, which is the point:
+
+  | | argus (RTX 2070) | dev box (RTX 5080) |
+  |---|---|---|
+  | `av1_nvenc` | **no** — lacks `VK_KHR_video_encode_av1` | **claimed** |
+  | `h264_qsv` | **FAILED** — no QSV session on `renderD129` | **ran** — encoded 1 s, with `LIBVA_DRIVER_NAME=iHD` |
+  | `h264_vaapi` | **unknown** — no `vainfo` installed | **claimed** |
+
+  `h264_qsv` is the only row that can ever read **ran**, because the QSV section really does
+  encode a second of H.264. Everything else on NVIDIA is the driver's word, and says so.
+
+  **Ready follow-ups, deliberately not done:** HEVC and AV1 VAAPI entrypoint checks (one `vainfo`
+  run per node, read for `VAProfileHEVCMain` / `VAProfileAV1Profile0` beside
+  `VAEntrypointEncSlice`) — skipped because argus has no `vainfo`, but **the dev box has one**,
+  so this can be written and tested here. And an opt-in `probe --encode-test` that turns
+  "claimed" into "ran" by opening each encoder in a child process with a hard timeout and
+  sending it a frame — some hardware encoders open cleanly and only fail on the first frame.
+
+### Also done here
+
+- **The double-click is now actually double-clicked.** The self-check opened the settings panel
+  by calling the same function the handler calls, which tested the panel and not the gesture —
+  and the rename went straight through that handler. It now posts a real press / release /
+  press / dblclick / release through the window, on a bound row (settings open, no rename) and
+  on a group (no panel, rename starts), because those are the handler's two branches and they
+  mean opposite things.
+
+- **The last two places that still said "input".** The Inputs panel was folded into Sources a
+  while ago, but `libertas inspect` still printed a heading called "inputs" and
+  "(missing input)", and `document.hpp` had a section header to match.
+
 
 - **The gear, and what is behind it.** Every source type now has a settings panel: a preview, a
   field per setting, and Defaults / OK / Cancel. Reached from the gear in the Sources panel
