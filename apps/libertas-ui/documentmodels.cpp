@@ -181,6 +181,9 @@ QVariant OutputModel::data(const QModelIndex& index, int role) const {
     case IdRole:              return r->id;
     case NameRole:            return r->name;
     case CanvasNameRole:      return r->canvasName;
+    case EncodeNameRole:      return r->encodeName;
+    case ResolutionRole:      return r->resolution;
+    case SharedWithRole:      return r->sharedWith;
     case CodecRole:           return r->codec;
     case ImplementationRole:  return r->implementation;
     case BitrateRole:         return r->bitrateKbps;
@@ -198,6 +201,9 @@ QHash<int, QByteArray> OutputModel::roleNames() const {
         {IdRole, "outputId"},
         {NameRole, "name"},
         {CanvasNameRole, "canvasName"},
+        {EncodeNameRole, "encodeName"},
+        {ResolutionRole, "resolution"},
+        {SharedWithRole, "sharedWith"},
         {CodecRole, "codec"},
         {ImplementationRole, "implementation"},
         {BitrateRole, "bitrateKbps"},

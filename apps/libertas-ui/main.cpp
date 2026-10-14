@@ -1375,13 +1375,25 @@ int main(int argc, char** argv) {
         //
         // Nothing broadcasts yet, so what is asserted is the document state the renderer will
         // read: what is on program, what is staged, and what each output would send where.
-        const auto deck_at = [&](int row, int role) {
-            return document.decksModel()->data(document.decksModel()->index(row, 0),
-                                               Qt::UserRole + role);
+        // By role *name*, not by offset from Qt::UserRole. These used to be magic numbers,
+        // and inserting a role into the middle of an enum silently re-pointed every check
+        // after it at the wrong column -- a green suite reading the wrong fields is worse
+        // than a red one.
+        const auto role_of = [](const QAbstractItemModel* m, const char* name) {
+            const QHash<int, QByteArray> names = m->roleNames();
+            for (auto it = names.cbegin(); it != names.cend(); ++it) {
+                if (it.value() == name)
+                    return it.key();
+            }
+            return -1;
         };
-        const auto out_at = [&](int row, int role) {
-            return document.outputsModel()->data(document.outputsModel()->index(row, 0),
-                                                 Qt::UserRole + role);
+        const auto deck_at = [&](int row, const char* role) {
+            const QAbstractItemModel* m = document.decksModel();
+            return m->data(m->index(row, 0), role_of(m, role));
+        };
+        const auto out_at = [&](int row, const char* role) {
+            const QAbstractItemModel* m = document.outputsModel();
+            return m->data(m->index(row, 0), role_of(m, role));
         };
         settle();
         report(document.decksModel()->rowCount() >= 1, "the document has a deck");
@@ -1391,7 +1403,7 @@ int main(int argc, char** argv) {
         report(!document.transitions().isEmpty(), "the transitions are listed");
         report(!document.codecs().isEmpty(), "and the encoders");
 
-        const QString deck_id = deck_at(0, 1).toString();
+        const QString deck_id = deck_at(0, "deckId").toString();
         report(!deck_id.isEmpty(), "with an id to drive it by");
 
         // Nothing staged: a take has to say so rather than quietly doing nothing.
@@ -1408,11 +1420,11 @@ int main(int argc, char** argv) {
 
         document.setDeckPreview(deck_id, document.selectedScene());
         settle();
-        report(deck_at(0, 7).toString() == document.selectedScene(),
+        report(deck_at(0, "previewSceneId").toString() == document.selectedScene(),
                "a scene can be staged on preview");
         document.takeDeck(deck_id);
         settle();
-        report(deck_at(0, 4).toString() == deck_at(0, 5).toString(),
+        report(deck_at(0, "programScene").toString() == deck_at(0, "previewScene").toString(),
                "and a take puts it on program");
         const QString after_take = document.undoDescription();
         document.takeDeck(deck_id);
@@ -1423,14 +1435,14 @@ int main(int argc, char** argv) {
         document.setDeckStudioMode(deck_id, true);
         document.setDeckTransition(deck_id, QStringLiteral("transition.fade"), 450);
         settle();
-        report(deck_at(0, 8).toBool(), "studio mode is a document setting");
-        report(deck_at(0, 9).toString() == QLatin1String("transition.fade") &&
-                   deck_at(0, 10).toInt() == 450,
+        report(deck_at(0, "studioMode").toBool(), "studio mode is a document setting");
+        report(deck_at(0, "transition").toString() == QLatin1String("transition.fade") &&
+                   deck_at(0, "transitionMs").toInt() == 450,
                "and so is the transition and its duration");
         document.undo();
         document.undo();
         settle();
-        report(!deck_at(0, 8).toBool(), "both of which undo");
+        report(!deck_at(0, "studioMode").toBool(), "both of which undo");
 
         const int outputs_before = document.outputsModel()->rowCount();
         document.addOutput(QStringLiteral("YouTube"));
@@ -1452,29 +1464,63 @@ int main(int argc, char** argv) {
         report(collect(window->contentItem(), QStringLiteral("outputBlock")).size() ==
                    outputs_before + 1,
                "and the panel draws it once the tab is brought forward");
-        report(!out_at(outputs_before, 10).toBool(),
+        report(!out_at(outputs_before, "isEnabled").toBool(),
                "disabled, because an enabled one would be a keystroke from going live");
 
-        const QString out_id = out_at(outputs_before, 1).toString();
+        const QString out_id = out_at(outputs_before, "outputId").toString();
         document.setOutputEncoder(out_id, QStringLiteral("hevc"), QStringLiteral("nvenc"));
         document.setOutputBitrate(out_id, 12000);
         document.setOutputDestination(out_id, QStringLiteral("rtmps"),
                                       QStringLiteral("rtmps://a.example/live"));
         document.setOutputCredentialRef(out_id, QStringLiteral("youtube-main"));
         settle();
-        report(out_at(outputs_before, 4).toString() == QLatin1String("hevc") &&
-                   out_at(outputs_before, 5).toString() == QLatin1String("nvenc"),
+        report(out_at(outputs_before, "codec").toString() == QLatin1String("hevc") &&
+                   out_at(outputs_before, "implementation").toString() == QLatin1String("nvenc"),
                "its encoder can be changed");
-        report(out_at(outputs_before, 6).toInt() == 12000, "and its bitrate");
-        report(out_at(outputs_before, 9).toString() == QLatin1String("youtube-main"),
+        report(out_at(outputs_before, "bitrateKbps").toInt() == 12000, "and its bitrate");
+        // The row names the resolution the encode actually sends. Nothing here rescales, so
+        // it is the canvas's -- but the field has to be filled, because an empty one reads on
+        // screen as "Main -> . h264/nvenc".
+        report(out_at(outputs_before, "resolution").toString().contains(QLatin1Char('x')),
+               "the row says what resolution leaves the encoder");
+        // addOutput gives a new output its own encode rather than joining an existing one
+        // (ADR-0029), so nothing is shared yet and the row must not claim otherwise.
+        report(out_at(outputs_before, "sharedWith").toStringList().isEmpty(),
+               "and a fresh output shares its encode with nobody");
+        report(out_at(outputs_before, "credentialRef").toString() == QLatin1String("youtube-main"),
                "and the *name* of its credential");
 
         // Enabled with nowhere to send to is an error the panel has to show, not swallow.
         document.setOutputDestination(out_id, QStringLiteral("rtmps"), QString{});
         document.setOutputEnabled(out_id, true);
         settle();
-        report(!out_at(outputs_before, 10).toBool() || out_at(outputs_before, 11).toBool(),
+        report(!out_at(outputs_before, "isEnabled").toBool() ||
+                   out_at(outputs_before, "misconfigured").toBool(),
                "an output enabled with no destination is either refused or flagged");
+
+        // A role added to a model but not declared on its delegate does not fail to build and
+        // does not fail any model-level check -- it renders the literal word "undefined" into
+        // the panel, under `pragma ComponentBehavior: Bound`. That is what happened to the
+        // outputs row, and the self-check passed while the screen was wrong. So: read the
+        // screen. Nothing the operator can see may say "undefined".
+        {
+            QStringList offenders;
+            QList<QQuickItem*> stack{window->contentItem()};
+            while (!stack.isEmpty()) {
+                QQuickItem* item = stack.takeLast();
+                const QVariant text = item->property("text");
+                if (text.isValid() && text.typeId() == QMetaType::QString &&
+                    text.toString().contains(QLatin1String("undefined")))
+                    offenders.append(text.toString());
+                stack.append(item->childItems());
+            }
+            const std::string msg =
+                offenders.isEmpty()
+                    ? std::string{"no panel draws the word \"undefined\""}
+                    : ("a panel draws \"undefined\": " +
+                       offenders.join(QLatin1String(" | ")).toStdString());
+            report(offenders.isEmpty(), msg.c_str());
+        }
 
         // Nothing in the whole project may serialise a credential. Asserted here as well as in
         // the format tests, because this is the panel that has a text box next to the word key.
@@ -1492,14 +1538,21 @@ int main(int argc, char** argv) {
             report(true, "and no field that could hold the credential itself exists");
         }
 
+        const int encodes_before_remove = document.encodeCount();
         document.removeOutput(out_id);
         settle();
         report(document.outputsModel()->rowCount() == outputs_before,
                "an output can be removed");
+        // addOutput makes an encode and an output together, so removing the output has to take
+        // the encode with it. An encode nothing sends is invisible in every panel and still
+        // counts against the GPU in the inspector.
+        report(document.encodeCount() == encodes_before_remove - 1,
+               "and its encode goes with it, since nothing else was sending it");
         document.undo();
         settle();
         report(document.outputsModel()->rowCount() == outputs_before + 1,
                "and undo brings it back");
+        report(document.encodeCount() == encodes_before_remove, "encode and all");
         document.removeOutput(out_id);
         settle();
 

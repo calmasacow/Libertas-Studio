@@ -405,6 +405,27 @@ void Document::rebuild() {
         // are the same numbers on both rows, which is true rather than a display bug.
         const ldoc::Encode* enc = p.encode(o.encode);
         row.canvasName = enc ? canvas_name(enc->canvas) : QStringLiteral("(missing encode)");
+        row.encodeName = enc ? qstr(enc->name) : QString{};
+        // The canvas name says the wrong resolution whenever the encode rescales, and
+        // rescaling is the ordinary case: 1080p to Twitch off a 1440p canvas. Show what
+        // actually leaves the encoder.
+        if (enc) {
+            const ldoc::Canvas* c = p.canvas(enc->canvas);
+            const double w = enc->rescale ? enc->rescale->x : (c ? c->width : 0);
+            const double h = enc->rescale ? enc->rescale->y : (c ? c->height : 0);
+            row.resolution = QStringLiteral("%1x%2")
+                                 .arg(static_cast<long long>(w))
+                                 .arg(static_cast<long long>(h));
+        }
+        // An encode feeding more than one destination is the whole point of ADR-0029, and
+        // two rows carrying the same numbers do not say it -- two separate encodes
+        // configured alike look exactly the same. Name the others.
+        if (enc) {
+            for (const ldoc::Output& other : p.outputs) {
+                if (other.id != o.id && other.encode == o.encode)
+                    row.sharedWith.push_back(qstr(other.name));
+            }
+        }
         row.codec = enc ? qstr(enc->encoder.codec) : QString{};
         row.implementation = enc ? qstr(enc->encoder.implementation) : QString{};
         row.bitrateKbps = enc ? enc->encoder.bitrate_kbps : 0;
@@ -1341,6 +1362,10 @@ void Document::setDeckTransition(const QString& deckId, const QString& transitio
     });
 }
 
+int Document::encodeCount() const {
+    return static_cast<int>(session_->project().encodes.size());
+}
+
 void Document::addOutput(const QString& name) {
     const ldoc::Project& p = session_->project();
     if (p.canvases.empty()) {
@@ -1373,8 +1398,35 @@ void Document::addOutput(const QString& name) {
 
 void Document::removeOutput(const QString& id) {
     const auto parsed = parse_id(id);
-    if (parsed)
+    if (!parsed)
+        return;
+    const ldoc::Project& p = session_->project();
+    const ldoc::Output* going = nullptr;
+    for (const ldoc::Output& o : p.outputs) {
+        if (o.id == *parsed)
+            going = &o;
+    }
+    if (!going) {
         run(ldoc::RemoveOutput{*parsed});
+        return;
+    }
+    // addOutput creates an encode and an output together, so removing the output has to take
+    // the encode with it or the project accumulates encodes nothing sends -- and the inspector
+    // counts those against the GPU, so a few add/remove cycles make the machine look busier
+    // than it is. Only when this was the last output on it: a shared encode outlives any one
+    // destination, which is the whole point of sharing (ADR-0029).
+    const bool shared = std::any_of(p.outputs.begin(), p.outputs.end(),
+                                    [&](const ldoc::Output& other) {
+                                        return other.id != going->id &&
+                                               other.encode == going->encode;
+                                    });
+    if (shared || !p.encode(going->encode)) {
+        run(ldoc::RemoveOutput{*parsed});
+        return;
+    }
+    // The output first: RemoveEncode is refused while anything still names it.
+    run(ldoc::make_batch({ldoc::RemoveOutput{*parsed}, ldoc::RemoveEncode{going->encode}},
+                         "Remove output"));
 }
 
 void Document::edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change) {

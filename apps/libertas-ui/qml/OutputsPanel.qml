@@ -46,6 +46,9 @@ Item {
                     required property string outputId
                     required property string name
                     required property string canvasName
+                    required property string encodeName
+                    required property string resolution
+                    required property var sharedWith
                     required property string codec
                     required property string implementation
                     required property int bitrateKbps
@@ -116,10 +119,28 @@ Item {
 
                         Text {
                             width: parent.width
-                            text: output.canvasName + " · " + output.codec + "/" +
-                                  output.implementation + " · " + output.bitrateKbps + " kbps"
+                            // The resolution is the encode's, not the canvas's: an encode that
+                            // rescales sends something other than its canvas, and naming only
+                            // the canvas here said 1440p for a 1080p stream.
+                            text: output.canvasName + " → " + output.resolution + " · " +
+                                  output.codec + "/" + output.implementation + " · " +
+                                  output.bitrateKbps + " kbps"
                             font.pixelSize: 9
                             color: Theme.c.textMuted
+                            elide: Text.ElideRight
+                        }
+
+                        // One encode feeding several destinations is the point of ADR-0029, and
+                        // identical numbers on two rows do not say it -- two separate encodes
+                        // configured alike look the same. Say it in words, on the row.
+                        Text {
+                            width: parent.width
+                            visible: output.sharedWith.length > 0
+                            text: qsTr("↳ shares the “%1” encode with %2")
+                                      .arg(output.encodeName)
+                                      .arg(output.sharedWith.join(qsTr(", ")))
+                            font.pixelSize: 9
+                            color: Theme.c.accent
                             elide: Text.ElideRight
                         }
 

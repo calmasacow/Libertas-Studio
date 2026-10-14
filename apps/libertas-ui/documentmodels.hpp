@@ -5,6 +5,7 @@
 #include "rowmodel.hpp"
 
 #include <QString>
+#include <QStringList>
 
 #include <vector>
 
@@ -245,6 +246,16 @@ struct OutputRow {
     QString id;
     QString name;
     QString canvasName;
+    /// The encode's own name. Two destinations fed by one encode show the same name here,
+    /// which is the only thing on the row that tells them apart from two encodes that merely
+    /// happen to be configured alike (ADR-0029).
+    QString encodeName;
+    /// What actually leaves the encoder: the encode's rescale when it has one, the canvas
+    /// size when it does not. The canvas name alone says the wrong resolution for a
+    /// downscaled encode, which is the common case -- 1080p to Twitch off a 1440p canvas.
+    QString resolution;
+    /// The *other* outputs fed by this same encode, by name. Empty for an unshared encode.
+    QStringList sharedWith;
     QString codec;
     QString implementation;
     int bitrateKbps = 0;
@@ -268,6 +279,9 @@ public:
         IdRole = Qt::UserRole + 1,
         NameRole,
         CanvasNameRole,
+        EncodeNameRole,
+        ResolutionRole,
+        SharedWithRole,
         CodecRole,
         ImplementationRole,
         BitrateRole,

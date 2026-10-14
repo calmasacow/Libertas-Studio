@@ -210,8 +210,40 @@ vertical scene of its own, and two encodes feeding three destinations.
 - **Start All / Stop All.** Nothing to start: no output actually runs yet, and the shell still
   reports "Start/Stop Streaming is not wired up".
 - **Backtrack**, which has no document shape yet.
-- **Garbage-collecting an encode** whose last output was removed. It is kept, because nothing
-  yet says which of the two the operator meant.
+- **Sharing an encode from the UI.** The model holds it, the inspector counts it and the
+  outputs panel now *shows* it, but nothing in the shell can point one output at another's
+  encode. The golden fixture has Twitch and Kick sharing only because it was written by hand.
+  This is the Aitum-shaped reuse the operator asked for and it is not reachable yet; it most
+  likely belongs in the outputs manager window rather than on the row.
+
+## Found by launching it, 2026-10-14
+
+Running the shell against the v2 golden fixture, which is the first time the encode model was
+looked at rather than tested.
+
+- **The outputs row said the wrong resolution.** It printed the encode's *canvas*, so a 1080p
+  stream off a 1440p canvas read as 1440p -- and downscaling is the ordinary case. It now says
+  `Main -> 1920x1080`, the canvas and what actually leaves the encoder. Fixed.
+- **The outputs row did not say an encode was shared.** Twitch and Kick showed identical
+  numbers, which two *separate* encodes configured alike would also show. The row now names
+  the encode and the other destinations on it. Fixed.
+- **Removing an output left its encode behind.** `addOutput` creates the pair in one batch and
+  said in a comment that nobody wants the encode left behind on undo -- but `removeOutput` was
+  a bare `RemoveOutput`, so a few add/remove cycles silently accumulated encodes that nothing
+  sends and that the inspector still counts against the GPU. Reproduced by the operator in
+  about a minute of clicking. Removal now takes the encode with it when it was the last output
+  on it, as one undo step. Fixed, and it closes the garbage-collection question that was open
+  here: the answer is "when nothing else is sending it".
+- **The self-check read the model, not the screen.** A role added to a model but not declared
+  on its `required property` delegate renders the literal word "undefined" under
+  `pragma ComponentBehavior: Bound` -- it does not fail to build and it does not fail any
+  model-level assertion. That is exactly what the first cut of the resolution fix did, and the
+  suite stayed green while the panel was wrong. The self-check now walks the live scene graph
+  and fails if anything the operator can see says "undefined". Verified by breaking the
+  delegate on purpose: it reports the offending string.
+- **Model role indices were positional.** `out_at(row, 9)` and friends read by offset from
+  `Qt::UserRole`, so inserting a role re-pointed every later check at the wrong column. They
+  look roles up by name now; a green suite reading the wrong fields is worse than a red one.
 
 ## Verified on argus and the dev box, 2026-10-13 and 2026-10-14
 

@@ -240,6 +240,9 @@ public:
     Q_INVOKABLE void setDeckTransition(const QString& deckId, const QString& transition,
                                        int durationMs);
 
+    /// How many distinct encodes the project asks of the GPU. Not the number of outputs:
+    /// destinations sharing one encode cost one (ADR-0029).
+    Q_INVOKABLE [[nodiscard]] int encodeCount() const;
     Q_INVOKABLE void addOutput(const QString& name);
     Q_INVOKABLE void removeOutput(const QString& id);
     Q_INVOKABLE void renameOutput(const QString& id, const QString& name);
