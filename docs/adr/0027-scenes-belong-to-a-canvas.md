@@ -4,7 +4,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # ADR 0027 — Scenes belong to a canvas, and a link is a cue rather than a copy
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-10-13
 - **Depends on:** ADR-0020 (canvases are independent pipelines), ADR-0022 (the project is a
   directory), ADR-0023 (the command bus), ADR-0025 (the safe state)

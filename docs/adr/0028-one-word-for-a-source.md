@@ -4,7 +4,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # ADR 0028 — One word for a source, in the code as well as on the screen
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-10-13
 - **Depends on:** ADR-0027 (scenes belong to a canvas) — they share one format bump
 

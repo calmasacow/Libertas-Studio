@@ -4,7 +4,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # ADR 0029 — An encode is a thing, not a property of an output
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-10-13
 - **Depends on:** ADR-0007 (dual-GPU concurrent encode), ADR-0020 (canvases are independent
   pipelines), ADR-0023 (the command bus)
