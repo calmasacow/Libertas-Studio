@@ -49,7 +49,7 @@ void print_tree(const std::vector<ldoc::Node>& nodes, const ldoc::Project& p, in
         if (const auto* placed = std::get_if<ldoc::SourceData>(&n.data)) {
             if (placed->source) {
                 const ldoc::Source* src = p.source(*placed->source);
-                line += src ? std::format("  <- {}", src->name) : "  <- (missing input)";
+                line += src ? std::format("  <- {}", src->name) : "  <- (missing source)";
             }
         }
         if (!n.effects.empty())
@@ -159,7 +159,7 @@ int inspect_project(const fs::path& dir, bool verbose) {
             print_tree(s.roots, p, 0);
     }
 
-    heading("inputs");
+    heading("sources");
     if (p.sources.empty())
         std::printf("  (none)\n");
     for (const ldoc::Source& src : p.sources) {

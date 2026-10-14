@@ -124,7 +124,7 @@ public:
     /// flow shows. Empty when it is suitable.
     Q_INVOKABLE [[nodiscard]] QStringList emergencySceneProblems(const QString& id) const;
 
-    // ---- inputs (project-level source instances) --------------------------------------------
+    // ---- sources (project level; a source node binds one) -------------------------------------
 
     /// The source types this build can hold in a document. None of them render yet; the list is
     /// here because a document that cannot name what it is waiting for is harder to build a
