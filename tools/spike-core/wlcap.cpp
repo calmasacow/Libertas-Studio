@@ -18,9 +18,12 @@
 #include <lcore/log.hpp>
 
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <format>
 
+#include <poll.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
@@ -240,6 +243,15 @@ constexpr wl_registry_listener kRegistryListener = {
 
 } // namespace
 
+std::string wlcap_idle_reason(std::uint32_t idle_timeout_ms) {
+    return std::format(
+        "no new frame in {:.1f} s. The screen has not changed: capture is damage-driven "
+        "(ADR-0013), so the compositor only sends a frame when something on the output redraws. "
+        "On an idle desktop that is expected, not a fault - put something moving on the output "
+        "(a terminal running a print loop is enough)",
+        static_cast<double>(idle_timeout_ms) / 1000.0);
+}
+
 std::string wlcap_device_str(std::uint64_t dev) {
     const auto d = static_cast<dev_t>(dev);
     return std::format("{}:{}", major(d), minor(d));
@@ -397,8 +409,50 @@ bool wlcap_add_slot(WlCap& cap, const VkExportedImage& img, std::uint32_t drm_fo
     return true;
 }
 
+namespace {
+
+enum class Dispatch { Progress, TimedOut, Failed };
+
+/// One round of event dispatch that gives up at `deadline` instead of blocking for ever.
+///
+/// wl_display_dispatch() has no timeout, so this is the prepare_read / poll / read_events dance
+/// libwayland documents for exactly this purpose. A prepare_read that fails means events are
+/// already queued; dispatching them is progress, and the caller re-checks its condition before
+/// waiting again, so an event that was already here never costs a timeout.
+Dispatch dispatch_until(wl_display* display, std::chrono::steady_clock::time_point deadline) {
+    if (wl_display_prepare_read(display) != 0)
+        return wl_display_dispatch_pending(display) < 0 ? Dispatch::Failed : Dispatch::Progress;
+    wl_display_flush(display);
+    for (;;) {
+        const auto left = std::chrono::ceil<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (left.count() <= 0) {
+            wl_display_cancel_read(display);
+            return Dispatch::TimedOut;
+        }
+        pollfd pfd{wl_display_get_fd(display), POLLIN, 0};
+        const int r = ::poll(&pfd, 1, static_cast<int>(left.count()));
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r < 0) {
+            wl_display_cancel_read(display);
+            return Dispatch::Failed;
+        }
+        if (r == 0)
+            continue; // re-checked against the deadline above, which is the one source of truth
+        if (wl_display_read_events(display) < 0)
+            return Dispatch::Failed;
+        return wl_display_dispatch_pending(display) < 0 ? Dispatch::Failed : Dispatch::Progress;
+    }
+}
+
+} // namespace
+
 bool wlcap_capture_slot(WlCap& cap, std::size_t index, std::uint32_t width, std::uint32_t height,
-                        std::uint64_t* out_presented_ns, std::string& error) {
+                        std::uint64_t* out_presented_ns, std::string& error,
+                        std::uint32_t idle_timeout_ms, bool* out_idle) {
+    if (out_idle != nullptr)
+        *out_idle = false;
     if (index >= cap.slots.size()) {
         error = "slot index out of range";
         return false;
@@ -415,9 +469,26 @@ bool wlcap_capture_slot(WlCap& cap, std::size_t index, std::uint32_t width, std:
     cap.frame_failed = false;
     cap.frame_presented_ns = 0;
     bool ok = true;
+    // The 0 path keeps the plain blocking dispatch rather than an infinite deadline, so "wait for
+    // ever" is literally the code that ran before the timeout existed.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(idle_timeout_ms);
     while (!cap.frame_ready && !cap.frame_failed) {
-        if (wl_display_dispatch(cap.display) < 0) {
+        const Dispatch d = idle_timeout_ms == 0
+                               ? (wl_display_dispatch(cap.display) < 0 ? Dispatch::Failed
+                                                                       : Dispatch::Progress)
+                               : dispatch_until(cap.display, deadline);
+        if (d == Dispatch::Failed) {
             error = "wl_display_dispatch failed while waiting for the frame";
+            ok = false;
+            break;
+        }
+        if (d == Dispatch::TimedOut) {
+            // Destroying a frame that is still pending is allowed at any time by the protocol and
+            // the session survives it - but see the header before asking it for another frame.
+            error = wlcap_idle_reason(idle_timeout_ms);
+            if (out_idle != nullptr)
+                *out_idle = true;
             ok = false;
             break;
         }

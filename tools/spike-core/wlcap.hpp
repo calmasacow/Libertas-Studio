@@ -78,8 +78,24 @@ bool wlcap_add_slot(WlCap& cap, const VkExportedImage& img, std::uint32_t drm_fo
 /// sends one. That is the only way to tell "the capture path is slow" from "the screen did not
 /// change": inter-arrival time measures the latter, and on an idle desktop it measures nothing
 /// else at all.
+///
+/// `idle_timeout_ms` bounds the wait, 0 meaning for ever. Capture is damage-driven (ADR-0013), so
+/// on a screen nobody is touching the compositor is *right* to send nothing, and an unbounded wait
+/// there is a tool that hangs in silence - indistinguishable, over SSH, from one that has crashed.
+/// On expiry this returns false with `*out_idle` set and an `error` that names that cause, so a
+/// caller can tell a still screen from a real capture fault without parsing the string.
+///
+/// A timeout ends the wait; it is not a way to poll. Measured on argus under Hyprland: once the
+/// pending frame is abandoned, the *next* request is answered at once with unchanged content, so a
+/// caller that times out and asks again receives a frame per timeout that the screen never drew.
+/// To keep waiting, pass 0 and watch from elsewhere - which is what encode-spike does.
 bool wlcap_capture_slot(WlCap& cap, std::size_t index, std::uint32_t width, std::uint32_t height,
-                        std::uint64_t* out_presented_ns, std::string& error);
+                        std::uint64_t* out_presented_ns, std::string& error,
+                        std::uint32_t idle_timeout_ms = 0, bool* out_idle = nullptr);
+
+/// The explanation for a wait that ran out with no frame. One wording for every tool, because the
+/// point of it is that the cause - a still screen, not a fault - reads the same wherever it shows up.
+std::string wlcap_idle_reason(std::uint32_t idle_timeout_ms);
 
 /// major:minor of the dmabuf device, for matching against a Vulkan device's DRM properties.
 std::string wlcap_device_str(std::uint64_t dev);

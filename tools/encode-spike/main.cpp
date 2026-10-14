@@ -47,6 +47,8 @@ usage:
   --audio-source       capture a microphone rather than the desktop's output
   --drm-node MAJ:MIN   select the Vulkan device by DRM node, never by index
   --slots N            capture buffer ring size (default 4)
+  --idle-timeout SECS  how long with no new capture before saying so (default 10; 0 = never).
+                       Before the first frame this is fatal; after it, encoding carries on
 )");
 }
 
@@ -73,6 +75,9 @@ int main(int argc, char** argv) {
     std::string tier;
     std::uint32_t frames = 300;
     std::uint32_t slots = 4;
+    // The same ten seconds the first-frame wait always used, now one setting. It is far beyond
+    // any gap a moving screen leaves, so a busy run never sees it.
+    std::uint32_t idle_timeout_ms = 10'000;
     std::int32_t fps = 60;
     std::int64_t bitrate_kbps = 12000;
     bool want_audio = true;
@@ -101,6 +106,14 @@ int main(int argc, char** argv) {
             frames = static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
         } else if (a == "--slots" && i + 1 < args.size()) {
             slots = static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
+        } else if (a == "--idle-timeout" && i + 1 < args.size()) {
+            const double secs = std::strtod(std::string(args[++i]).c_str(), nullptr);
+            // Negated range test so NaN fails too; the bound keeps milliseconds inside uint32.
+            if (!(secs >= 0.0 && secs <= 4'000'000.0)) {
+                lc::error("--idle-timeout takes seconds, 0 or more (0 = never), got '{}'", args[i]);
+                return 2;
+            }
+            idle_timeout_ms = static_cast<std::uint32_t>(secs * 1000.0);
         } else if (a == "--fps" && i + 1 < args.size()) {
             fps = static_cast<std::int32_t>(std::strtol(std::string(args[++i]).c_str(), nullptr, 10));
         } else if (a == "--bitrate" && i + 1 < args.size()) {
@@ -364,7 +377,8 @@ int main(int argc, char** argv) {
     libertas::spike::Nv12Frame nv12;
     std::uint64_t last_seq = 0;
     {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(idle_timeout_ms);
         for (;;) {
             {
                 std::lock_guard<std::mutex> lk(latest.mu);
@@ -383,8 +397,9 @@ int main(int argc, char** argv) {
                     return 3;
                 }
             }
-            if (std::chrono::steady_clock::now() > deadline) {
-                lc::error("no frame in 10 s - is the output producing any damage at all?");
+            if (idle_timeout_ms != 0 && std::chrono::steady_clock::now() > deadline) {
+                lc::error("gave up with 0 frames captured: {}",
+                          libertas::spike::wlcap_idle_reason(idle_timeout_ms));
                 { std::lock_guard<std::mutex> lk(latest.mu); latest.stop = true; }
                 capture_thread.detach();
                 enc.reset();
@@ -408,7 +423,18 @@ int main(int argc, char** argv) {
 
     std::uint64_t audio_frames_fed = 0;
     std::uint32_t duplicated = 0;
+
+    // Dry spells are noticed HERE, by the encoder seeing no new capture, and not in the capture
+    // thread by putting a timeout on its wait and asking again. That was the first version, and
+    // measured on argus it invents frames: once a pending ext-image-copy-capture frame is
+    // destroyed, Hyprland answers the next request at once with unchanged content. A 1 s timeout
+    // on a screen that really redrew every ~5 s reported a capture every 1002 ms - each one the
+    // timeout plus 2 ms - and quietly filled the capture timings with the timeout's length. The
+    // capture thread is therefore left exactly as it was; only the watcher is new.
+    std::uint32_t dry_spells = 0;
+    bool in_dry_spell = false;
     const auto run_begin = std::chrono::steady_clock::now();
+    auto last_fresh = run_begin; // the first frame was taken an instant ago
     const std::int64_t tick_ns = 1'000'000'000LL * ecfg.fps_den / ecfg.fps_num;
 
     for (std::uint32_t i = 0; i < frames; ++i) {
@@ -436,6 +462,23 @@ int main(int argc, char** argv) {
         }
         if (!fresh)
             ++duplicated;
+        // One line when captures stop and one when they come back, rather than one per timeout,
+        // so a long still stretch reads as a single event. It is a warning and not an exit: the
+        // encoder duplicating the last frame is correct (ADR-0013) and the file stays valid.
+        if (fresh) {
+            if (in_dry_spell)
+                lc::info("captures resumed after {:.1f} s",
+                         std::chrono::duration<double>(iteration_begin - last_fresh).count());
+            in_dry_spell = false;
+            last_fresh = iteration_begin;
+        } else if (idle_timeout_ms != 0 && !in_dry_spell &&
+                   iteration_begin - last_fresh >= std::chrono::milliseconds(idle_timeout_ms)) {
+            in_dry_spell = true;
+            ++dry_spells;
+            lc::warn("captures have dried up after {} frame(s): {}. Encoding carries on, "
+                     "duplicating the last frame",
+                     last_seq, libertas::spike::wlcap_idle_reason(idle_timeout_ms));
+        }
 
         // The pts is the ENCODER's clock, not the compositor's. The output timeline is ours and
         // is constant-rate; the compositor's presentation time only tells us whether the content
@@ -515,6 +558,10 @@ int main(int argc, char** argv) {
                 "not change; re-encoding the last frame is correct, not a fault\n",
                 duplicated, static_cast<unsigned>(st.video_frames),
                 st.video_frames > 0 ? 100.0 * duplicated / static_cast<double>(st.video_frames) : 0.0);
+    if (dry_spells > 0)
+        std::printf("  dry spells    : %u stretch(es) of %.1f s or more with no capture at all - "
+                    "the capture figures below are not a measurement of a busy screen\n",
+                    dry_spells, static_cast<double>(idle_timeout_ms) / 1000.0);
     std::printf("  wall          : %.2f s for %u frames (%.2f fps)\n", wall_s,
                 static_cast<unsigned>(st.video_frames),
                 wall_s > 0 ? static_cast<double>(st.video_frames) / wall_s : 0.0);

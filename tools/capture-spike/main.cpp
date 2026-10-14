@@ -51,6 +51,8 @@ usage:
   --scale WxH          downscale on the compositing GPU before the cross-GPU transfer
   --frames N           capture N frames (default 3); use a few hundred to measure throughput
   --slots N            rotate between N capture buffers (default 4; 1 serializes the compositor)
+  --idle-timeout SECS  give up after SECS with no new frame (default 10; 0 waits for ever).
+                       Capture is damage-driven, so a still screen sends nothing; exits 7
   --v4l2 DEVICE        capture from a V4L2 device (capture card, webcam) and report its timing
   --v4l2-size WxH      request this capture size      --v4l2-format NV12   request this fourcc
   --v4l2-fps N         request this frame rate        --v4l2-dmabuf        test VIDIOC_EXPBUF
@@ -537,7 +539,7 @@ bool run_cross_gpu(libertas::spike::VkCtx& src_ctx, const libertas::spike::VkExp
 int run_wayland_backend(const std::string& output_name, bool with_cursor, bool want_cursor_set,
                         const std::string& prefer_drm_node, std::uint32_t frames,
                         const std::string& second_node, std::uint32_t scale_w,
-                        std::uint32_t scale_h, std::uint32_t slots) {
+                        std::uint32_t scale_h, std::uint32_t slots, std::uint32_t idle_timeout_ms) {
     std::string err;
     libertas::spike::WlCapPtr cap = libertas::spike::wlcap_open(err);
     if (!cap) {
@@ -634,8 +636,21 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
         auto prev = t0;
         for (std::uint32_t i = 0; i < frames; ++i) {
             std::uint64_t presented = 0;
+            bool idle = false;
             if (!libertas::spike::wlcap_capture_slot(*cap, i % slots, caps.width, caps.height,
-                                                     &presented, err)) {
+                                                     &presented, err, idle_timeout_ms, &idle)) {
+                if (idle) {
+                    // Not a capture fault, so it must not fall into the paths below: a failure
+                    // with no frames moves on to the next format, which would blame the format for
+                    // the screen being still. Stop here, say why, and exit with a code of its own
+                    // so a script can tell "nothing moved" from "capture is broken".
+                    lc::error("gave up after {} of {} frame(s): {}. --idle-timeout 0 waits for "
+                              "ever",
+                              captured, frames, err);
+                    for (auto& r : ring)
+                        libertas::spike::vk_destroy_exportable(*vk, r);
+                    return 7;
+                }
                 lc::error("capture failed on frame {}: {}", i, err);
                 break;
             }
@@ -766,6 +781,10 @@ int main(int argc, char** argv) {
     std::string second_node;
     std::uint32_t wl_frames = 3;
     std::uint32_t wl_slots = 4;
+    // Ten seconds is far beyond any frame interval a moving screen produces - even a 1 Hz clock
+    // redraws ten times over - so on a busy output this never fires, and on a still one the run
+    // explains itself before anyone reaches for kill.
+    std::uint32_t idle_timeout_ms = 10'000;
     libertas::spike::V4l2Config v4l2cfg;
     bool use_v4l2 = false;
     std::uint32_t scale_w = 0;
@@ -854,6 +873,16 @@ int main(int argc, char** argv) {
                 std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
             if (wl_slots == 0)
                 wl_slots = 1;
+        } else if (a == "--idle-timeout" && i + 1 < args.size()) {
+            const double secs = std::strtod(std::string(args[++i]).c_str(), nullptr);
+            // Written as a negated range test so NaN fails it too; the upper bound keeps the
+            // conversion to milliseconds inside uint32 (about 49 days).
+            if (!(secs >= 0.0 && secs <= 4'000'000.0)) {
+                lc::error("--idle-timeout takes seconds, 0 or more (0 waits for ever), got '{}'",
+                          args[i]);
+                return 1;
+            }
+            idle_timeout_ms = static_cast<std::uint32_t>(secs * 1000.0);
         } else if (a == "--frames" && i + 1 < args.size()) {
             wl_frames = static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(),
                                                                 nullptr, 10));
@@ -886,7 +915,7 @@ int main(int argc, char** argv) {
     if (use_wayland)
         return run_wayland_backend(wl_output, req.cursor_mode == libertas::spike::CursorMode::Embedded,
                                    cursor_set, prefer_drm_node, wl_frames, second_node, scale_w, scale_h,
-                                   wl_slots);
+                                   wl_slots, idle_timeout_ms);
 
     // -------------------------------------------------------- stage 0: Vulkan, before any click
     // Bring Vulkan up first so negotiation can advertise the modifiers this device can really
