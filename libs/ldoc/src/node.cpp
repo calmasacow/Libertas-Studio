@@ -236,10 +236,6 @@ void collect_references(const std::vector<Node>& roots, std::vector<Reference>& 
             if (e.mask)
                 out.push_back(Reference{*e.mask, RefKind::Node, n.id});
         }
-        for (const auto& [canvas_id, ov] : n.canvas_overrides) {
-            (void)ov;
-            out.push_back(Reference{canvas_id, RefKind::Canvas, n.id});
-        }
     });
 }
 

@@ -157,25 +157,6 @@ struct PrecompData {
     friend bool operator==(const PrecompData&, const PrecompData&) = default;
 };
 
-/// Per-canvas deltas for one node.
-///
-/// This is the whole reason a vertical feed is not a duplicated scene: a scene is
-/// canvas-agnostic, and portrait is the same scene with a handful of nodes repositioned. Two
-/// duplicated scenes drift the moment anything changes in one of them, which is the failure every
-/// OBS vertical-streaming setup eventually hits.
-struct CanvasOverride {
-    std::optional<Transform> transform;
-    std::optional<Layout> layout;
-    std::optional<bool> visible;
-    std::optional<Blend> blend;
-
-    [[nodiscard]] bool empty() const {
-        return !transform && !layout && !visible && !blend;
-    }
-
-    friend bool operator==(const CanvasOverride&, const CanvasOverride&) = default;
-};
-
 using NodeData = std::variant<GroupData, SourceData, AdjustmentData, MaskData, ReferenceData,
                               PrecompData>;
 
@@ -194,7 +175,6 @@ struct Node {
     Layout layout{};
     Blend blend{};
     std::vector<Effect> effects;
-    std::map<Id, CanvasOverride> canvas_overrides;
     NodeData data = GroupData{};
 
     [[nodiscard]] NodeKind kind() const;
@@ -229,7 +209,7 @@ void visit(const std::vector<Node>& roots, const std::function<void(const Node&)
 ///
 /// A source node's `source` is deliberately **not** remapped. Sources are project-level
 /// instances, and duplicating a source node that shows a camera should show that camera, not
-/// open a second one. Likewise a Precomp's `scene` and the canvas ids in `canvas_overrides`.
+/// open a second one. Likewise a Precomp's `scene`.
 ///
 /// Preserving ids across a copy guarantees collisions and is a correctness bug, not a
 /// convenience.
@@ -240,7 +220,7 @@ void visit(const std::vector<Node>& roots, const std::function<void(const Node&)
 /// Every id this subtree *defines* (its nodes and their effects).
 void collect_defined_ids(const std::vector<Node>& roots, std::vector<Id>& out);
 /// Every id this subtree *refers to*, paired with what kind of thing it should resolve to.
-enum class RefKind : std::uint8_t { Node, Source, Scene, Canvas, Bus };
+enum class RefKind : std::uint8_t { Node, Source, Scene, Bus };
 struct Reference {
     Id id;
     RefKind kind = RefKind::Node;

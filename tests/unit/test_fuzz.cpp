@@ -139,6 +139,7 @@ ldoc::Scene rich_scene(const ldoc::Id& canvas, const ldoc::Id& source) {
     ldoc::Scene s;
     s.id = ldoc::Id::generate();
     s.name = "Everything";
+    s.canvas = canvas;
 
     ldoc::Node group = ldoc::make_node(ldoc::NodeKind::Group, "Group");
     ldoc::Node camera = ldoc::make_node(ldoc::NodeKind::Source, "Camera");
@@ -154,10 +155,6 @@ ldoc::Scene rich_scene(const ldoc::Id& canvas, const ldoc::Id& source) {
     e.params.emplace("offset", ldoc::Vec2{1.0, -1.0});
     e.params.emplace("link", ldoc::Id::generate());
     camera.effects.push_back(std::move(e));
-
-    ldoc::CanvasOverride ov;
-    ov.visible = false;
-    camera.canvas_overrides.emplace(canvas, ov);
 
     group.children()->push_back(std::move(camera));
     group.children()->push_back(ldoc::make_node(ldoc::NodeKind::Adjustment, "Adjust"));

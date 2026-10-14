@@ -27,6 +27,7 @@ Jv enc(const Deck& d);
 Jv enc(const Source& s);
 Jv enc(const Asset& a);
 Jv enc(const Output& o);
+Jv enc(const SceneLink& l);
 
 // ---- writing --------------------------------------------------------------------------------
 
@@ -182,15 +183,6 @@ Jv enc(const AudioRouting& a) {
     return o;
 }
 
-Jv enc(const CanvasOverride& ov) {
-    Jv o{Json::objectValue};
-    o["transform"] = ov.transform ? enc(*ov.transform) : Jv{Json::nullValue};
-    o["layout"] = ov.layout ? enc(*ov.layout) : Jv{Json::nullValue};
-    o["visible"] = ov.visible ? Jv{*ov.visible} : Jv{Json::nullValue};
-    o["blend"] = ov.blend ? enc(*ov.blend) : Jv{Json::nullValue};
-    return o;
-}
-
 Jv enc(const Node& n);
 
 Jv enc_node_data(const Node& n) {
@@ -237,12 +229,6 @@ Jv enc(const Node& n) {
     o["layout"] = enc(n.layout);
     o["blend"] = enc(n.blend);
     o["effects"] = enc_array(n.effects);
-
-    Jv overrides{Json::objectValue};
-    for (const auto& [canvas_id, ov] : n.canvas_overrides)
-        overrides[canvas_id.to_string()] = enc(ov);
-    o["canvas_overrides"] = overrides;
-
     o["data"] = enc_node_data(n);
     return o;
 }
@@ -348,6 +334,7 @@ Jv enc_scene(const Scene& scene) {
     Jv root{Json::objectValue};
     root["id"] = enc(scene.id);
     root["name"] = scene.name;
+    root["canvas"] = enc(scene.canvas);
     root["favourite"] = scene.favourite;
 
     Jv roots{Json::arrayValue};
@@ -373,6 +360,14 @@ Jv enc_scene(const Scene& scene) {
     }
     root["audio_overrides"] = overrides;
     return root;
+}
+
+Jv enc(const SceneLink& l) {
+    Jv o{Json::objectValue};
+    o["id"] = enc(l.id);
+    o["from"] = enc(l.from);
+    o["to"] = enc(l.to);
+    return o;
 }
 
 Jv enc(const Settings& s) {
@@ -422,6 +417,7 @@ std::string project_to_json(const Project& project) {
     root["name"] = project.name;
     root["generation"] = static_cast<Json::UInt64>(project.generation);
     root["canvases"] = enc_array(project.canvases);
+    root["scene_links"] = enc_array(project.scene_links);
     root["buses"] = enc_array(project.buses);
     root["decks"] = enc_array(project.decks);
     root["sources"] = enc_array(project.sources);
@@ -733,18 +729,6 @@ AudioRouting dec_audio_routing(Rd& rd, const Jv& o, std::string_view path) {
 
 Node dec_node(Rd& rd, const Jv& o, std::string_view path);
 
-CanvasOverride dec_canvas_override(Rd& rd, const Jv& e, std::string_view path) {
-    CanvasOverride co;
-    if (rd.object(e, "transform", path))
-        co.transform = dec_transform(rd, e, "transform", path);
-    if (rd.object(e, "layout", path))
-        co.layout = dec_layout(rd, e, "layout", path);
-    if (!e["visible"].isNull())
-        co.visible = rd.boolean(e, "visible", path, true);
-    if (const Jv* b = rd.object(e, "blend", path))
-        co.blend = dec_blend_obj(rd, *b, path);
-    return co;
-}
 
 NodeData dec_node_data(Rd& rd, NodeKind kind, const Jv& parent, std::string_view path) {
     const Jv* o = rd.object(parent, "data", path);
@@ -813,21 +797,12 @@ Node dec_node(Rd& rd, const Jv& o, std::string_view path) {
     n.blend = dec_blend(rd, o, "blend", path);
     n.effects = dec_effects(rd, o, "effects", path);
 
-    if (const Jv* ov = rd.object(o, "canvas_overrides", path)) {
-        for (const std::string& key : ov->getMemberNames()) {
-            const auto canvas_id = Id::parse(key);
-            if (!canvas_id) {
-                rd.fail(path, "a canvas override is keyed by something that is not an id");
-                break;
-            }
-            const Jv& e = (*ov)[key];
-            if (!e.isObject()) {
-                rd.fail(path, "a canvas override is not an object");
-                break;
-            }
-            n.canvas_overrides.emplace(*canvas_id, dec_canvas_override(rd, e, path));
-        }
-    }
+    // Version 1 kept per-canvas deltas on each node. Version 2 deleted them along with the
+    // shared scenes they existed for (ADR-0027); they are counted rather than read, so the
+    // operator is told how much was dropped and where.
+    if (o.isMember("canvas_overrides") && o["canvas_overrides"].isObject()
+        && !o["canvas_overrides"].empty())
+        ++rd.dropped_canvas_overrides;
 
     n.data = dec_node_data(rd, kind, o, path);
     return n;
@@ -924,10 +899,26 @@ Source dec_source(Rd& rd, const Jv& v, std::string_view path) {
     return s;
 }
 
+SceneLink dec_scene_link(Rd& rd, const Jv& v, std::string_view path) {
+    SceneLink l;
+    if (!v.isObject()) {
+        rd.fail(path, "a scene link is not an object");
+        return l;
+    }
+    l.id = rd.id(v, "id", path);
+    l.from = rd.id(v, "from", path);
+    l.to = rd.id(v, "to", path);
+    return l;
+}
+
 Scene dec_scene(Rd& rd, const Jv& root, std::string_view path) {
     Scene s;
     s.id = rd.id(root, "id", path);
     s.name = rd.text(root, "name", path);
+    // Absent in version 1, where every scene implicitly belonged to the one canvas the shell
+    // worked against. Left nil here and filled in by the migration, which is the only place that
+    // knows what the canvas list looks like.
+    s.canvas = root.isMember("canvas") ? rd.id(root, "canvas", path) : Id::nil();
     s.favourite = rd.boolean(root, "favourite", path, false);
     if (const Jv* roots = rd.array(root, "roots", path)) {
         for (const Jv& n : *roots) {
@@ -1029,9 +1020,12 @@ std::expected<SceneFile, std::string> scene_from_json(std::string_view text) {
         return std::unexpected(rd.error());
 
     SceneFile out;
+    out.schema_version = static_cast<int>(rd.integer(*root, "schema_version", "scene",
+                                                     kSchemaVersion));
     const std::int64_t gen = rd.integer(*root, "generation", "scene", 0);
     out.generation = gen < 0 ? 0 : static_cast<std::uint64_t>(gen);
     out.scene = dec_scene(rd, *root, "scene");
+    out.dropped_canvas_overrides = rd.dropped_canvas_overrides;
     if (!rd.ok())
         return std::unexpected(rd.error());
     return out;
@@ -1097,6 +1091,11 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
     if (const Jv* a = rd.array(*root, "canvases", "project")) {
         for (const Jv& v : *a)
             p.canvases.push_back(dec_canvas(rd, v, "project.canvases"));
+    }
+
+    if (const Jv* a = rd.array(*root, "scene_links", "project")) {
+        for (const Jv& v : *a)
+            p.scene_links.push_back(dec_scene_link(rd, v, "project.scene_links"));
     }
 
     if (const Jv* a = rd.array(*root, "buses", "project")) {

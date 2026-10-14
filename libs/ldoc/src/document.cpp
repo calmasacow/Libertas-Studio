@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <format>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -60,7 +61,6 @@ std::string_view ref_kind_name(RefKind k) {
     case RefKind::Node:   return "node";
     case RefKind::Source: return "source";
     case RefKind::Scene:  return "scene";
-    case RefKind::Canvas: return "canvas";
     case RefKind::Bus:    return "bus";
     }
     return "thing";
@@ -98,6 +98,12 @@ Scene* Project::scene(const Id& wanted) {
     const auto it =
         std::find_if(scenes.begin(), scenes.end(), [&wanted](const Scene& s) { return s.id == wanted; });
     return it == scenes.end() ? nullptr : &*it;
+}
+
+const SceneLink* Project::scene_link(const Id& wanted) const {
+    const auto it = std::find_if(scene_links.begin(), scene_links.end(),
+                                 [&wanted](const SceneLink& l) { return l.id == wanted; });
+    return it == scene_links.end() ? nullptr : &*it;
 }
 
 const Bus* Project::bus(const Id& wanted) const {
@@ -227,6 +233,7 @@ Project make_default_project(std::string name) {
     Scene scene;
     scene.id = Id::generate();
     scene.name = "Scene";
+    scene.canvas = canvas.id;
     p.scenes.push_back(scene);
 
     Deck deck;
@@ -243,6 +250,9 @@ Scene duplicate_scene(const Scene& scene, std::string new_name) {
     Scene copy;
     copy.id = Id::generate();
     copy.name = std::move(new_name);
+    // The copy is authored for the same canvas. A duplicate that landed somewhere else would be
+    // the wrong size, and nothing in the gesture says which other canvas was meant.
+    copy.canvas = scene.canvas;
     std::map<Id, Id> remap;
     copy.roots = duplicate(scene.roots, &remap);
     // Audio overrides are keyed by node id, so they have to follow the remap or they would
@@ -269,6 +279,7 @@ public:
         check_buses();
         check_sources_and_assets();
         check_scenes();
+        check_scene_links();
         check_decks();
         check_outputs();
         check_reference_cycles();
@@ -313,6 +324,8 @@ private:
             define(d.id, "deck", d.name);
         for (const Output& o : p_.outputs)
             define(o.id, "output", o.name);
+        for (const SceneLink& l : p_.scene_links)
+            define(l.id, "scene link", "");
         for (const Scene& s : p_.scenes) {
             define(s.id, "scene", s.name);
             visit(s.roots, [&](const Node& n) {
@@ -355,6 +368,15 @@ private:
             if (c.emergency_scene) {
                 for (Problem& problem : check_emergency_scene(p_, *c.emergency_scene))
                     problems_.push_back(std::move(problem));
+                // New with ADR-0027, and a consequence of this field's own purpose: it is per
+                // canvas so that a vertical show gets a separately authored vertical clip. A
+                // net belonging to another canvas is the letterboxed landscape that reasoning
+                // rejects. A warning rather than an error -- it does render, just wrongly.
+                const Scene* net = p_.scene(*c.emergency_scene);
+                if (net && !net->canvas.is_nil() && net->canvas != c.id)
+                    warn(c.id, std::format("canvas '{}' falls back to scene '{}', which belongs "
+                                           "to another canvas and will not be the right shape",
+                                           c.name, net->name));
             }
         }
     }
@@ -394,6 +416,13 @@ private:
 
     void check_scenes() {
         for (const Scene& s : p_.scenes) {
+            // Not a dangling reference but a missing precondition, for the same reason a deck's
+            // canvas is: a scene with no canvas has no size and no frame rate, so there is no
+            // way to render it at all (ADR-0027).
+            if (!exists_as(s.canvas, "canvas"))
+                err(s.id, std::format("scene '{}' belongs to canvas {}, which does not exist",
+                                      s.name, s.canvas.to_string()));
+
             std::unordered_set<Id> in_scene;
             visit(s.roots, [&](const Node& n) {
                 in_scene.insert(n.id);
@@ -418,7 +447,6 @@ private:
                 switch (r.kind) {
                 case RefKind::Source: kind = "source"; break;
                 case RefKind::Scene:  kind = "scene"; break;
-                case RefKind::Canvas: kind = "canvas"; break;
                 case RefKind::Bus:    kind = "bus"; break;
                 case RefKind::Node:   kind = nullptr; break;
                 }
@@ -455,6 +483,45 @@ private:
                                            "exist",
                                            s.name, ov.bus->to_string()));
             }
+        }
+    }
+
+    /// The three rules from ADR-0027 that a stored link must satisfy, checked here as well as in
+    /// the command, because a hand-edited or migrated project never went through a command.
+    void check_scene_links() {
+        std::set<std::pair<Id, Id>> seen; // (from, the canvas it cues)
+        for (const SceneLink& l : p_.scene_links) {
+            const Scene* from = p_.scene(l.from);
+            const Scene* to = p_.scene(l.to);
+            // A link naming a scene that is gone cues nothing, exactly like a deck pointing at
+            // a deleted scene. Warning, not error, so a scene stays deletable (ADR-0023).
+            if (!from) {
+                warn(l.id, std::format("a scene link starts at scene {}, which does not exist",
+                                       l.from.to_string()));
+                continue;
+            }
+            if (!to) {
+                warn(l.id, std::format("the link from scene '{}' cues scene {}, which does not "
+                                       "exist",
+                                       from->name, l.to.to_string()));
+                continue;
+            }
+            if (from->canvas == to->canvas) {
+                err(l.id, std::format("the link from '{}' cues '{}' on the same canvas, which "
+                                      "would be a scene activating itself",
+                                      from->name, to->name));
+                continue;
+            }
+            if (!seen.emplace(l.from, to->canvas).second)
+                err(l.id, std::format("scene '{}' cues more than one scene on the canvas '{}' "
+                                      "holds, so there is no answer to which one",
+                                      from->name, to->name));
+            const Canvas* target = p_.canvas(to->canvas);
+            if (target && target->emergency_scene && *target->emergency_scene == l.to)
+                err(l.id, std::format("the link from '{}' cues '{}', which is that canvas's "
+                                      "emergency scene; a safety net something else can fire is "
+                                      "not one",
+                                      from->name, to->name));
         }
     }
 

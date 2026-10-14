@@ -440,9 +440,17 @@ void Document::selectNode(const QString& id) {
 // ---- scenes -----------------------------------------------------------------------------------
 
 void Document::addScene(const QString& name) {
+    const ldoc::Canvas* canvas = current_canvas();
+    if (!canvas)
+        return;
     ldoc::Scene s;
     s.id = ldoc::Id::generate();
     s.name = name.isEmpty() ? std::string{"Scene"} : to_std(name);
+    // The canvas the shell is working on, which is still "the first one" -- see current_canvas.
+    // Once the Canvas panel exists this becomes a real selection the operator makes; until then
+    // a new scene lands where every existing scene already is, which is what was true before
+    // scenes had an owner at all (ADR-0027).
+    s.canvas = canvas->id;
     const QString id = id_str(s.id);
     run(ldoc::AddScene{std::move(s), session_->project().scenes.size()});
     selectScene(id);

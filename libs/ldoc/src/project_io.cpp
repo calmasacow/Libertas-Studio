@@ -6,6 +6,7 @@
 #include "ldoc/history.hpp"
 #include "ldoc/journal.hpp"
 #include "ldoc/json.hpp"
+#include "ldoc/migrate.hpp"
 #include "lcore/atomic_file.hpp"
 
 #include <algorithm>
@@ -389,6 +390,17 @@ std::expected<OpenResult, std::string> open_project(const fs::path& dir) {
                         ref.id});
             continue;
         }
+        if (scene->dropped_canvas_overrides > 0) {
+            // ADR-0027 deleted per-canvas deltas along with the shared scenes they existed for.
+            // Said out loud, with a count and a scene name, because silently discarding
+            // authored work is how a format bump earns a reputation.
+            result.problems.push_back(
+                Problem{Severity::Warning,
+                        std::format("scene '{}' had per-canvas overrides on {} source(s); the "
+                                    "format no longer has them and they were dropped",
+                                    ref.name, scene->dropped_canvas_overrides),
+                        ref.id});
+        }
         if (ref.generation != scene->generation) {
             result.problems.push_back(
                 Problem{Severity::Warning,
@@ -399,6 +411,12 @@ std::expected<OpenResult, std::string> open_project(const fs::path& dir) {
         }
         result.project.scenes.push_back(std::move(scene->scene));
     }
+
+    // Only now, with the scenes loaded, can an older project be brought up to date: a version 1
+    // scene has no canvas of its own and the answer depends on the canvas list.
+    Migration migration = migrate(result.project);
+    for (Problem& problem : migration.problems)
+        result.problems.push_back(std::move(problem));
 
     // Replay anything the journal holds for exactly this generation. Entries tagged with an
     // older one are already in the saved project -- a journal left behind by a crash *after* a

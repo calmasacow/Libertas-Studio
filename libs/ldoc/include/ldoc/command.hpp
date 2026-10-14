@@ -147,16 +147,6 @@ struct SetNodeAudio {
     friend bool operator==(const SetNodeAudio&, const SetNodeAudio&) = default;
 };
 
-/// Absent `value` removes the override, which is how a node goes back to following the scene on
-/// that canvas.
-struct SetCanvasOverride {
-    Id scene;
-    Id node;
-    Id canvas;
-    std::optional<CanvasOverride> value;
-    friend bool operator==(const SetCanvasOverride&, const SetCanvasOverride&) = default;
-};
-
 // ---- effects --------------------------------------------------------------------------------
 
 struct AddEffect {
@@ -228,6 +218,35 @@ struct SetSource {
     Source value;
     friend bool operator==(const SetSource&, const SetSource&) = default;
 };
+
+// ---- scene links ----------------------------------------------------------------------------
+
+/// Add a cue from one canvas's scene to another's (ADR-0027).
+///
+/// Unlike most references in this file, both ends are **preconditions** rather than references:
+/// a link is defined by the relationship between two scenes, so one naming a scene that does not
+/// exist is not a link in a degraded state, it is nonsense. The three structural rules -- the two
+/// ends on different canvases, at most one link from a scene to any one canvas, and never cueing
+/// a canvas's emergency scene -- are enforced here too, because each describes a state the model
+/// has no meaning for.
+///
+/// Deliberately **not** enforced: that `from` is on the first canvas. The operator's answer was
+/// "one-way, main leads" and the linking panel only ever offers Main's scenes, but that is which
+/// links are worth making rather than which can exist -- and firing is one hop, so a chain does
+/// nothing surprising even if one is somehow stored. See the implementation note in ADR-0027.
+struct AddSceneLink {
+    SceneLink link;
+    std::size_t index = 0;
+    friend bool operator==(const AddSceneLink&, const AddSceneLink&) = default;
+};
+
+struct RemoveSceneLink {
+    Id link;
+    friend bool operator==(const RemoveSceneLink&, const RemoveSceneLink&) = default;
+};
+
+/// There is no SetSceneLink. A link is nothing but its two ends, so changing one is removing it
+/// and adding another -- and the linking panel commits a whole tick-list as one Batch anyway.
 
 // ---- canvases -------------------------------------------------------------------------------
 
@@ -364,9 +383,9 @@ using Command =
     std::variant<SetProjectName, AddScene, RemoveScene, RenameScene, MoveScene,
                  SetSceneFavourite, AddNode, RemoveNode,
                  MoveNode, RenameNode, SetNodeVisible, SetNodeLocked, SetNodeTransform,
-                 SetNodeLayout, SetNodeBlend, SetNodeAudio, SetCanvasOverride, AddEffect,
+                 SetNodeLayout, SetNodeBlend, SetNodeAudio, AddEffect,
                  RemoveEffect, SetEffectParams, SetEffectEnabled, SetDeck, SetDeckProgram,
-                 SetDeckPreview,
+                 SetDeckPreview, AddSceneLink, RemoveSceneLink,
                  SetCanvasEmergencyScene, SetNodeSource, AddSource, RemoveSource, SetSource,
                  AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus, SetBus, AddOutput,
                  RemoveOutput, SetOutput, SetProjectSettings, Batch>;

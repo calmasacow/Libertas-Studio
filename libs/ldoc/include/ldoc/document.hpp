@@ -14,7 +14,7 @@ namespace ldoc {
 /// Bumped only by a change that older builds cannot read. Migrations are forward-only, with
 /// golden fixtures; a project newer than this opens read-only rather than silently dropping the
 /// fields this build does not know about.
-inline constexpr int kSchemaVersion = 1;
+inline constexpr int kSchemaVersion = 2;
 
 /// An output surface with its own size, rate and colour space.
 ///
@@ -88,11 +88,18 @@ struct AudioOverride {
     friend bool operator==(const AudioOverride&, const AudioOverride&) = default;
 };
 
-/// A scene is a tree, not a list, and it is canvas-agnostic: what makes it look right on a
-/// portrait canvas lives in each node's `canvas_overrides`, not in a second copy of the scene.
+/// A scene is a tree, not a list, and it belongs to exactly one canvas (ADR-0027).
+///
+/// Scenes stay in one flat `Project::scenes` list with an owner field rather than nesting inside
+/// `Canvas`, because ADR-0022 stores one scene per file in `scenes/<ulid>.json` with a manifest
+/// in `project.json`. Nesting would make the in-memory and on-disk shapes disagree about what a
+/// scene is; a flat list with an owner keeps both.
 struct Scene {
     Id id;
     std::string name;
+    /// The canvas this scene is authored for. Not optional: a scene with no canvas has no size,
+    /// no frame rate and nowhere to go.
+    Id canvas;
     /// `roots[0]` is the topmost node. See GroupData::children.
     std::vector<Node> roots;
     /// Keyed by the source node's id.
@@ -103,6 +110,32 @@ struct Scene {
     bool favourite = false;
 
     friend bool operator==(const Scene&, const Scene&) = default;
+};
+
+/// A directed cue from a scene on one canvas to a scene on another (ADR-0027).
+///
+/// Not a sharing relationship. Nothing about either scene's *contents* crosses: when `from`
+/// becomes the program scene of its canvas's deck, the deck targeting `to`'s canvas takes `to`
+/// to program using **that deck's own transition**. Two canvases are two pipelines (ADR-0020)
+/// and a vertical show may well cut where the widescreen one dissolves.
+///
+/// Links live in `Project::scene_links` rather than on either scene. A relationship is not a
+/// property of either end, deleting a scene has to prune every link that names it -- one list is
+/// one place to prune -- and the linking panel is a view over this list rather than a walk of
+/// every scene.
+///
+/// Firing is **one hop, never a chain**: if A cues B and B cues C, activating A takes B and
+/// stops. That is a rule about what happens, not about what can be stored, so both links may
+/// exist; anyone wanting C adds A -> C, which is visible in the list. A chain is a cue sequence
+/// no panel can show you, and across three canvases it can close into a cycle.
+struct SceneLink {
+    Id id;
+    /// A scene. Activating it on its canvas's deck fires the cue.
+    Id from;
+    /// A scene on a *different* canvas.
+    Id to;
+
+    friend bool operator==(const SceneLink&, const SceneLink&) = default;
 };
 
 /// A program/preview pair with its transition state, targeting one canvas. N canvases means N
@@ -227,6 +260,8 @@ struct Project {
     std::vector<Canvas> canvases;
     std::vector<Bus> buses;
     std::vector<Scene> scenes;
+    /// Cues between scenes on different canvases. See SceneLink.
+    std::vector<SceneLink> scene_links;
     std::vector<Deck> decks;
     std::vector<Source> sources;
     std::vector<Asset> assets;
@@ -235,6 +270,7 @@ struct Project {
 
     [[nodiscard]] const Canvas* canvas(const Id& wanted) const;
     [[nodiscard]] const Scene* scene(const Id& wanted) const;
+    [[nodiscard]] const SceneLink* scene_link(const Id& wanted) const;
     [[nodiscard]] Scene* scene(const Id& wanted);
     [[nodiscard]] const Bus* bus(const Id& wanted) const;
     [[nodiscard]] const Source* source(const Id& wanted) const;

@@ -52,6 +52,7 @@ Project two_scene_project() {
     Scene second;
     second.id = Id::generate();
     second.name = "Gameplay";
+    second.canvas = p.canvases[0].id;
     second.roots.push_back(make_node(NodeKind::Source, "capture"));
     p.scenes.push_back(std::move(second));
     return p;
@@ -188,6 +189,7 @@ LTEST_CASE(a_save_interrupted_at_any_step_opens_to_one_generation_or_the_other) 
         Scene added;
         added.id = Id::generate();
         added.name = "Outro";
+        added.canvas = loaded.canvases[0].id;
         const Id outro = added.id;
         loaded.scenes.push_back(std::move(added));
 
@@ -391,9 +393,10 @@ LTEST_CASE(a_project_from_a_newer_build_opens_read_only) {
     const auto text = lc::read_file(sd.project() / "project.json");
     REQUIRE(text.has_value());
     std::string bumped = *text;
-    const auto at = bumped.find("\"schema_version\" : 1");
+    const std::string current = std::format("\"schema_version\" : {}", kSchemaVersion);
+    const auto at = bumped.find(current);
     REQUIRE(at != std::string::npos);
-    bumped.replace(at, std::string{"\"schema_version\" : 1"}.size(), "\"schema_version\" : 99");
+    bumped.replace(at, current.size(), "\"schema_version\" : 99");
     REQUIRE(lc::write_atomic(sd.project() / "project.json", bumped).has_value());
 
     auto opened = open_project(sd.project());

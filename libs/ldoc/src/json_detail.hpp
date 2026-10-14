@@ -38,13 +38,13 @@ Jv enc(const Effect& e);
 Jv enc(const Send& s);
 Jv enc(const AudioRouting& a);
 Jv enc(const Deck& d);
-Jv enc(const CanvasOverride& ov);
 Jv enc(const Node& n);
 Jv enc_scene(const Scene& scene);
 Jv enc(const Canvas& c);
 Jv enc(const Source& s);
 Jv enc(const Bus& b);
 Jv enc(const Output& o);
+Jv enc(const SceneLink& l);
 Jv enc(const Settings& s);
 
 std::string write(const Jv& root);
@@ -92,6 +92,10 @@ public:
         return *parsed;
     }
 
+    /// Counted, not read: version 1's per-canvas deltas are gone (ADR-0027) and the reader's job
+    /// is to say how many it threw away, not to keep them.
+    std::size_t dropped_canvas_overrides = 0;
+
 private:
     std::string err_;
 };
@@ -111,8 +115,8 @@ Send dec_send(Rd& rd, const Jv& o, std::string_view path);
 AudioRouting dec_audio_routing(Rd& rd, const Jv& o, std::string_view path);
 std::vector<Send> dec_sends(Rd& rd, const Jv& parent, const char* key, std::string_view path);
 Node dec_node(Rd& rd, const Jv& o, std::string_view path);
-CanvasOverride dec_canvas_override(Rd& rd, const Jv& o, std::string_view path);
 Scene dec_scene(Rd& rd, const Jv& o, std::string_view path);
+SceneLink dec_scene_link(Rd& rd, const Jv& o, std::string_view path);
 Canvas dec_canvas(Rd& rd, const Jv& o, std::string_view path);
 Source dec_source(Rd& rd, const Jv& o, std::string_view path);
 Bus dec_bus(Rd& rd, const Jv& o, std::string_view path);

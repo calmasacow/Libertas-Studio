@@ -167,3 +167,40 @@ that designating an emergency scene refuses a scene that is the `to` of a link, 
 refuses an emergency scene; that a version 1 project with overrides loads, reports, and round-trips
 as version 2; and the existing property test — random command sequences, undo and redo returning
 the project byte for byte — extended over the two new commands.
+
+## Implementation note, 2026-10-14 — the model half, and two things this ADR did not settle
+
+The document model landed on this date: `Scene::canvas`, `Project::scene_links`, `AddSceneLink`
+and `RemoveSceneLink`, the deletion of `Node::canvas_overrides` and `SetCanvasOverride`, Main's
+immutability in the command layer, the version 1 → 2 migration, and a `golden-project-v2`
+fixture beside the frozen v1 one. **The UI half named under "Harder, and new" is not built**: the
+shell still works against `canvases.front()`, so a new scene lands on the first canvas and the
+scenes panel still shows every canvas's scenes at once.
+
+Two questions this ADR answers in two different ways, resolved here rather than left to the
+reader:
+
+**Must a link start on Main?** Section 6 says links "always run from a scene on Main"; section 3
+discusses A cueing B cueing C and answers it with the one-hop rule. The command enforces section
+3's three rules — different canvases, at most one link from a scene to any one canvas, never
+cueing an emergency scene — and **does not** require `from` to be on the first canvas. The
+linking panel only ever offers Main's scenes, so "main leads" is enforced where the operator
+makes the choice; and because firing is one hop, a chain that somehow got stored does nothing
+surprising. ADR-0023's rule decides it: a command may only refuse what the model itself refuses,
+and "a link from a non-Main scene" is a policy about which links are worth making, not a state
+the model has no meaning for.
+
+**An emergency scene now has a canvas of its own.** `Canvas::emergency_scene` is per canvas
+precisely so a vertical show gets a separately authored vertical clip — and now that scenes have
+owners, a canvas can name a net that belongs to a *different* canvas, which is the letterboxed
+landscape that reasoning rejects. `validate()` warns. A warning and not an error: it does render,
+it just renders wrong, and the v1 fixture does exactly this, so making it an error would mean a
+project that opened yesterday fails to open today over something nobody has had a chance to fix.
+
+**There is no `SetSceneLink`.** A link is nothing but its two ends, so changing one is removing it
+and adding another, and the linking panel commits a whole tick-list as one `Batch` anyway.
+
+**A batch now flattens nested inverses.** Removing a scene has to put its links back, so
+`RemoveScene`'s inverse is a `Batch` — and a batch cannot contain a batch. `Apply(Batch)` splices
+a member's batch inverse flat, keeping that member's own order while reversing the members. Found
+by the existing random-sequence property test, which is what it is for.

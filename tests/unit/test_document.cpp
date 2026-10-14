@@ -78,14 +78,6 @@ bool same_shape(const Node& a, const Node& b) {
             a.effects[i].params != b.effects[i].params)
             return false;
     }
-    if (a.canvas_overrides.size() != b.canvas_overrides.size())
-        return false;
-    // Canvas ids are project-level and must survive a copy untouched, so the keys compare
-    // directly rather than through a remap.
-    if (!std::equal(a.canvas_overrides.begin(), a.canvas_overrides.end(),
-                    b.canvas_overrides.begin()))
-        return false;
-
     const auto* ka = a.children();
     const auto* kb = b.children();
     if ((ka == nullptr) != (kb == nullptr))
@@ -100,10 +92,9 @@ bool same_shape(const Node& a, const Node& b) {
     return true;
 }
 
-/// A scene tree with groups, source nodes, effects, references and canvas overrides, built from a
-/// fixed seed so a failure is reproducible.
-std::vector<Node> random_tree(std::mt19937& rng, int depth, const Id& canvas_id,
-                              const Id& outside_target) {
+/// A scene tree with groups, source nodes, effects and references, built from a fixed seed so a
+/// failure is reproducible.
+std::vector<Node> random_tree(std::mt19937& rng, int depth, const Id& outside_target) {
     std::vector<Node> out;
     const int count = 1 + static_cast<int>(rng() % 3);
     for (int i = 0; i < count; ++i) {
@@ -111,7 +102,7 @@ std::vector<Node> random_tree(std::mt19937& rng, int depth, const Id& canvas_id,
         Node n;
         if (depth > 0 && roll < 35) {
             n = group(std::format("group-{}", rng() % 1000));
-            for (Node& c : random_tree(rng, depth - 1, canvas_id, outside_target))
+            for (Node& c : random_tree(rng, depth - 1, outside_target))
                 add_child(n, std::move(c));
         } else if (roll < 55) {
             n = make_node(NodeKind::Reference, std::format("ref-{}", rng() % 1000));
@@ -133,11 +124,6 @@ std::vector<Node> random_tree(std::mt19937& rng, int depth, const Id& canvas_id,
             e.type = "effect.blur";
             e.params.emplace("radius", static_cast<double>(rng() % 50));
             n.effects.push_back(std::move(e));
-        }
-        if (rng() % 4 == 0) {
-            CanvasOverride ov;
-            ov.visible = (rng() % 2) == 0;
-            n.canvas_overrides.emplace(canvas_id, ov);
         }
         out.push_back(std::move(n));
     }
@@ -339,14 +325,10 @@ LTEST_CASE(duplication_leaves_project_level_references_alone) {
     const Id source_id = Id::generate();
     const Id bus_id = Id::generate();
     const Id scene_id = Id::generate();
-    const Id canvas_id = Id::generate();
 
     Node l = source_node("cam");
     std::get<SourceData>(l.data).source = source_id;
     std::get<SourceData>(l.data).audio.bus = bus_id;
-    CanvasOverride ov;
-    ov.visible = false;
-    l.canvas_overrides.emplace(canvas_id, ov);
 
     Node pre = make_node(NodeKind::Precomp, "pre");
     std::get<PrecompData>(pre.data).scene = scene_id;
@@ -359,7 +341,6 @@ LTEST_CASE(duplication_leaves_project_level_references_alone) {
     const auto& copied_node = std::get<SourceData>(copy.children()->at(0).data);
     CHECK(copied_node.source.value() == source_id);
     CHECK(copied_node.audio.bus.value() == bus_id);
-    CHECK(copy.children()->at(0).canvas_overrides.contains(canvas_id));
     CHECK(std::get<PrecompData>(copy.children()->at(1).data).scene == scene_id);
 }
 
@@ -394,11 +375,10 @@ LTEST_CASE(an_effect_mask_follows_the_copy_when_the_mask_is_inside_it) {
 LTEST_CASE(copy_and_id_hygiene_holds_for_random_trees) {
     // The property the plan asks for by name, over trees no hand-written case would build.
     std::mt19937 rng{20261012u};
-    const Id canvas_id = Id::generate();
 
     for (int iteration = 0; iteration < 400; ++iteration) {
         const Id outside_target = Id::generate();
-        std::vector<Node> tree = random_tree(rng, 3, canvas_id, outside_target);
+        std::vector<Node> tree = random_tree(rng, 3, outside_target);
 
         // Point roughly half the references at nodes inside the tree, leaving the rest outside.
         std::vector<Id> inside;
@@ -577,6 +557,7 @@ LTEST_CASE(a_precomp_loop_is_refused) {
     Scene second;
     second.id = Id::generate();
     second.name = "Second";
+    second.canvas = p.canvases[0].id;
     p.scenes.push_back(second);
 
     Node a = make_node(NodeKind::Precomp, "a");
@@ -597,6 +578,7 @@ LTEST_CASE(a_precomp_chain_that_is_not_a_loop_is_fine) {
         Scene s;
         s.id = Id::generate();
         s.name = std::format("s{}", i);
+        s.canvas = p.canvases[0].id;
         p.scenes.push_back(s);
     }
     // 0 -> 1 -> 2, and the same precomp used twice.
@@ -686,6 +668,7 @@ struct WithEmergencyScene {
         Scene s;
         s.id = Id::generate();
         s.name = "Emergency";
+        s.canvas = canvas;
         Node l = source_node("Card");
         std::get<SourceData>(l.data).source = source;
         node = l.id;
@@ -749,6 +732,7 @@ LTEST_CASE(an_empty_or_crowded_emergency_scene_is_reported) {
     Scene empty;
     empty.id = Id::generate();
     empty.name = "Nothing";
+    empty.canvas = p.canvases[0].id;
     p.scenes.push_back(empty);
     p.canvases[0].emergency_scene = empty.id;
     REQUIRE(check_emergency_scene(p, empty.id).size() == 1);
@@ -774,6 +758,7 @@ LTEST_CASE(a_source_node_bound_to_nothing_is_not_a_safety_net) {
     Scene s;
     s.id = Id::generate();
     s.name = "Emergency";
+    s.canvas = p.canvases[0].id;
     s.roots.push_back(source_node("Card"));
     p.canvases[0].emergency_scene = s.id;
     p.scenes.push_back(std::move(s));

@@ -21,14 +21,14 @@ Project without_scenes(Project p) {
     return p;
 }
 
-Node random_node(std::mt19937& rng, int depth, const Id& canvas_id) {
+Node random_node(std::mt19937& rng, int depth) {
     const auto roll = rng() % 100;
     Node n;
     if (depth > 0 && roll < 30) {
         n = make_node(NodeKind::Group, std::format("g{}", rng() % 100));
         const int kids = 1 + static_cast<int>(rng() % 3);
         for (int i = 0; i < kids; ++i)
-            n.children()->push_back(random_node(rng, depth - 1, canvas_id));
+            n.children()->push_back(random_node(rng, depth - 1));
         std::get<GroupData>(n.data).isolate = (rng() % 2) == 0;
     } else if (roll < 50) {
         n = make_node(NodeKind::Source, std::format("l{}", rng() % 100));
@@ -92,18 +92,6 @@ Node random_node(std::mt19937& rng, int depth, const Id& canvas_id) {
             e.blend = Blend{BlendMode::Multiply, 0.5, true, false};
         n.effects.push_back(std::move(e));
     }
-    if (rng() % 3 == 0) {
-        CanvasOverride ov;
-        ov.visible = (rng() % 2) == 0;
-        if (rng() % 2) {
-            Transform t;
-            t.position = Vec2{10.0, 20.0};
-            ov.transform = t;
-        }
-        if (rng() % 2)
-            ov.blend = Blend{BlendMode::Screen, 0.25, false, true};
-        n.canvas_overrides.emplace(canvas_id, ov);
-    }
     return n;
 }
 
@@ -111,9 +99,10 @@ Scene random_scene(std::mt19937& rng, const Id& canvas_id) {
     Scene s;
     s.id = Id::generate();
     s.name = std::format("scene {}", rng() % 1000);
+    s.canvas = canvas_id;
     const int roots = 1 + static_cast<int>(rng() % 4);
     for (int i = 0; i < roots; ++i)
-        s.roots.push_back(random_node(rng, 3, canvas_id));
+        s.roots.push_back(random_node(rng, 3));
 
     if (!s.roots.empty() && rng() % 2) {
         AudioOverride ov;

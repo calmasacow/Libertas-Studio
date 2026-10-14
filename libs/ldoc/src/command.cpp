@@ -82,6 +82,8 @@ std::unordered_set<Id> all_ids(const Project& p) {
         ids.insert(d.id);
     for (const Output& o : p.outputs)
         ids.insert(o.id);
+    for (const SceneLink& l : p.scene_links)
+        ids.insert(l.id);
     for (const Scene& s : p.scenes) {
         ids.insert(s.id);
         visit(s.roots, [&ids](const Node& n) {
@@ -136,8 +138,6 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetDeck>) return "deck.set";
             else if constexpr (std::is_same_v<T, SetSceneFavourite>) return "scene.set-favourite";
             else if constexpr (std::is_same_v<T, Batch>) return "batch";
-            else if constexpr (std::is_same_v<T, SetCanvasOverride>)
-                return "node.set-canvas-override";
             else if constexpr (std::is_same_v<T, AddEffect>) return "effect.add";
             else if constexpr (std::is_same_v<T, RemoveEffect>) return "effect.remove";
             else if constexpr (std::is_same_v<T, SetEffectParams>) return "effect.set-params";
@@ -152,6 +152,8 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, AddSource>) return "source.add";
             else if constexpr (std::is_same_v<T, RemoveSource>) return "source.remove";
             else if constexpr (std::is_same_v<T, SetSource>) return "source.set";
+            else if constexpr (std::is_same_v<T, AddSceneLink>) return "scene-link.add";
+            else if constexpr (std::is_same_v<T, RemoveSceneLink>) return "scene-link.remove";
             else if constexpr (std::is_same_v<T, AddCanvas>) return "canvas.add";
             else if constexpr (std::is_same_v<T, RemoveCanvas>) return "canvas.remove";
             else if constexpr (std::is_same_v<T, SetCanvas>) return "canvas.set";
@@ -206,8 +208,6 @@ std::string describe(const Command& command) {
                 return c.favourite ? "Add to favourites" : "Remove from favourites";
             else if constexpr (std::is_same_v<T, Batch>)
                 return c.description.empty() ? std::string{"Several changes"} : c.description;
-            else if constexpr (std::is_same_v<T, SetCanvasOverride>)
-                return c.value ? "Set per-canvas override" : "Clear per-canvas override";
             else if constexpr (std::is_same_v<T, AddEffect>)
                 return std::format("Add effect {}", quoted(c.effect.type));
             else if constexpr (std::is_same_v<T, RemoveEffect>)
@@ -230,6 +230,10 @@ std::string describe(const Command& command) {
                 return "Remove source";
             else if constexpr (std::is_same_v<T, SetSource>)
                 return std::format("Change source {}", quoted(c.value.name));
+            else if constexpr (std::is_same_v<T, AddSceneLink>)
+                return "Link scenes";
+            else if constexpr (std::is_same_v<T, RemoveSceneLink>)
+                return "Unlink scenes";
             else if constexpr (std::is_same_v<T, AddCanvas>)
                 return std::format("Add canvas {}", quoted(c.canvas.name));
             else if constexpr (std::is_same_v<T, RemoveCanvas>)
@@ -280,25 +284,40 @@ struct Apply {
                 return std::unexpected(std::string{"a batch cannot contain another batch"});
         }
 
-        std::vector<Command> inverses;
-        inverses.reserve(c.body->commands.size());
+        // One entry per member, because a member's inverse may itself be several commands --
+        // removing a scene has to put its links back too. Those stay in their own order while
+        // the *members* are reversed, which a single flat list could not express.
+        std::vector<std::vector<Command>> steps;
+        steps.reserve(c.body->commands.size());
+        const auto unwind = [&] {
+            // Newest first, so a refused batch leaves the project exactly as it was. Each of
+            // these inverses was built from the state it reverses and is being applied to that
+            // same state, so it cannot fail -- and if it somehow did there would be nothing
+            // useful left to do about it.
+            for (auto step = steps.rbegin(); step != steps.rend(); ++step)
+                for (const Command& inv : *step)
+                    static_cast<void>(apply(p, inv));
+        };
+
         for (const Command& member : c.body->commands) {
             auto applied = apply(p, member);
             if (!applied) {
-                // Unwind what already landed, newest first, so a refused batch leaves the
-                // project exactly as it was. Each of these inverses was built from the state it
-                // reverses and is being applied to that same state, so it cannot fail -- and if
-                // it somehow did there would be nothing useful left to do about it.
-                for (auto it = inverses.rbegin(); it != inverses.rend(); ++it)
-                    static_cast<void>(apply(p, *it));
+                unwind();
                 return std::unexpected(std::format("{}: {}", command_name(member),
                                                    applied.error()));
             }
-            inverses.push_back(std::move(applied->inverse));
+            // A batch cannot hold a batch, so a member whose inverse is one is spliced flat.
+            // Its own members keep their order: they were built to run in it.
+            if (auto* nested = std::get_if<Batch>(&applied->inverse); nested && nested->body)
+                steps.push_back(nested->body->commands);
+            else
+                steps.push_back({std::move(applied->inverse)});
         }
 
         // Reversed: the last thing done is the first thing undone.
-        std::reverse(inverses.begin(), inverses.end());
+        std::vector<Command> inverses;
+        for (auto step = steps.rbegin(); step != steps.rend(); ++step)
+            inverses.insert(inverses.end(), step->begin(), step->end());
         return Applied{make_batch(std::move(inverses), c.description), describe(c)};
     }
 
@@ -321,6 +340,12 @@ struct Apply {
                 return std::unexpected(
                     std::format("id {} is already in the project", id.to_string()));
         }
+        // A scene has to live on a canvas that exists: unlike a deck's program scene, there is
+        // no sensible degraded state where it simply shows nothing (ADR-0027).
+        if (!p.canvas(c.scene.canvas))
+            return std::unexpected(std::format("there is no canvas {} for this scene to belong "
+                                               "to",
+                                               c.scene.canvas.to_string()));
         Applied out{RemoveScene{c.scene.id}, describe(c)};
         p.scenes.insert(p.scenes.begin() + static_cast<std::ptrdiff_t>(c.index), c.scene);
         return out;
@@ -332,8 +357,29 @@ struct Apply {
         if (it == p.scenes.end())
             return std::unexpected(std::format("there is no scene {}", c.scene.to_string()));
         const auto index = static_cast<std::size_t>(it - p.scenes.begin());
-        Applied out{AddScene{*it, index}, std::format("Remove scene {}", quoted(it->name))};
+
+        // Every link naming this scene goes with it, because a link to a scene that is not there
+        // is not a link (ADR-0027: one list is one place to prune). They are part of what the
+        // removal destroyed, so they are part of what undo has to put back -- which makes the
+        // inverse a batch rather than a bare AddScene.
+        // Ascending, which is the only order that reinserts them where they were: putting the
+        // one from index 5 back before the one from index 2 would be inserting past the end of a
+        // list that is still two short.
+        std::vector<Command> restore{AddScene{*it, index}};
+        for (std::size_t i = 0; i < p.scene_links.size(); ++i) {
+            const SceneLink& l = p.scene_links[i];
+            if (l.from == c.scene || l.to == c.scene)
+                restore.push_back(AddSceneLink{l, i});
+        }
+        std::string what = std::format("Remove scene {}", quoted(it->name));
+
+        Command inverse = restore.size() == 1 ? std::move(restore.front())
+                                              : make_batch(std::move(restore), what);
+        Applied out{std::move(inverse), what};
         p.scenes.erase(it);
+        std::erase_if(p.scene_links, [&c](const SceneLink& l) {
+            return l.from == c.scene || l.to == c.scene;
+        });
         return out;
     }
 
@@ -559,28 +605,6 @@ struct Apply {
         return out;
     }
 
-    std::expected<Applied, std::string> operator()(const SetCanvasOverride& c) const {
-        auto scene = find_scene(p, c.scene);
-        if (!scene)
-            return std::unexpected(scene.error());
-        auto n = find_in_scene(**scene, c.node);
-        if (!n)
-            return std::unexpected(n.error());
-        // The canvas is a reference, not a precondition: see the note on Apply.
-
-        const auto it = (*n)->canvas_overrides.find(c.canvas);
-        std::optional<CanvasOverride> previous;
-        if (it != (*n)->canvas_overrides.end())
-            previous = it->second;
-
-        Applied out{SetCanvasOverride{c.scene, c.node, c.canvas, previous}, describe(c)};
-        if (c.value)
-            (*n)->canvas_overrides.insert_or_assign(c.canvas, *c.value);
-        else
-            (*n)->canvas_overrides.erase(c.canvas);
-        return out;
-    }
-
     std::expected<Applied, std::string> operator()(const AddEffect& c) const {
         auto scene = find_scene(p, c.scene);
         if (!scene)
@@ -713,9 +737,74 @@ struct Apply {
         return out;
     }
 
+    std::expected<Applied, std::string> operator()(const AddSceneLink& c) const {
+        if (c.index > p.scene_links.size())
+            return std::unexpected(std::format("link position {} is past the end", c.index));
+        if (c.link.id.is_nil())
+            return std::unexpected("a scene link needs an id");
+        if (all_ids(p).contains(c.link.id))
+            return std::unexpected(
+                std::format("id {} is already in the project", c.link.id.to_string()));
+
+        const Scene* from = p.scene(c.link.from);
+        if (!from)
+            return std::unexpected(
+                std::format("there is no scene {} to link from", c.link.from.to_string()));
+        const Scene* to = p.scene(c.link.to);
+        if (!to)
+            return std::unexpected(
+                std::format("there is no scene {} to link to", c.link.to.to_string()));
+
+        if (from->canvas == to->canvas)
+            return std::unexpected(std::format(
+                "{} and {} are on the same canvas, so a link between them would be a scene "
+                "activating itself",
+                quoted(from->name), quoted(to->name)));
+
+        for (const SceneLink& existing : p.scene_links) {
+            if (existing.from != c.link.from)
+                continue;
+            const Scene* other = p.scene(existing.to);
+            if (other && other->canvas == to->canvas)
+                return std::unexpected(std::format(
+                    "{} already cues {} on that canvas; a scene can cue at most one scene per "
+                    "canvas, or there is no answer to which one",
+                    quoted(from->name), quoted(other->name)));
+        }
+
+        const Canvas* target = p.canvas(to->canvas);
+        if (target && target->emergency_scene && *target->emergency_scene == c.link.to)
+            return std::unexpected(std::format(
+                "{} is the emergency scene for canvas {}; a safety net that something else can "
+                "fire is not one",
+                quoted(to->name), quoted(target->name)));
+
+        Applied out{RemoveSceneLink{c.link.id}, describe(c)};
+        p.scene_links.insert(p.scene_links.begin() + static_cast<std::ptrdiff_t>(c.index),
+                             c.link);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const RemoveSceneLink& c) const {
+        const auto it = std::find_if(p.scene_links.begin(), p.scene_links.end(),
+                                     [&c](const SceneLink& l) { return l.id == c.link; });
+        if (it == p.scene_links.end())
+            return std::unexpected(
+                std::format("there is no scene link {}", c.link.to_string()));
+        const auto index = static_cast<std::size_t>(it - p.scene_links.begin());
+        Applied out{AddSceneLink{*it, index}, describe(c)};
+        p.scene_links.erase(it);
+        return out;
+    }
+
     std::expected<Applied, std::string> operator()(const AddCanvas& c) const {
         if (c.index > p.canvases.size())
             return std::unexpected(std::format("canvas position {} is past the end", c.index));
+        // "The first one in the list" is only an honest rule for Main while nothing can take
+        // that place from it, so the positional rule and the immutability ship together
+        // (ADR-0027). Refused here rather than hidden in the UI: ADR-0023.
+        if (c.index == 0 && !p.canvases.empty())
+            return std::unexpected("Main is the first canvas and nothing can be put before it");
         if (c.canvas.id.is_nil())
             return std::unexpected("a canvas needs an id");
         if (c.canvas.width <= 0 || c.canvas.height <= 0)
@@ -736,8 +825,15 @@ struct Apply {
                                      [&c](const Canvas& x) { return x.id == c.canvas; });
         if (it == p.canvases.end())
             return std::unexpected(std::format("there is no canvas {}", c.canvas.to_string()));
-        // A deck or output without a canvas is an *error* rather than a warning -- it has no
-        // output surface at all -- so this is a precondition and not a reference.
+        if (it == p.canvases.begin())
+            return std::unexpected("Main cannot be removed");
+        // A scene, deck or output without a canvas is an *error* rather than a warning -- it has
+        // no output surface at all -- so this is a precondition and not a reference.
+        for (const Scene& sc : p.scenes) {
+            if (sc.canvas == c.canvas)
+                return std::unexpected(std::format(
+                    "scene '{}' belongs to this canvas; move or delete it first", sc.name));
+        }
         for (const Deck& d : p.decks) {
             if (d.canvas == c.canvas)
                 return std::unexpected(std::format(
@@ -765,6 +861,10 @@ struct Apply {
                 std::format("a canvas cannot be {}x{}", c.value.width, c.value.height));
         if (!c.value.fps.valid())
             return std::unexpected("a canvas needs a valid frame rate");
+        // Main's size, rate and emergency scene are all editable; only its name is not, because
+        // the whole shell says "Main" when it means canvases[0] (ADR-0027).
+        if (it == p.canvases.begin() && c.value.name != it->name)
+            return std::unexpected("Main cannot be renamed");
         Applied out{SetCanvas{*it}, describe(c)};
         *it = c.value;
         return out;
@@ -915,6 +1015,18 @@ struct Apply {
     }
 
     std::expected<Applied, std::string> operator()(const SetCanvasEmergencyScene& c) const {
+        // The one state this command refuses, and the reason it is allowed to: "a scene that is
+        // already cued" is not a judgement about suitability -- which is the designation flow's
+        // job and deliberately not this command's -- but the same structural invariant
+        // AddSceneLink enforces from the other side. Without it the forbidden state could be
+        // reached simply by doing the two steps in the other order.
+        if (c.scene) {
+            for (const SceneLink& l : p.scene_links) {
+                if (l.to == *c.scene)
+                    return std::unexpected(
+                        "another scene cues this one, so it cannot also be the safety net");
+            }
+        }
         const auto it = std::find_if(p.canvases.begin(), p.canvases.end(),
                                      [&c](const Canvas& x) { return x.id == c.canvas; });
         if (it == p.canvases.end())

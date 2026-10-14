@@ -3,8 +3,9 @@
 
 #include "inspect.hpp"
 
-#include "ldoc/json.hpp"
 #include "ldoc/journal.hpp"
+#include "ldoc/json.hpp"
+#include "ldoc/migrate.hpp"
 #include "ldoc/project_io.hpp"
 #include "lcore/atomic_file.hpp"
 
@@ -54,8 +55,6 @@ void print_tree(const std::vector<ldoc::Node>& nodes, const ldoc::Project& p, in
         }
         if (!n.effects.empty())
             line += std::format("  fx:{}", n.effects.size());
-        if (!n.canvas_overrides.empty())
-            line += std::format("  per-canvas:{}", n.canvas_overrides.size());
         if (n.blend.mode != ldoc::BlendMode::Normal || n.blend.opacity != 1.0)
             line += std::format("  {} {:.0f}%", ldoc::to_string(n.blend.mode),
                                 n.blend.opacity * 100.0);
@@ -118,6 +117,14 @@ int inspect_project(const fs::path& dir, bool verbose) {
         if (const auto parsed = ldoc::assets_from_json(*assets))
             p.assets = *parsed;
     }
+
+    // The same migration `open_project` runs, for the same reason: without it every project
+    // written by an older build is reported as broken, which is a lie about the project and a
+    // libel against the format. Nothing is written back -- this command only looks.
+    const ldoc::Migration migrated = ldoc::migrate(p);
+    if (migrated.happened())
+        std::printf("  %-18s version %d, brought up to %d for this report only\n", "migration",
+                    migrated.from, p.schema_version);
 
     heading("canvases");
     for (const ldoc::Canvas& c : p.canvases) {

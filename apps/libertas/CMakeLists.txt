@@ -35,10 +35,21 @@ if(LIBERTAS_BUILD_TESTS)
     # fails alongside the golden tests rather than quietly reporting nonsense.
     add_test(NAME inspect_golden_project
              COMMAND libertas project
-                     "${CMAKE_SOURCE_DIR}/tests/unit/fixtures/golden-project-v1" --verbose)
+                     "${CMAKE_SOURCE_DIR}/tests/unit/fixtures/golden-project-v2" --verbose)
     set_tests_properties(inspect_golden_project PROPERTIES
         TIMEOUT 30
         PASS_REGULAR_EXPRESSION "emergency scene: Emergency"
+        FAIL_REGULAR_EXPRESSION "error "
+    )
+
+    # And the previous format, which must be migrated on the way in rather than reported as a
+    # project full of errors. A reader that cannot read last month's project is not a reader.
+    add_test(NAME inspect_migrates_an_older_project
+             COMMAND libertas project
+                     "${CMAKE_SOURCE_DIR}/tests/unit/fixtures/golden-project-v1" --verbose)
+    set_tests_properties(inspect_migrates_an_older_project PROPERTIES
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "version 1, brought up to 2"
         FAIL_REGULAR_EXPRESSION "error "
     )
 

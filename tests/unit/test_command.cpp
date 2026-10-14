@@ -35,6 +35,9 @@ struct Fixture {
     Id spare_canvas;
     Id existing_bus;
     Id existing_output;
+    Id spare_scene;
+    Id vertical_scene;
+    Id existing_link;
 
     Fixture() {
         project = make_default_project("Show");
@@ -72,10 +75,12 @@ struct Fixture {
 
         // A second scene, so reordering is a real move rather than a clamp to where it already
         // is -- which check_reversible would rightly call "applying it changed nothing".
-        Scene spare_scene;
-        spare_scene.id = Id::generate();
-        spare_scene.name = "Second";
-        project.scenes.push_back(std::move(spare_scene));
+        Scene second;
+        second.id = Id::generate();
+        second.name = "Second";
+        second.canvas = canvas;
+        spare_scene = second.id;
+        project.scenes.push_back(std::move(second));
 
         existing_bus = project.buses.front().id;
 
@@ -95,6 +100,31 @@ struct Fixture {
         spare.name = "Spare";
         spare_canvas = spare.id;
         project.canvases.push_back(std::move(spare));
+
+        // A canvas needs a scene of its own before anything can be cued to it, and a link needs
+        // two scenes on two canvases. Note this lives on `spare_canvas`, so removing that canvas
+        // is now refused for a scene rather than for a deck -- which is the newer rule and the
+        // one worth exercising.
+        Canvas vertical_canvas;
+        vertical_canvas.id = Id::generate();
+        vertical_canvas.name = "Vertical";
+        vertical_canvas.width = 1080;
+        vertical_canvas.height = 1920;
+        project.canvases.push_back(vertical_canvas);
+
+        Scene vertical;
+        vertical.id = Id::generate();
+        vertical.name = "Vertical";
+        vertical.canvas = vertical_canvas.id;
+        vertical_scene = vertical.id;
+        project.scenes.push_back(std::move(vertical));
+
+        SceneLink link;
+        link.id = Id::generate();
+        link.from = scene;
+        link.to = vertical_scene;
+        existing_link = link.id;
+        project.scene_links.push_back(link);
     }
 };
 
@@ -126,14 +156,12 @@ std::vector<Command> every_command_shape(const Fixture& f) {
     Scene fresh;
     fresh.id = Id::generate();
     fresh.name = "Added";
+    fresh.canvas = f.canvas;
 
     Effect e;
     e.id = Id::generate();
     e.type = "effect.stroke";
     e.params.emplace("width", 2.0);
-
-    CanvasOverride ov;
-    ov.visible = false;
 
     ParamMap params;
     params.emplace("radius", 9.0);
@@ -211,13 +239,14 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         SetNodeTransform{f.scene, f.loose, t},
         SetNodeLayout{f.scene, f.loose, lay},
         SetNodeBlend{f.scene, f.loose, bl},
-        SetCanvasOverride{f.scene, f.loose, f.canvas, ov},
         AddEffect{f.scene, f.loose, 0, e},
         RemoveEffect{f.scene, f.loose, f.effect},
         SetEffectParams{f.scene, f.loose, f.effect, params},
         SetEffectEnabled{f.scene, f.loose, f.effect, false},
         SetDeckProgram{f.deck, std::nullopt},
         SetDeckPreview{f.deck, f.scene},
+        AddSceneLink{SceneLink{Id::generate(), f.spare_scene, f.vertical_scene}, 0},
+        RemoveSceneLink{f.existing_link},
         SetCanvasEmergencyScene{f.canvas, f.scene},
         SetNodeSource{f.scene, f.loose, f.existing_source},
         AddSource{src, 0},
@@ -249,6 +278,9 @@ Command random_command(std::mt19937& rng, const Project& p) {
         Scene fresh;
         fresh.id = Id::generate();
         fresh.name = std::format("Scene {}", rng() % 100);
+        // Main can never be removed, so there is always a canvas to put it on.
+        if (!p.canvases.empty())
+            fresh.canvas = p.canvases.front().id;
         return AddScene{fresh, 0};
     }
     const Scene& scene = p.scenes[rng() % p.scenes.size()];
@@ -268,6 +300,7 @@ Command random_command(std::mt19937& rng, const Project& p) {
         Scene fresh;
         fresh.id = Id::generate();
         fresh.name = std::format("Scene {}", rng() % 100);
+        fresh.canvas = canvas;
         if (rng() % 2)
             fresh.roots.push_back(make_node(NodeKind::Source, "l"));
         return AddScene{fresh, rng() % (p.scenes.size() + 1)};
@@ -307,10 +340,9 @@ Command random_command(std::mt19937& rng, const Project& p) {
         return SetNodeBlend{scene.id, node, b};
     }
     case 12: {
-        CanvasOverride ov;
-        ov.visible = (rng() % 2) == 0;
-        return SetCanvasOverride{scene.id, node, canvas,
-                                 (rng() % 3) ? std::optional<CanvasOverride>{ov} : std::nullopt};
+        Layout lay;
+        lay.fit = static_cast<FitMode>(rng() % 4);
+        return SetNodeLayout{scene.id, node, lay};
     }
     case 13: {
         Effect e;
@@ -448,7 +480,10 @@ LTEST_CASE(a_refused_command_changes_nothing) {
         RemoveEffect{f.scene, f.loose, nowhere},
         SetDeckProgram{nowhere, std::nullopt},
         SetDeckPreview{nowhere, std::nullopt},
-        SetCanvasOverride{f.scene, nowhere, f.canvas, CanvasOverride{}},
+        AddSceneLink{SceneLink{Id::generate(), f.scene, nowhere}, 0},
+        AddSceneLink{SceneLink{Id::generate(), f.scene, f.spare_scene}, 0},
+        AddSceneLink{SceneLink{Id::generate(), f.scene, f.vertical_scene}, 0},
+        RemoveSceneLink{nowhere},
         AddScene{Scene{}, 99},
         AddNode{f.scene, std::nullopt, 99, make_node(NodeKind::Source, "n")},
         AddEffect{f.scene, nowhere, 0, Effect{}},
@@ -475,9 +510,7 @@ LTEST_CASE(pointing_at_something_that_does_not_exist_is_allowed_and_reported_lat
     CHECK_MSG(is_valid(f.project), "a dangling deck pointer was treated as unrenderable");
     CHECK(!validate(f.project).empty());
 
-    CanvasOverride ov;
-    ov.visible = false;
-    REQUIRE(apply(f.project, SetCanvasOverride{f.scene, f.loose, nowhere, ov}).has_value());
+    REQUIRE(apply(f.project, SetNodeSource{f.scene, f.loose, nowhere}).has_value());
     CHECK(is_valid(f.project));
     const auto problems = validate(f.project);
     CHECK(std::all_of(problems.begin(), problems.end(), [](const Problem& p) {
@@ -662,6 +695,7 @@ LTEST_CASE(undo_can_restore_a_reference_that_has_since_become_dangling) {
     Scene spare;
     spare.id = Id::generate();
     spare.name = "Spare";
+    spare.canvas = f.canvas;
     const Id spare_id = spare.id;
     REQUIRE(h.run(AddScene{spare, 1}).has_value());
     REQUIRE(h.run(SetDeckProgram{f.deck, spare_id}).has_value());
@@ -808,20 +842,128 @@ LTEST_CASE(a_source_node_can_be_bound_to_a_source_and_unbound) {
 }
 
 LTEST_CASE(a_canvas_that_something_renders_to_cannot_be_removed) {
-    // Unlike a source, a deck or output without a canvas has no output surface at all -- which
-    // validate() calls an error, so refusing here is the model's own rule rather than an extra
-    // one. ADR-0023's line again: a command refuses exactly what the model refuses.
+    // Unlike a source, a scene, deck or output without a canvas has no output surface at all --
+    // which validate() calls an error, so refusing here is the model's own rule rather than an
+    // extra one. ADR-0023's line again: a command refuses exactly what the model refuses.
     Fixture f;
     const Project before = f.project;
-    const auto r = apply(f.project, RemoveCanvas{f.canvas});
-    CHECK(!r.has_value());
-    CHECK(r.error().find("point it at another one first") != std::string::npos);
+
+    // Main is refused outright, before any of that (ADR-0027).
+    const auto main = apply(f.project, RemoveCanvas{f.canvas});
+    CHECK(!main.has_value());
+    CHECK(main.error().find("Main cannot be removed") != std::string::npos);
+
+    // The vertical one is not Main, but a scene belongs to it.
+    const Id vertical = f.project.scene(f.vertical_scene)->canvas;
+    const auto with_scene = apply(f.project, RemoveCanvas{vertical});
+    CHECK(!with_scene.has_value());
+    CHECK(with_scene.error().find("move or delete it first") != std::string::npos);
+
+    // And a canvas held only by a deck names the deck.
+    Deck second;
+    second.id = Id::generate();
+    second.name = "Spare deck";
+    second.canvas = f.spare_canvas;
+    f.project.decks.push_back(std::move(second));
+    const auto with_deck = apply(f.project, RemoveCanvas{f.spare_canvas});
+    CHECK(!with_deck.has_value());
+    CHECK(with_deck.error().find("point it at another one first") != std::string::npos);
+
+    f.project = before;
     CHECK(f.project == before);
 
-    // The spare one, which nothing renders to, comes away cleanly.
+    // The spare one, which nothing renders to and no scene lives on, comes away cleanly.
     check_reversible("remove spare canvas", [](const Fixture& fx) {
         return Command{RemoveCanvas{fx.spare_canvas}};
     });
+}
+
+LTEST_CASE(main_is_the_first_canvas_and_the_command_layer_says_so) {
+    // The positional rule ("canvases[0] is Main") is only honest while nothing can take that
+    // place, so the immutability is enforced here rather than hidden in the UI (ADR-0027).
+    Fixture f;
+
+    Canvas extra;
+    extra.id = Id::generate();
+    extra.name = "Before Main";
+    const auto at_front = apply(f.project, AddCanvas{extra, 0});
+    CHECK(!at_front.has_value());
+    CHECK(at_front.error().find("nothing can be put before it") != std::string::npos);
+
+    Canvas renamed = f.project.canvases[0];
+    renamed.name = "Something Else";
+    const auto rename = apply(f.project, SetCanvas{renamed});
+    CHECK(!rename.has_value());
+    CHECK(rename.error().find("Main cannot be renamed") != std::string::npos);
+
+    // Everything else about Main is ordinary.
+    Canvas resized = f.project.canvases[0];
+    resized.width = 3840;
+    resized.height = 2160;
+    CHECK(apply(f.project, SetCanvas{resized}).has_value());
+    CHECK_EQ(f.project.canvases[0].width, 3840);
+}
+
+LTEST_CASE(a_scene_link_obeys_the_three_rules_that_make_a_cue_unambiguous) {
+    Fixture f;
+
+    // Same canvas: a scene activating itself.
+    const auto same = apply(f.project, AddSceneLink{
+        SceneLink{Id::generate(), f.scene, f.spare_scene}, 0});
+    CHECK(!same.has_value());
+    CHECK(same.error().find("same canvas") != std::string::npos);
+
+    // A second cue from the same scene to the same canvas: no answer to "which one".
+    Scene another_vertical;
+    another_vertical.id = Id::generate();
+    another_vertical.name = "Vertical B";
+    another_vertical.canvas = f.project.scene(f.vertical_scene)->canvas;
+    REQUIRE(apply(f.project, AddScene{another_vertical, 0}).has_value());
+    const auto twice = apply(f.project, AddSceneLink{
+        SceneLink{Id::generate(), f.scene, another_vertical.id}, 0});
+    CHECK(!twice.has_value());
+    CHECK(twice.error().find("at most one scene per canvas") != std::string::npos);
+
+    // But a *different* scene cueing the same canvas is the three-canvas case and is fine.
+    CHECK(apply(f.project, AddSceneLink{
+        SceneLink{Id::generate(), f.spare_scene, another_vertical.id}, 0}).has_value());
+}
+
+LTEST_CASE(a_cue_and_a_safety_net_cannot_be_the_same_scene) {
+    // ADR-0027 rule 5, enforced from both sides: the order the operator does the two steps in
+    // must not decide whether the forbidden state is reachable.
+    Fixture f;
+    const Id vertical_canvas = f.project.scene(f.vertical_scene)->canvas;
+
+    // The scene is already cued by the fixture's link, so it cannot become the safety net.
+    const auto net = apply(f.project,
+                           SetCanvasEmergencyScene{vertical_canvas, f.vertical_scene});
+    CHECK(!net.has_value());
+    CHECK(net.error().find("cannot also be the safety net") != std::string::npos);
+
+    // And the other way round: drop the link, make it the net, then try to cue it again.
+    REQUIRE(apply(f.project, RemoveSceneLink{f.existing_link}).has_value());
+    REQUIRE(apply(f.project, SetCanvasEmergencyScene{vertical_canvas, f.vertical_scene})
+                .has_value());
+    const auto cue = apply(f.project,
+                           AddSceneLink{SceneLink{Id::generate(), f.scene, f.vertical_scene}, 0});
+    CHECK(!cue.has_value());
+    CHECK(cue.error().find("emergency scene") != std::string::npos);
+}
+
+LTEST_CASE(removing_a_scene_takes_its_links_and_undo_brings_them_back) {
+    Fixture f;
+    const Project before = f.project;
+    REQUIRE(f.project.scene_links.size() == 1);
+
+    auto removed = apply(f.project, RemoveScene{f.vertical_scene});
+    REQUIRE_MSG(removed.has_value(), "{}", removed.error());
+    CHECK_MSG(f.project.scene_links.empty(),
+              "a link was left pointing at a scene that is gone");
+
+    auto undone = apply(f.project, removed->inverse);
+    REQUIRE_MSG(undone.has_value(), "{}", undone.error());
+    CHECK_MSG(f.project == before, "undoing the removal did not restore the link");
 }
 
 LTEST_CASE(removing_a_source_leaves_its_nodes_pointing_at_nothing_and_says_so) {

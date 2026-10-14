@@ -59,6 +59,13 @@ struct ProjectFile {
 struct SceneFile {
     Scene scene;
     std::uint64_t generation = 0;
+    /// The schema the file was written in, so the caller can tell a version 1 scene -- which has
+    /// no canvas of its own and may carry `canvas_overrides` -- from one that is already current.
+    int schema_version = kSchemaVersion;
+    /// How many nodes carried `canvas_overrides`, which version 2 deleted (ADR-0027). Reported
+    /// on open rather than dropped in silence: discarding authored work quietly is how a format
+    /// bump earns a reputation.
+    std::size_t dropped_canvas_overrides = 0;
 };
 
 [[nodiscard]] std::expected<SceneFile, std::string> scene_from_json(std::string_view text);

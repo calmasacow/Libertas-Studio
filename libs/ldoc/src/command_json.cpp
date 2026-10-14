@@ -134,15 +134,6 @@ Jv body(const SetNodeAudio& c) {
     return o;
 }
 
-Jv body(const SetCanvasOverride& c) {
-    Jv o{Json::objectValue};
-    o["scene"] = detail::enc(c.scene);
-    o["node"] = detail::enc(c.node);
-    o["canvas"] = detail::enc(c.canvas);
-    o["value"] = c.value ? detail::enc(*c.value) : Jv{Json::nullValue};
-    return o;
-}
-
 Jv body(const AddEffect& c) {
     Jv o{Json::objectValue};
     o["scene"] = detail::enc(c.scene);
@@ -267,6 +258,19 @@ Jv body(const RemoveBus& c) {
 Jv body(const SetBus& c) {
     Jv o{Json::objectValue};
     o["value"] = detail::enc(c.value);
+    return o;
+}
+
+Jv body(const AddSceneLink& c) {
+    Jv o{Json::objectValue};
+    o["link"] = detail::enc(c.link);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RemoveSceneLink& c) {
+    Jv o{Json::objectValue};
+    o["link"] = detail::enc(c.link);
     return o;
 }
 
@@ -421,12 +425,6 @@ std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
         if (const Jv* a = rd.object(o, "audio", path))
             audio = detail::dec_audio_routing(rd, *a, path);
         out = SetNodeAudio{rd.id(o, "scene", path), rd.id(o, "node", path), audio};
-    } else if (name == "node.set-canvas-override") {
-        std::optional<CanvasOverride> value;
-        if (const Jv* v = rd.object(o, "value", path))
-            value = detail::dec_canvas_override(rd, *v, path);
-        out = SetCanvasOverride{rd.id(o, "scene", path), rd.id(o, "node", path),
-                                rd.id(o, "canvas", path), value};
     } else if (name == "effect.add") {
         const Jv* ev = rd.object(o, "effect", path);
         if (!ev)
@@ -470,6 +468,13 @@ std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
         if (!sv)
             return std::unexpected("source.set has no value");
         out = SetSource{detail::dec_source(rd, *sv, path)};
+    } else if (name == "scene-link.add") {
+        const Jv* lv = rd.object(o, "link", path);
+        if (!lv)
+            return std::unexpected("scene-link.add has no link");
+        out = AddSceneLink{detail::dec_scene_link(rd, *lv, path), dec_index(rd, o, "index", path)};
+    } else if (name == "scene-link.remove") {
+        out = RemoveSceneLink{rd.id(o, "link", path)};
     } else if (name == "canvas.add") {
         const Jv* cv = rd.object(o, "canvas", path);
         if (!cv)

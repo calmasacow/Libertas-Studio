@@ -20,6 +20,7 @@
 
 #include "ltest.hpp"
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <format>
@@ -47,8 +48,17 @@ Id fixed_id(std::uint8_t tag) {
     return Id::from_bytes(bytes);
 }
 
+/// The current format, written by this build and committed. The byte-for-byte fixture.
 fs::path fixture_dir() {
     // Beside the test source, not in the build tree: it is an artefact of the repository.
+    return fs::path(LIBERTAS_TEST_FIXTURES) / "golden-project-v2";
+}
+
+/// The previous format, frozen. **Never regenerated**: its whole value is that it was written by
+/// a build that predates the change, so opening it exercises the real migration rather than a
+/// reconstruction of what version 1 is believed to have looked like. It still carries a scene
+/// with no canvas and nodes with `canvas_overrides`, which is exactly the point.
+fs::path fixture_v1_dir() {
     return fs::path(LIBERTAS_TEST_FIXTURES) / "golden-project-v1";
 }
 
@@ -115,6 +125,7 @@ Project golden_project() {
     Scene emergency;
     emergency.id = fixed_id(0x40);
     emergency.name = "Emergency";
+    emergency.canvas = main_canvas.id;
     Node card = make_node(NodeKind::Source, "Card");
     card.id = fixed_id(0x41);
     std::get<SourceData>(card.data).source = clip.id;
@@ -123,6 +134,7 @@ Project golden_project() {
     Scene live;
     live.id = fixed_id(0x50);
     live.name = "Live";
+    live.canvas = main_canvas.id;
 
     Node group = make_node(NodeKind::Group, "Overlay");
     group.id = fixed_id(0x51);
@@ -152,15 +164,6 @@ Project golden_project() {
     stroke.params.emplace("note", std::string{"keeps the camera readable on a bright scene"});
     cam_node.effects.push_back(std::move(stroke));
 
-    // The portrait canvas sees the camera somewhere else; this is what makes vertical one scene
-    // rather than two (ADR-0021).
-    CanvasOverride portrait;
-    Transform moved;
-    moved.position = Vec2{40.0, 1200.0};
-    moved.scale = Vec2{0.8, 0.8};
-    portrait.transform = moved;
-    cam_node.canvas_overrides.emplace(vertical.id, portrait);
-
     group.children()->push_back(std::move(cam_node));
 
     Node adjust = make_node(NodeKind::Adjustment, "Grade");
@@ -180,12 +183,30 @@ Project golden_project() {
     routing.mute = false;
     live.audio_overrides.emplace(fixed_id(0x52), routing);
 
+    // The vertical show is its own scene on its own canvas now, not the same scene repositioned
+    // (ADR-0027). What ties them together is a cue, below.
+    Scene vertical_live;
+    vertical_live.id = fixed_id(0x56);
+    vertical_live.name = "Live (Vertical)";
+    vertical_live.canvas = vertical.id;
+    Node vcam = make_node(NodeKind::Source, "Camera");
+    vcam.id = fixed_id(0x57);
+    vcam.transform.position = Vec2{40.0, 1200.0};
+    vcam.transform.scale = Vec2{0.8, 0.8};
+    std::get<SourceData>(vcam.data).source = camera.id;
+    vertical_live.roots.push_back(std::move(vcam));
+
+    // Only Main has a safety net here. A canvas without one is not a broken document -- it
+    // falls back to black and silence -- and leaving Vertical without one keeps the fixture
+    // from asserting that sharing a landscape clip across both is fine, which it is not.
     main_canvas.emergency_scene = emergency.id;
-    vertical.emergency_scene = emergency.id;
     p.canvases.push_back(main_canvas);
     p.canvases.push_back(vertical);
     p.scenes.push_back(std::move(live));
     p.scenes.push_back(std::move(emergency));
+    p.scenes.push_back(std::move(vertical_live));
+
+    p.scene_links.push_back(SceneLink{fixed_id(0x90), fixed_id(0x50), fixed_id(0x56)});
 
     Deck deck;
     deck.id = fixed_id(0x60);
@@ -239,12 +260,13 @@ public:
     ScratchDir(const ScratchDir&) = delete;
     ScratchDir& operator=(const ScratchDir&) = delete;
 
-    [[nodiscard]] fs::path copy_of_fixture() const {
+    [[nodiscard]] fs::path copy_of(const fs::path& fixture) const {
         const fs::path to = path_ / "Golden.libertas";
         std::error_code ec;
-        fs::copy(fixture_dir(), to, fs::copy_options::recursive, ec);
+        fs::copy(fixture, to, fs::copy_options::recursive, ec);
         return to;
     }
+    [[nodiscard]] fs::path copy_of_fixture() const { return copy_of(fixture_dir()); }
 
 private:
     fs::path path_;
@@ -284,7 +306,7 @@ LTEST_CASE(the_committed_project_still_opens) {
     CHECK_EQ(p.schema_version, kSchemaVersion);
     CHECK_EQ(p.name, std::string("Golden Show"));
     CHECK_EQ(p.canvases.size(), std::size_t{2});
-    CHECK_EQ(p.scenes.size(), std::size_t{2});
+    CHECK_EQ(p.scenes.size(), std::size_t{3});
     CHECK_EQ(p.sources.size(), std::size_t{2});
     CHECK_EQ(p.buses.size(), std::size_t{2});
     CHECK_EQ(p.outputs.size(), std::size_t{1});
@@ -315,10 +337,67 @@ LTEST_CASE(the_committed_project_still_opens) {
     CHECK(std::holds_alternative<double>(cam.effects[0].params.at("width")));
     CHECK(std::holds_alternative<Id>(cam.effects[0].params.at("link")));
     CHECK(std::holds_alternative<Rgba>(cam.effects[0].params.at("colour")));
-    CHECK_EQ(cam.canvas_overrides.size(), std::size_t{1});
-    CHECK(cam.canvas_overrides.begin()->second.transform.has_value());
+    CHECK_EQ(p.scene_links.size(), std::size_t{1});
+    CHECK(p.scene_links[0].from == fixed_id(0x50));
+    CHECK(p.scene_links[0].to == fixed_id(0x56));
+    CHECK(p.scene(fixed_id(0x56))->canvas == p.canvases[1].id);
 
     CHECK_MSG(is_valid(p), "the committed project no longer validates");
+}
+
+LTEST_CASE(a_version_1_project_opens_and_is_migrated) {
+    // The migration half of the golden pair. These bytes were written before scenes belonged to
+    // canvases, so opening them is the only test that exercises the version 1 shape end to end.
+    const ScratchDir sd;
+    const fs::path dir = sd.copy_of(fixture_v1_dir());
+    REQUIRE_MSG(fs::exists(dir / "project.json"), "the version 1 fixture was not copied");
+
+    auto opened = open_project(dir);
+    REQUIRE_MSG(opened.has_value(), "{}", opened.error());
+    CHECK(!opened->read_only);
+
+    const Project& p = opened->project;
+    CHECK_EQ(p.schema_version, kSchemaVersion);
+    REQUIRE(!p.canvases.empty());
+
+    // Every scene went to the first canvas, which is the only one the shell ever worked
+    // against, so this restates what was already true rather than guessing (ADR-0027).
+    for (const Scene& s : p.scenes) {
+        CHECK_MSG(s.canvas == p.canvases.front().id,
+                  "scene '{}' was not assigned to the first canvas", s.name);
+    }
+    CHECK_MSG(is_valid(p), "the migrated project does not validate");
+
+    // The dropped per-canvas overrides are *reported*. Discarding authored work in silence is
+    // the failure this check exists to prevent, so the absence of the warning is the bug.
+    const bool said_so =
+        std::any_of(opened->problems.begin(), opened->problems.end(), [](const Problem& pr) {
+            return pr.message.find("per-canvas overrides") != std::string::npos;
+        });
+    CHECK_MSG(said_so, "a version 1 project lost its per-canvas overrides without saying so");
+
+    const bool reassigned =
+        std::any_of(opened->problems.begin(), opened->problems.end(), [](const Problem& pr) {
+            return pr.message.find("older format were assigned") != std::string::npos;
+        });
+    CHECK_MSG(reassigned, "the scene reassignment was not reported");
+}
+
+LTEST_CASE(a_migrated_project_saves_as_the_current_version) {
+    // What the migration is for: once saved, the old shape is gone and the file is version 2.
+    const ScratchDir sd;
+    const fs::path dir = sd.copy_of(fixture_v1_dir());
+    auto opened = open_project(dir);
+    REQUIRE(opened.has_value());
+    REQUIRE(save_project(opened->project, dir).has_value());
+
+    const auto text = lc::read_file(dir / "project.json");
+    REQUIRE(text.has_value());
+    const auto reread = project_from_json(*text);
+    REQUIRE_MSG(reread.has_value(), "{}", reread.error());
+    CHECK_EQ(reread->project.schema_version, kSchemaVersion);
+    CHECK_MSG(text->find("canvas_overrides") == std::string::npos,
+              "the saved project still carries the field the bump removed");
 }
 
 LTEST_CASE(this_build_still_writes_the_committed_bytes) {
