@@ -1018,6 +1018,77 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The other way in, and the one the block above cannot reach: the row itself. That block
+        // calls `open` directly, which is the same function the gear and the handler call -- so
+        // it proves the panel works and proves nothing about the gesture. The operator asked for
+        // the gesture. This drives it through the pointer.
+        {
+            const QList<QQuickItem*> panels =
+                collect(window->contentItem(), QStringLiteral("sourceSettingsDialog"));
+            const QList<QQuickItem*> sources_panels =
+                collect(window->contentItem(), QStringLiteral("sourcesPanel"));
+            report(panels.size() == 1 && sources_panels.size() == 1,
+                   "the Sources panel and its settings panel are both on screen");
+
+            const auto post = [&window](QEvent::Type type, QPointF at, Qt::MouseButton b,
+                                        Qt::MouseButtons held) {
+                QMouseEvent e{type, at, window->mapToGlobal(at), b, held, {}};
+                QCoreApplication::sendEvent(window, &e);
+            };
+            // The full sequence a real double-click delivers. A bare DblClick would arrive with
+            // no grabber and tell us nothing about what the operator's pointer does.
+            const auto double_click = [&](QQuickItem* item) {
+                const QPointF at =
+                    item->mapToScene(QPointF(item->width() / 2.0, item->height() / 2.0));
+                post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonDblClick, at, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                settle();
+            };
+            const auto row_for = [&](const QString& node_id) -> QQuickItem* {
+                for (QQuickItem* r : collect(window->contentItem(), QStringLiteral("sourceRow")))
+                    if (r->property("nodeId").toString() == node_id)
+                        return r;
+                return nullptr;
+            };
+            const auto renaming = [&] {
+                return sources_panels.isEmpty()
+                           ? QString{}
+                           : sources_panels.front()->property("renaming").toString();
+            };
+
+            QQuickItem* bound = row_for(browser_node);
+            report(bound != nullptr, "the browser's row is on screen to be double-clicked");
+            if (bound != nullptr && !panels.isEmpty() && !sources_panels.isEmpty()) {
+                double_click(bound);
+                report(panels.front()->isVisible(),
+                       "double-clicking a bound row opens its settings");
+                report(renaming().isEmpty(), "and does not start a rename as well");
+                QMetaObject::invokeMethod(panels.front(), "close");
+                settle();
+            }
+
+            // A group is bound to nothing, so the same gesture has to mean the other thing --
+            // otherwise F2 would be the only way to rename one.
+            document.addGroup(QStringLiteral("Overlays"));
+            settle();
+            QQuickItem* group_row = row_for(document.selectedNode());
+            report(group_row != nullptr, "the group's row is on screen too");
+            if (group_row != nullptr && !panels.isEmpty() && !sources_panels.isEmpty()) {
+                const QString group_id = document.selectedNode();
+                double_click(group_row);
+                report(!panels.front()->isVisible(),
+                       "double-clicking a group opens no settings panel, because it has none");
+                report(renaming() == group_id, "it starts the rename instead");
+                sources_panels.front()->setProperty("renaming", QString{});
+                settle();
+            }
+            document.undo();
+            settle();
+        }
+
         document.selectNode(browser_node);
         settle();
 

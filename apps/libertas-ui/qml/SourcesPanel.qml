@@ -23,6 +23,8 @@ import Libertas
 Item {
     id: panel
 
+    objectName: "sourcesPanel"
+
     /// The add menu is open. Closed by picking something, or by the + again.
     property bool adding: false
 
