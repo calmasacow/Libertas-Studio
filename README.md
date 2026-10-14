@@ -37,7 +37,9 @@ measured spikes and have not been made product code. The panels that will drive 
 their faces — the audio mixer draws no meters, the controls panel has no Go Live button, and the
 program canvas reads "no pipeline attached" — because a panel that looks finished while being
 incapable is a panel nobody can tell the truth about later. See [`docs/adr/`](docs/adr/) —
-twenty-six decisions, each recording what was measured and what was rejected.
+twenty-eight decisions, each recording what was measured and what was rejected. Two of them are
+proposed rather than built: the scene model the vertical workflow needs, and the rename that
+follows it.
 
 ## Why
 
