@@ -10,6 +10,7 @@
 #include "ltest.hpp"
 
 #include <filesystem>
+#include <format>
 #include <sstream>
 #include <string>
 #include <unistd.h>
@@ -341,10 +342,119 @@ LTEST_CASE(a_version_one_file_loses_the_panel_this_build_dropped) {
     CHECK_EQ(group->tabs.size(), std::size_t{2});
     CHECK_MSG(group->active < group->tabs.size(), "the visible tab index is past the end");
 
-    // Written back out, it is version 2 and says nothing about the dropped panel.
+    // Written back out, it is the current version and says nothing about the dropped panel.
     const std::string again = to_toml(*back);
-    CHECK(again.find("version = 2") != std::string::npos);
+    CHECK(again.find(std::format("version = {}", kLayoutFormatVersion)) != std::string::npos);
     CHECK(again.find("inputs") == std::string::npos);
+}
+
+LTEST_CASE(a_version_two_file_renames_stats_to_info) {
+    // The panel called "Stats" is the panel now called "Info" -- it counts what is in the
+    // project, which was never a statistic. The rename shipped with no migration, so a saved
+    // layout kept naming `stats` and the shell drew its "nothing to draw there" placeholder in
+    // that tab for ever. Version 2 files are affected too, which is why the gate is `< 3`.
+    const std::string v2 =
+        "version = 2\n"
+        "root = 1\n"
+        "\n[[node]]\n"
+        "id = 1\n"
+        "kind = \"split\"\n"
+        "axis = \"h\"\n"
+        "children = [ 2, 3 ]\n"
+        "fractions = [ 0.5, 0.5 ]\n"
+        "\n[[node]]\n"
+        "id = 2\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"program\" ]\n"
+        "active = 0\n"
+        "\n[[node]]\n"
+        "id = 3\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"stats\", \"log\" ]\n"
+        "active = 0\n";
+
+    const auto back = from_toml(v2);
+    REQUIRE_MSG(back.has_value(), "{}", back ? std::string{} : back.error());
+    CHECK_MSG(!back->has_panel("stats"), "the retired name survived the migration");
+    CHECK_MSG(back->has_panel("info"), "the panel was dropped instead of renamed");
+    CHECK_MSG(back->has_panel("log") && back->has_panel("program"),
+              "the migration took panels it should have kept");
+    CHECK(!back->validate().has_value());
+
+    // A rename, so the group keeps both tabs and the visible one does not move.
+    const Node* group = back->find(back->node_of_panel("info"));
+    REQUIRE(group != nullptr);
+    CHECK_EQ(group->tabs.size(), std::size_t{2});
+    CHECK_EQ(group->tabs.front(), std::string{"info"});
+    CHECK_EQ(group->active, std::size_t{0});
+
+    const std::string again = to_toml(*back);
+    CHECK(again.find("stats") == std::string::npos);
+}
+
+LTEST_CASE(a_file_with_both_stats_and_info_keeps_only_info) {
+    // Renaming here would put one panel in the layout twice, so the stale tab is closed
+    // instead. The group it was in holds `info` already, so nothing collapses.
+    const std::string v2 =
+        "version = 2\n"
+        "root = 1\n"
+        "\n[[node]]\n"
+        "id = 1\n"
+        "kind = \"split\"\n"
+        "axis = \"h\"\n"
+        "children = [ 2, 3 ]\n"
+        "fractions = [ 0.5, 0.5 ]\n"
+        "\n[[node]]\n"
+        "id = 2\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"program\" ]\n"
+        "active = 0\n"
+        "\n[[node]]\n"
+        "id = 3\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"info\", \"stats\", \"log\" ]\n"
+        "active = 1\n";
+
+    const auto back = from_toml(v2);
+    REQUIRE_MSG(back.has_value(), "{}", back ? std::string{} : back.error());
+    CHECK_MSG(!back->has_panel("stats"), "the stale duplicate survived");
+    CHECK_MSG(back->has_panel("info"), "the real panel was removed instead of the stale one");
+    CHECK(!back->validate().has_value());
+
+    const Node* group = back->find(back->node_of_panel("info"));
+    REQUIRE(group != nullptr);
+    CHECK_EQ(group->tabs.size(), std::size_t{2});
+    CHECK_MSG(group->active < group->tabs.size(), "the visible tab index is past the end");
+}
+
+LTEST_CASE(a_group_of_only_stats_becomes_a_group_of_only_info) {
+    // The rename must not collapse the group the way the `inputs` removal does: the panel is
+    // still there, under the name this build knows it by.
+    const std::string v2 =
+        "version = 2\n"
+        "root = 1\n"
+        "\n[[node]]\n"
+        "id = 1\n"
+        "kind = \"split\"\n"
+        "axis = \"h\"\n"
+        "children = [ 2, 3 ]\n"
+        "fractions = [ 0.5, 0.5 ]\n"
+        "\n[[node]]\n"
+        "id = 2\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"program\" ]\n"
+        "active = 0\n"
+        "\n[[node]]\n"
+        "id = 3\n"
+        "kind = \"tabs\"\n"
+        "panels = [ \"stats\" ]\n"
+        "active = 0\n";
+
+    const auto back = from_toml(v2);
+    REQUIRE_MSG(back.has_value(), "{}", back ? std::string{} : back.error());
+    CHECK_MSG(back->has_panel("info"), "the only panel in the group was lost");
+    CHECK(!back->has_panel("stats"));
+    CHECK(!back->validate().has_value());
 }
 
 LTEST_CASE(a_version_one_group_of_only_the_dropped_panel_collapses) {

@@ -216,6 +216,29 @@ std::expected<Layout, std::string> layout_from_table(const toml::table& tbl, int
             return std::unexpected(std::format("node id {} appears more than once", *id));
     }
 
+    // `stats` became `info` (see kLayoutFormatVersion). Rewritten here, in the node table and
+    // before adopting, rather than after it like the removal below: a rename leaves the group
+    // exactly as full as it was and so can never empty one, and doing it before adopt means the
+    // tree is validated with the name this build actually knows.
+    //
+    // Skipped entirely when the file already names `info`, because renaming would then put one
+    // panel in the layout twice. That case is handled as a removal after adopting instead.
+    if (version < 3) {
+        bool has_info = false;
+        for (const auto& [node_id, n] : nodes) {
+            for (const std::string& tab : n.tabs)
+                has_info = has_info || tab == "info";
+        }
+        if (!has_info) {
+            for (auto& [node_id, n] : nodes) {
+                for (std::string& tab : n.tabs) {
+                    if (tab == "stats")
+                        tab = "info";
+                }
+            }
+        }
+    }
+
     Layout l;
     if (!l.adopt(std::move(nodes), *root))
         return std::unexpected("the nodes do not form a single valid tree rooted at 'root'");
@@ -225,6 +248,10 @@ std::expected<Layout, std::string> layout_from_table(const toml::table& tbl, int
     // closing a panel goes through -- which is what collapses a group left empty by the removal.
     if (version < 2)
         static_cast<void>(l.close_panel("inputs"));
+    // Only bites when the rename above stood down because `info` was already there. Harmless
+    // otherwise: there is no `stats` left to close.
+    if (version < 3)
+        static_cast<void>(l.close_panel("stats"));
     return l;
 }
 

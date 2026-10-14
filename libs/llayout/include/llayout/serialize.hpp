@@ -21,7 +21,17 @@ namespace llayout {
 /// source and having two panels for it meant two words for one thing. A version 1 file naming
 /// `inputs` would otherwise render a "this build has nothing to draw there" placeholder, so
 /// reading one drops that tab.
-inline constexpr int kLayoutFormatVersion = 2;
+///
+/// Version 3 renames `stats` to `info`. That panel counts what is in the project and lists what
+/// is wrong with it; it was never statistics, and broadcast statistics are a different panel
+/// with a different job. The rename shipped *without* this migration, which is the bug it
+/// exists to fix: every layout written before it -- version 2 files included, which is why this
+/// is not gated on version 1 -- names a panel this build does not have, and draws the
+/// placeholder for ever because nothing ever removes it.
+///
+/// A rename, not a removal. A file that already has `info` keeps it and loses the stale `stats`
+/// beside it, because the same panel twice in one group is not what anybody saved.
+inline constexpr int kLayoutFormatVersion = 3;
 
 [[nodiscard]] std::string to_toml(const Layout& l);
 
