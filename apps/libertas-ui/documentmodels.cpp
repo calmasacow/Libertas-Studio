@@ -21,6 +21,8 @@ QVariant SceneModel::data(const QModelIndex& index, int role) const {
     case IsPreviewRole:   return r->isPreview;
     case IsEmergencyRole: return r->isEmergency;
     case IsFavouriteRole: return r->isFavourite;
+    case LinkCountRole:   return r->linkCount;
+    case CanLinkRole:     return r->canLink;
     default:              return {};
     }
 }
@@ -31,6 +33,7 @@ QHash<int, QByteArray> SceneModel::roleNames() const {
         {NodeCountRole, "nodeCount"}, {IsProgramRole, "isProgram"},
         {IsPreviewRole, "isPreview"}, {IsEmergencyRole, "isEmergency"},
         {IsFavouriteRole, "isFavourite"},
+        {LinkCountRole, "linkCount"}, {CanLinkRole, "canLink"},
     };
 }
 
@@ -214,6 +217,78 @@ QHash<int, QByteArray> OutputModel::roleNames() const {
         // by that name would disable itself whenever the output was disabled.
         {EnabledRole, "isEnabled"},
         {MisconfiguredRole, "misconfigured"},
+    };
+}
+
+int CanvasModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+}
+
+QVariant CanvasModel::data(const QModelIndex& index, int role) const {
+    const CanvasRow* r = at(rows_, index);
+    if (!r)
+        return {};
+    switch (role) {
+    case IdRole:                return r->id;
+    case NameRole:              return r->name;
+    case PixelWidthRole:        return r->pixelWidth;
+    case PixelHeightRole:       return r->pixelHeight;
+    case FpsRole:               return r->fps;
+    case ColorSpaceRole:        return r->colorSpace;
+    case IsMainRole:            return r->isMain;
+    case SceneCountRole:        return r->sceneCount;
+    case HasEmergencySceneRole: return r->hasEmergencyScene;
+    default:                    return {};
+    }
+}
+
+QHash<int, QByteArray> CanvasModel::roleNames() const {
+    return {
+        {IdRole, "canvasId"},
+        {NameRole, "name"},
+        {PixelWidthRole, "pixelWidth"},
+        {PixelHeightRole, "pixelHeight"},
+        {FpsRole, "fps"},
+        {ColorSpaceRole, "colorSpace"},
+        {IsMainRole, "isMain"},
+        {SceneCountRole, "sceneCount"},
+        {HasEmergencySceneRole, "hasEmergencyScene"},
+    };
+}
+
+int EncodeModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+}
+
+QVariant EncodeModel::data(const QModelIndex& index, int role) const {
+    const EncodeRow* r = at(rows_, index);
+    if (!r)
+        return {};
+    switch (role) {
+    case IdRole:             return r->id;
+    case NameRole:           return r->name;
+    case CanvasNameRole:     return r->canvasName;
+    case ResolutionRole:     return r->resolution;
+    case CodecRole:          return r->codec;
+    case ImplementationRole: return r->implementation;
+    case BitrateRole:        return r->bitrateKbps;
+    case PresetRole:         return r->preset;
+    case DestinationsRole:   return r->destinations;
+    default:                 return {};
+    }
+}
+
+QHash<int, QByteArray> EncodeModel::roleNames() const {
+    return {
+        {IdRole, "encodeId"},
+        {NameRole, "name"},
+        {CanvasNameRole, "canvasName"},
+        {ResolutionRole, "resolution"},
+        {CodecRole, "codec"},
+        {ImplementationRole, "implementation"},
+        {BitrateRole, "bitrateKbps"},
+        {PresetRole, "preset"},
+        {DestinationsRole, "destinations"},
     };
 }
 

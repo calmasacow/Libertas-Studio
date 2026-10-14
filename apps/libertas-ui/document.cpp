@@ -146,19 +146,74 @@ const ldoc::Node* Document::current_node() const {
 
 const ldoc::Canvas* Document::current_canvas() const {
     const auto& canvases = session_->project().canvases;
-    return canvases.empty() ? nullptr : &canvases.front();
+    if (canvases.empty())
+        return nullptr;
+    // Resolved rather than stored: the selection is an id the operator picked, and the canvas
+    // behind it can be removed by an undo or by another panel. Falling back to the first one
+    // means the shell is never working on a canvas that is not there.
+    if (const auto wanted = parse_id(current_canvas_)) {
+        for (const ldoc::Canvas& c : canvases) {
+            if (c.id == *wanted)
+                return &c;
+        }
+    }
+    return &canvases.front();
+}
+
+QString Document::currentCanvasName() const {
+    const ldoc::Canvas* c = current_canvas();
+    return c ? qstr(c->name) : QString{};
+}
+
+bool Document::currentCanvasIsMain() const {
+    const auto& canvases = session_->project().canvases;
+    const ldoc::Canvas* c = current_canvas();
+    return !canvases.empty() && c && c->id == canvases.front().id;
+}
+
+int Document::currentCanvasSceneCount() const {
+    const ldoc::Canvas* c = current_canvas();
+    if (!c)
+        return 0;
+    int n = 0;
+    for (const ldoc::Scene& s : session_->project().scenes) {
+        if (s.canvas == c->id)
+            ++n;
+    }
+    return n;
+}
+
+void Document::selectCanvas(const QString& id) {
+    if (current_canvas_ == id)
+        return;
+    current_canvas_ = id;
+    // The scenes panel lists one canvas's scenes, so changing canvas can strand the selection
+    // on a scene that is no longer shown. Drop it rather than leave the sources panel showing
+    // a scene the operator cannot see.
+    const ldoc::Scene* sel = current_scene();
+    const ldoc::Canvas* now = current_canvas();
+    if (sel && now && sel->canvas != now->id) {
+        selected_scene_.clear();
+        selected_node_.clear();
+    }
+    emit canvasChanged();
+    rebuild();
 }
 
 namespace {
 
-/// "1080p60 6 Mbps". Named for what it is and never for a destination: an encode called
-/// "Twitch 1080p" that keeps running after Twitch stops reads as a bug (ADR-0029).
-std::string encode_name_for(const ldoc::Canvas& c, std::int32_t bitrate_kbps) {
-    const double mbps = static_cast<double>(bitrate_kbps) / 1000.0;
-    const double fps = c.fps.den == 0
-                           ? 0.0
-                           : static_cast<double>(c.fps.num) / static_cast<double>(c.fps.den);
-    return std::format("{}p{:.0f} {:.0f} Mbps", c.height, fps, mbps);
+/// Keep a generated name in step with the settings it describes.
+///
+/// An encode's name is a description -- "1080p60 8 Mbps" -- so leaving it alone when the
+/// bitrate changes leaves a name that lies, and the name is the handle: it is what the outputs
+/// rows print when they say two destinations share an encode. But a name the operator typed is
+/// theirs and must survive.
+///
+/// Telling the two apart needs no extra field. If the current name is still exactly what the
+/// generator would have produced for the settings as they were, nobody has renamed it.
+void retitle_if_auto(const ldoc::Project& p, const ldoc::Encode& before, ldoc::Encode& after) {
+    if (before.name == ldoc::default_encode_name(p, before))
+        after.name = ldoc::default_encode_name(p, after);
 }
 
 } // namespace
@@ -245,8 +300,12 @@ void Document::rebuild() {
     if (!selected_node_.isEmpty() && !current_node())
         selected_node_.clear();
 
-    std::vector<SceneRow> scenes;
-    for (const ldoc::Scene& s : p.scenes) {
+    // The canvas the shell is working on. Scenes belong to a canvas now (ADR-0027), so the
+    // scenes panel lists one canvas's scenes rather than every canvas's at once.
+    const ldoc::Canvas* shown = current_canvas();
+    const ldoc::Id main_canvas = p.canvases.empty() ? ldoc::Id{} : p.canvases.front().id;
+
+    const auto scene_row = [&](const ldoc::Scene& s) {
         SceneRow row;
         row.id = id_str(s.id);
         row.name = qstr(s.name);
@@ -260,12 +319,28 @@ void Document::rebuild() {
         for (const ldoc::Canvas& c : p.canvases)
             row.isEmergency = row.isEmergency || (c.emergency_scene && *c.emergency_scene == s.id);
         row.isFavourite = s.favourite;
-        scenes.push_back(std::move(row));
-    }
+        // How many Main scenes bring this one up. A link always runs from Main, so this is
+        // zero on every Main scene by construction, and the panel draws no chain there.
+        for (const ldoc::SceneLink& l : p.scene_links) {
+            if (l.to == s.id)
+                ++row.linkCount;
+        }
+        row.canLink = !p.canvases.empty() && s.canvas != main_canvas;
+        return row;
+    };
+
+    std::vector<SceneRow> scenes;
     std::vector<SceneRow> favourites;
-    for (const SceneRow& row : scenes) {
+    for (const ldoc::Scene& s : p.scenes) {
+        SceneRow row = scene_row(s);
+        // Favourites deliberately span canvases: the panel exists so a live workspace can close
+        // the scene list entirely, and the scenes worth reaching in a hurry are not all on one
+        // canvas.
         if (row.isFavourite)
             favourites.push_back(row);
+        if (shown && s.canvas != shown->id)
+            continue;
+        scenes.push_back(std::move(row));
     }
     favourites_.set_rows(std::move(favourites));
     scenes_.set_rows(std::move(scenes));
@@ -373,6 +448,54 @@ void Document::rebuild() {
         return QStringLiteral("(missing canvas)");
     };
 
+    std::vector<CanvasRow> canvas_rows;
+    for (const ldoc::Canvas& c : p.canvases) {
+        CanvasRow row;
+        row.id = id_str(c.id);
+        row.name = qstr(c.name);
+        row.pixelWidth = c.width;
+        row.pixelHeight = c.height;
+        row.fps = c.fps.den == 0 ? 0.0
+                                 : static_cast<double>(c.fps.num) / static_cast<double>(c.fps.den);
+        const auto cs = ldoc::to_string(c.color_space);
+        row.colorSpace = QString::fromUtf8(cs.data(), static_cast<qsizetype>(cs.size()));
+        row.isMain = c.id == p.canvases.front().id;
+        row.hasEmergencyScene = c.emergency_scene.has_value();
+        for (const ldoc::Scene& sc : p.scenes) {
+            if (sc.canvas == c.id)
+                ++row.sceneCount;
+        }
+        canvas_rows.push_back(std::move(row));
+    }
+    canvases_.set_rows(std::move(canvas_rows));
+
+    // The encode list, which is the outputs manager's spine: one row per encode with its
+    // destinations hanging off it. This is the inspector's "N concurrent encode(s) asked of the
+    // GPU" in a shape the operator can act on (ADR-0029).
+    std::vector<EncodeRow> encode_rows;
+    for (const ldoc::Encode& e : p.encodes) {
+        EncodeRow row;
+        row.id = id_str(e.id);
+        row.name = qstr(e.name);
+        row.canvasName = canvas_name(e.canvas);
+        const ldoc::Canvas* c = p.canvas(e.canvas);
+        const double w = e.rescale ? e.rescale->x : (c ? c->width : 0);
+        const double h = e.rescale ? e.rescale->y : (c ? c->height : 0);
+        row.resolution = QStringLiteral("%1x%2")
+                             .arg(static_cast<long long>(w))
+                             .arg(static_cast<long long>(h));
+        row.codec = qstr(e.encoder.codec);
+        row.implementation = qstr(e.encoder.implementation);
+        row.bitrateKbps = e.encoder.bitrate_kbps;
+        row.preset = qstr(e.encoder.preset);
+        for (const ldoc::Output& o : p.outputs) {
+            if (o.encode == e.id)
+                row.destinations.push_back(qstr(o.name));
+        }
+        encode_rows.push_back(std::move(row));
+    }
+    encodes_.set_rows(std::move(encode_rows));
+
     std::vector<DeckRow> decks;
     for (const ldoc::Deck& d : p.decks) {
         DeckRow row;
@@ -472,6 +595,196 @@ void Document::selectNode(const QString& id) {
         return;
     selected_node_ = id;
     emit selectionChanged();
+}
+
+// ---- canvases ---------------------------------------------------------------------------------
+
+void Document::addCanvas(const QString& name) {
+    const ldoc::Project& p = session_->project();
+    ldoc::Canvas c;
+    c.id = ldoc::Id::generate();
+    c.name = name.isEmpty() ? std::string{"Canvas"} : to_std(name);
+    // A second canvas is nearly always the vertical one, but guessing a portrait size would be
+    // a guess; it starts as a copy of Main's shape, which is the only thing known to be a
+    // shape this show already uses. The manager edits it.
+    if (!p.canvases.empty()) {
+        c.width = p.canvases.front().width;
+        c.height = p.canvases.front().height;
+        c.fps = p.canvases.front().fps;
+        c.color_space = p.canvases.front().color_space;
+    }
+    const QString id = id_str(c.id);
+    // Never at index 0: that is Main's place and the command refuses it anyway (ADR-0027).
+    run(ldoc::AddCanvas{std::move(c), p.canvases.size()});
+    selectCanvas(id);
+}
+
+void Document::removeCanvas(const QString& id) {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    // Dropping the selection first. The canvas is about to stop existing, and current_canvas()
+    // falling back to Main is the right answer -- but only if nothing is still naming the one
+    // that went.
+    if (current_canvas_ == id) {
+        current_canvas_.clear();
+        selected_scene_.clear();
+        selected_node_.clear();
+        emit canvasChanged();
+    }
+    run(ldoc::RemoveCanvas{*parsed});
+}
+
+void Document::edit_canvas(const QString& id, const std::function<void(ldoc::Canvas&)>& change) {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    const ldoc::Canvas* existing = session_->project().canvas(*parsed);
+    if (!existing)
+        return;
+    ldoc::Canvas next = *existing;
+    change(next);
+    if (next == *existing)
+        return;
+    run(ldoc::SetCanvas{std::move(next)});
+}
+
+void Document::renameCanvas(const QString& id, const QString& name) {
+    if (name.isEmpty())
+        return;
+    edit_canvas(id, [&](ldoc::Canvas& c) { c.name = to_std(name); });
+}
+
+void Document::setCanvasSize(const QString& id, int width, int height) {
+    if (width <= 0 || height <= 0)
+        return;
+    edit_canvas(id, [&](ldoc::Canvas& c) {
+        c.width = width;
+        c.height = height;
+    });
+}
+
+void Document::setCanvasFps(const QString& id, int num, int den) {
+    if (num <= 0 || den <= 0)
+        return;
+    edit_canvas(id, [&](ldoc::Canvas& c) {
+        c.fps.num = num;
+        c.fps.den = den;
+    });
+}
+
+// ---- scene links ------------------------------------------------------------------------------
+
+int Document::sceneLinkCount(const QString& sceneId) const {
+    const auto parsed = parse_id(sceneId);
+    if (!parsed)
+        return 0;
+    int n = 0;
+    for (const ldoc::SceneLink& l : session_->project().scene_links) {
+        if (l.to == *parsed)
+            ++n;
+    }
+    return n;
+}
+
+QVariantList Document::mainScenesForLink(const QString& sceneId) const {
+    QVariantList out;
+    const ldoc::Project& p = session_->project();
+    const auto parsed = parse_id(sceneId);
+    if (!parsed || p.canvases.empty())
+        return out;
+    const ldoc::Scene* target = p.scene(*parsed);
+    if (!target || target->canvas == p.canvases.front().id)
+        return out; // Main has no link control at all.
+
+    for (const ldoc::Scene& s : p.scenes) {
+        if (s.canvas != p.canvases.front().id)
+            continue;
+        QVariantMap row;
+        row[QStringLiteral("id")] = id_str(s.id);
+        row[QStringLiteral("name")] = qstr(s.name);
+        bool ticked = false;
+        QString taken_by;
+        for (const ldoc::SceneLink& l : p.scene_links) {
+            if (l.from != s.id)
+                continue;
+            if (l.to == target->id) {
+                ticked = true;
+                continue;
+            }
+            // Already cueing something else on *this* canvas. Ticking it here moves the link,
+            // and the popup says so before the operator presses Link (ADR-0027 amendment).
+            const ldoc::Scene* other = p.scene(l.to);
+            if (other && other->canvas == target->canvas)
+                taken_by = qstr(other->name);
+        }
+        row[QStringLiteral("ticked")] = ticked;
+        row[QStringLiteral("takenBy")] = taken_by;
+        out.push_back(row);
+    }
+    return out;
+}
+
+void Document::commitSceneLinks(const QString& sceneId, const QStringList& mainSceneIds) {
+    const ldoc::Project& p = session_->project();
+    const auto parsed = parse_id(sceneId);
+    if (!parsed || p.canvases.empty())
+        return;
+    const ldoc::Scene* target = p.scene(*parsed);
+    if (!target)
+        return;
+
+    std::vector<ldoc::Id> wanted;
+    for (const QString& s : mainSceneIds) {
+        if (const auto id = parse_id(s))
+            wanted.push_back(*id);
+    }
+    const auto is_wanted = [&](const ldoc::Id& id) {
+        return std::find(wanted.begin(), wanted.end(), id) != wanted.end();
+    };
+
+    std::vector<ldoc::Command> steps;
+    QStringList moved;
+
+    // Removals first, and that ordering is the whole trick. A tick that moves a link needs the
+    // old one gone before the new one is added, or the one-cue-per-canvas rule refuses it --
+    // and a batch that is refused half way through is a batch that did nothing.
+    for (const ldoc::SceneLink& l : p.scene_links) {
+        const ldoc::Scene* from = p.scene(l.from);
+        const ldoc::Scene* to = p.scene(l.to);
+        if (!from || !to)
+            continue;
+        if (l.to == target->id && !is_wanted(l.from)) {
+            steps.push_back(ldoc::RemoveSceneLink{l.id}); // unticked
+            continue;
+        }
+        if (l.to != target->id && to->canvas == target->canvas && is_wanted(l.from)) {
+            steps.push_back(ldoc::RemoveSceneLink{l.id}); // moved here from another scene
+            moved.push_back(QStringLiteral("%1 (was bringing up %2)")
+                                .arg(qstr(from->name), qstr(to->name)));
+        }
+    }
+
+    std::size_t at = p.scene_links.size();
+    for (const ldoc::Id& from : wanted) {
+        bool already = false;
+        for (const ldoc::SceneLink& l : p.scene_links)
+            already = already || (l.from == from && l.to == target->id);
+        if (already)
+            continue;
+        steps.push_back(ldoc::AddSceneLink{ldoc::SceneLink{ldoc::Id::generate(), from, target->id},
+                                           at});
+        ++at;
+    }
+
+    if (steps.empty())
+        return;
+    // One undo step for the whole tick-list, which is what "Link" means: the popup has one
+    // commit point, so undo has one too.
+    run(ldoc::make_batch(std::move(steps), "Link scenes"));
+    if (!moved.isEmpty())
+        emit notice(QStringLiteral("Moved to \"%1\": %2")
+                        .arg(qstr(target->name), moved.join(QStringLiteral("; "))));
 }
 
 // ---- scenes -----------------------------------------------------------------------------------
@@ -1379,7 +1692,7 @@ void Document::addOutput(const QString& name) {
     ldoc::Encode e;
     e.id = ldoc::Id::generate();
     e.canvas = p.canvases.front().id;
-    e.name = encode_name_for(p.canvases.front(), e.encoder.bitrate_kbps);
+    e.name = ldoc::default_encode_name(p, e);
 
     ldoc::Output o;
     o.id = ldoc::Id::generate();
@@ -1457,6 +1770,107 @@ void Document::setOutputEnabled(const QString& id, bool enabled) {
     edit_output(id, [enabled](ldoc::Output& o) { o.enabled = enabled; });
 }
 
+void Document::addEncode() {
+    const ldoc::Project& p = session_->project();
+    const ldoc::Canvas* c = current_canvas();
+    if (!c) {
+        emit notice(QStringLiteral("An encode needs a canvas to encode."));
+        return;
+    }
+    ldoc::Encode e;
+    e.id = ldoc::Id::generate();
+    e.canvas = c->id;
+    e.name = ldoc::default_encode_name(p, e);
+    run(ldoc::AddEncode{std::move(e), p.encodes.size()});
+}
+
+void Document::renameEncode(const QString& id, const QString& name) {
+    if (name.isEmpty())
+        return;
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    const ldoc::Encode* existing = session_->project().encode(*parsed);
+    if (!existing)
+        return;
+    ldoc::Encode next = *existing;
+    next.name = to_std(name);
+    if (next == *existing)
+        return;
+    run(ldoc::SetEncode{std::move(next)});
+}
+
+void Document::setEncodeRescale(const QString& id, int width, int height) {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    const ldoc::Encode* existing = session_->project().encode(*parsed);
+    if (!existing)
+        return;
+    ldoc::Encode next = *existing;
+    // Zero means "no rescale": send the canvas at its own size. A rescale equal to the canvas
+    // is not the same thing stored -- it would survive a canvas resize and quietly pin the
+    // encode to the old size.
+    if (width <= 0 || height <= 0)
+        next.rescale.reset();
+    else
+        next.rescale = ldoc::Vec2{static_cast<double>(width), static_cast<double>(height)};
+    retitle_if_auto(session_->project(), *existing, next);
+    if (next == *existing)
+        return;
+    run(ldoc::SetEncode{std::move(next)});
+}
+
+void Document::setOutputEncode(const QString& output_id, const QString& encode_id) {
+    const auto out_parsed = parse_id(output_id);
+    const auto enc_parsed = parse_id(encode_id);
+    if (!out_parsed || !enc_parsed)
+        return;
+    const ldoc::Project& p = session_->project();
+    const ldoc::Output* out = nullptr;
+    for (const ldoc::Output& o : p.outputs) {
+        if (o.id == *out_parsed)
+            out = &o;
+    }
+    const ldoc::Encode* onto = p.encode(*enc_parsed);
+    if (!out || !onto || out->encode == *enc_parsed)
+        return;
+
+    // The encode this destination is leaving. If it was the only one on it, moving away would
+    // strand it -- the same leak as removing an output used to cause -- so it goes in the same
+    // batch, as one undo step.
+    const ldoc::Id leaving = out->encode;
+    bool others_remain = false;
+    for (const ldoc::Output& o : p.outputs)
+        others_remain = others_remain || (o.id != out->id && o.encode == leaving);
+
+    ldoc::Output next = *out;
+    next.encode = *enc_parsed;
+    std::vector<ldoc::Command> steps{ldoc::SetOutput{std::move(next)}};
+    if (!others_remain && p.encode(leaving))
+        steps.push_back(ldoc::RemoveEncode{leaving});
+    run(ldoc::make_batch(std::move(steps), "Change encode"));
+}
+
+void Document::addOutputOnEncode(const QString& encode_id, const QString& name) {
+    const auto parsed = parse_id(encode_id);
+    if (!parsed)
+        return;
+    const ldoc::Project& p = session_->project();
+    if (!p.encode(*parsed)) {
+        emit notice(QStringLiteral("That encode is gone."));
+        return;
+    }
+    ldoc::Output o;
+    o.id = ldoc::Id::generate();
+    o.name = name.isEmpty() ? std::string{"Output"} : to_std(name);
+    o.encode = *parsed;
+    // Disabled and pointed nowhere, exactly as addOutput makes one. Sharing an encode does not
+    // make a destination any less of a thing that could go live by accident.
+    o.enabled = false;
+    run(ldoc::AddOutput{std::move(o), p.outputs.size()});
+}
+
 void Document::edit_encode_of(const QString& output_id,
                               const std::function<void(ldoc::Encode&)>& change) {
     const auto parsed = parse_id(output_id);
@@ -1487,6 +1901,7 @@ void Document::edit_encode_of(const QString& output_id,
 
     ldoc::Encode next = *existing;
     change(next);
+    retitle_if_auto(p, *existing, next);
     if (next == *existing)
         return;
     run(ldoc::SetEncode{std::move(next)});

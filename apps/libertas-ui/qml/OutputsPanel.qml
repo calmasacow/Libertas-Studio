@@ -4,6 +4,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Window
 import Libertas
 
 /// The outputs: one encode of one canvas going to one place.
@@ -16,8 +17,18 @@ import Libertas
 /// Nothing here encodes anything; there is no render process yet and the footer says so. An
 /// output is born disabled, because one that arrived enabled and pointed somewhere would be a
 /// keystroke from going to a destination nobody chose.
+
 Item {
     id: panel
+
+    // Reparented to the window so the panel does not clip it; one surface either way
+    // (ADR-0015).
+    OutputsManagerDialog {
+        id: managerDialog
+
+        objectName: "outputsManagerDialog"
+        parent: panel.Window.contentItem
+    }
 
     Flickable {
         id: scroll
@@ -356,6 +367,8 @@ Item {
         }
 
         Row {
+            id: footerButtons
+
             anchors.left: parent.left
             anchors.leftMargin: 6
             anchors.verticalCenter: parent.verticalCenter
@@ -366,14 +379,33 @@ Item {
                 tip: qsTr("Add an output")
                 onClicked: Document.addOutput(qsTr("Output"))
             }
+
+            ToolButton {
+                objectName: "manageOutputs"
+                label: "⚙"
+                // Where reuse is made. A row answers "what does this destination use", one row
+                // at a time; the manager is encode-centred and shows what the GPU is actually
+                // being asked for (ADR-0029 amendment).
+                tip: qsTr("Outputs manager — encodes and what shares them")
+                onClicked: managerDialog.open()
+            }
         }
 
+        // Beside the buttons and elided, not centred on the footer. Centring put it underneath
+        // them the moment the panel was narrow enough -- which, docked in the right-hand
+        // column, is always.
         Text {
-            anchors.centerIn: parent
+            anchors.left: footerButtons.right
+            anchors.leftMargin: 8
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            horizontalAlignment: Text.AlignRight
             text: qsTr("no render process — nothing is encoding")
             font.pixelSize: 9
             color: Theme.c.textMuted
             opacity: 0.6
+            elide: Text.ElideRight
         }
     }
 }

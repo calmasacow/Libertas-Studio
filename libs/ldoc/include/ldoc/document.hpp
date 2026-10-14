@@ -358,4 +358,16 @@ struct Problem {
 [[nodiscard]] std::vector<Problem> check_emergency_scene(const Project& project,
                                                          const Id& scene);
 
+/// What an encode is called when nobody has named it: "1080p60 8 Mbps", from the height it
+/// actually sends, the canvas's rate and the bitrate.
+///
+/// Never from a destination. An encode called "Twitch 1080p" that keeps feeding Kick after
+/// Twitch stops reads as a bug rather than as the feature it is (ADR-0029), and sharing is
+/// precisely the state this model makes reachable.
+///
+/// Shared by the migration, which names the encodes it invents, and by the shell, which uses it
+/// to tell an auto-named encode from one the operator renamed: an encode whose name still
+/// matches this for its old settings is one nobody has named, so it follows the settings.
+[[nodiscard]] std::string default_encode_name(const Project& project, const Encode& encode);
+
 } // namespace ldoc

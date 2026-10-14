@@ -59,6 +59,10 @@ Constraints Constraints::studio_defaults() {
     cs.set("audio-mixer", PanelMin{260.0, 130.0});
     cs.set("controls", PanelMin{180.0, 130.0});
     cs.set("outputs", PanelMin{220.0, 130.0});
+    // The canvas rows are one line of name plus one of geometry, and the footer is the same
+    // four buttons the outputs panel has -- so it asks for the same width and a little less
+    // height than outputs, whose rows can expand.
+    cs.set("canvas", PanelMin{220.0, 110.0});
     // The five-column output table wants about 340px, and the panel folds it into two lines per
     // output below that rather than demanding the space. Asking for 300 here was tried and
     // reverted: it does not fit the default layout's right-hand column, which is 18% of the
@@ -136,7 +140,9 @@ Layout Layout::default_live() {
     // and known in advance, and every row that is not going on air is a row to mis-click.
     const NodeId favourites = tabs({"favourites"});
     const NodeId program = tabs({"program"});
-    const NodeId controls = tabs({"controls", "outputs"});
+    // Canvas sits beside Outputs: the operator's choice, and the two panels share a footer
+    // shape -- + - gear, with the gear opening a manager window rather than editing in place.
+    const NodeId controls = tabs({"controls", "outputs", "canvas"});
     const NodeId mixer = tabs({"audio-mixer"});
     const NodeId stats = tabs({"broadcast-stats"});
 

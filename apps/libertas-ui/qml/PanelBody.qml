@@ -54,6 +54,8 @@ Item {
                 return controlsComponent;
             case "outputs":
                 return outputsComponent;
+            case "canvas":
+                return canvasComponent;
             case "favourites":
                 return favouritesComponent;
             default:
@@ -120,6 +122,12 @@ Item {
         id: outputsComponent
 
         OutputsPanel {}
+    }
+
+    Component {
+        id: canvasComponent
+
+        CanvasPanel {}
     }
 
     Component {

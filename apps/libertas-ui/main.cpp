@@ -1478,6 +1478,12 @@ int main(int argc, char** argv) {
                    out_at(outputs_before, "implementation").toString() == QLatin1String("nvenc"),
                "its encoder can be changed");
         report(out_at(outputs_before, "bitrateKbps").toInt() == 12000, "and its bitrate");
+        // An encode's name is a description, so a generated one has to follow what it
+        // describes. It said "1080p60 6 Mbps" beside "12000 kbps" until this was fixed, and
+        // the name is the handle: it is what the rows print when they name a shared encode.
+        report(out_at(outputs_before, "encodeName").toString().contains(
+                   QLatin1String("12 Mbps")),
+               "and the generated encode name followed the bitrate it describes");
         // The row names the resolution the encode actually sends. Nothing here rescales, so
         // it is the canvas's -- but the field has to be filled, because an empty one reads on
         // screen as "Main -> . h264/nvenc".
@@ -1520,6 +1526,209 @@ int main(int argc, char** argv) {
                     : ("a panel draws \"undefined\": " +
                        offenders.join(QLatin1String(" | ")).toStdString());
             report(offenders.isEmpty(), msg.c_str());
+        }
+
+        // ---- canvases, and the canvas the shell is working on --------------------------
+        //
+        // Scenes belong to a canvas (ADR-0027), so "which canvas" has to be a thing the
+        // operator can see and change -- and the scenes panel has to answer with one
+        // canvas's scenes rather than every canvas's at once, which is what it used to do.
+        {
+            workspace.openPanel(QStringLiteral("canvas"));
+            settle();
+            workspace.activate(QStringLiteral("canvas"));
+            settle();
+
+            const int canvases_before = document.canvasesModel()->rowCount();
+            report(canvases_before >= 1, "the document has a canvas");
+            report(collect(window->contentItem(), QStringLiteral("canvasRow")).size() ==
+                       canvases_before,
+                   "and the canvas panel drew a row for each one");
+            report(document.currentCanvasIsMain(),
+                   "the shell starts on Main, which is the first canvas");
+
+            const int scenes_on_main = document.scenesModel()->rowCount();
+            document.addCanvas(QStringLiteral("Vertical"));
+            settle();
+            report(document.canvasesModel()->rowCount() == canvases_before + 1,
+                   "a canvas can be added");
+            report(!document.currentCanvasIsMain(),
+                   "and adding one selects it, because that is what the operator is about to "
+                   "put scenes on");
+            // The whole point of the filter. A fresh canvas has no scenes, so the panel is
+            // empty -- if this still showed Main's scenes the canvas would be decorative.
+            report(document.scenesModel()->rowCount() == 0,
+                   "the scenes panel shows the new canvas's scenes, which is none of them");
+
+            document.addScene(QStringLiteral("Vertical A"));
+            settle();
+            report(document.scenesModel()->rowCount() == 1,
+                   "a new scene lands on the canvas the shell is working on");
+            const QString vertical_scene = document.selectedScene();
+
+            // ---- linking: which Main scenes bring this one up --------------------------
+            //
+            // The direction is the thing to get right. This is a scene on a secondary canvas
+            // asking which Main scenes cue it, not the other way round.
+            const QVariantList offered = document.mainScenesForLink(vertical_scene);
+            report(offered.size() == scenes_on_main,
+                   "the link popup offers every Main scene and nothing else");
+            report(document.sceneLinkCount(vertical_scene) == 0, "and nothing is linked yet");
+
+            if (!offered.isEmpty()) {
+                const QString first_main = offered.front().toMap()
+                                          .value(QStringLiteral("id")).toString();
+                document.commitSceneLinks(vertical_scene, QStringList{first_main});
+                settle();
+                report(document.sceneLinkCount(vertical_scene) == 1,
+                       "ticking a Main scene and pressing Link stores the link");
+                // One undo step for the whole tick-list: the popup has one commit point, so
+                // undo has one too.
+                document.undo();
+                settle();
+                report(document.sceneLinkCount(vertical_scene) == 0,
+                       "and the whole tick-list undoes as one step");
+                document.redo();
+                settle();
+                report(document.sceneLinkCount(vertical_scene) == 1, "and redoes as one");
+            }
+
+            // Main carries no link control at all -- not a disabled one, none. A link always
+            // runs *from* Main, so a chain on a Main row would be a control that can never do
+            // anything.
+            report(document.mainScenesForLink(document.selectedScene()).size() ==
+                       (document.currentCanvasIsMain() ? 0 : scenes_on_main),
+                   "a Main scene has no link list to offer");
+
+            // A canvas still holding scenes cannot be removed; the panel greys its own button
+            // rather than offering a press the command will refuse.
+            report(document.currentCanvasSceneCount() == 1,
+                   "the canvas reports the scene it is holding");
+
+            // The popup itself, not just the model behind it. A dialog that is reparented to
+            // the window (ADR-0015) is reachable from the same scene-graph walk as everything
+            // else here, so "the rows reached the screen" stays a separate claim from "the
+            // document has the links".
+            const auto dialog_named = [&](const QString& name) -> QQuickItem* {
+                QList<QQuickItem*> found = collect(window->contentItem(), name);
+                return found.isEmpty() ? nullptr : found.front();
+            };
+
+            if (QQuickItem* link_dialog = dialog_named(QStringLiteral("sceneLinkDialog"))) {
+                report(!link_dialog->isVisible(), "the link popup starts closed");
+                QMetaObject::invokeMethod(link_dialog, "open",
+                                          Q_ARG(QVariant, QVariant{vertical_scene}),
+                                          Q_ARG(QVariant, QVariant{QStringLiteral("Vertical A")}));
+                settle();
+                report(link_dialog->isVisible(), "and the chain icon's click opens it");
+                report(collect(window->contentItem(), QStringLiteral("sceneLinkRow")).size() ==
+                           scenes_on_main,
+                       "with one row per Main scene, drawn");
+                if (parser.isSet(shot_opt))
+                    grab().save(parser.value(shot_opt) + QStringLiteral("/scene-link.png"));
+                // Clear unticks and writes nothing: Link is the only commit point, so closing
+                // any other way has to leave the project exactly as it was found.
+                const int links_before = document.sceneLinkCount(vertical_scene);
+                QMetaObject::invokeMethod(link_dialog, "close");
+                settle();
+                report(!link_dialog->isVisible(), "and Escape closes it");
+                report(document.sceneLinkCount(vertical_scene) == links_before,
+                       "having changed nothing, because Link was not pressed");
+            } else {
+                report(false, "the link popup exists in the scene graph");
+            }
+
+            if (QQuickItem* mgr = dialog_named(QStringLiteral("canvasManagerDialog"))) {
+                QMetaObject::invokeMethod(mgr, "open");
+                settle();
+                report(mgr->isVisible(), "the canvas manager opens from the gear");
+                report(collect(window->contentItem(), QStringLiteral("canvasBlock")).size() ==
+                           document.canvasesModel()->rowCount(),
+                       "and draws a block for every canvas");
+                if (parser.isSet(shot_opt))
+                    grab().save(parser.value(shot_opt) + QStringLiteral("/canvas-manager.png"));
+                QMetaObject::invokeMethod(mgr, "close");
+                settle();
+            } else {
+                report(false, "the canvas manager exists in the scene graph");
+            }
+
+            // Put it back the way it was found. The checks after this one assume Main.
+            document.removeScene(vertical_scene);
+            settle();
+            const QString vertical_canvas = document.currentCanvas();
+            document.removeCanvas(vertical_canvas);
+            settle();
+            report(document.canvasesModel()->rowCount() == canvases_before,
+                   "an empty canvas can be removed");
+            report(document.currentCanvasIsMain(),
+                   "and the shell falls back to Main rather than pointing at nothing");
+            report(document.scenesModel()->rowCount() == scenes_on_main,
+                   "with Main's scenes listed again");
+            workspace.closePanel(QStringLiteral("canvas"));
+            settle();
+        }
+
+        // ---- the outputs manager: encodes, and what shares them ------------------------
+        {
+            const int encodes_before = document.encodeCount();
+            document.addEncode();
+            settle();
+            report(document.encodeCount() == encodes_before + 1, "an encode can be added");
+
+            // Reuse, which is the whole of ADR-0029 and had no way in from the UI at all
+            // until the manager window existed.
+            const QString enc_id = document.encodesModel()
+                                       ->data(document.encodesModel()->index(encodes_before, 0),
+                                              Qt::UserRole + 1)
+                                       .toString();
+            const int outs_before = document.outputsModel()->rowCount();
+            document.addOutputOnEncode(enc_id, QStringLiteral("Shared A"));
+            document.addOutputOnEncode(enc_id, QStringLiteral("Shared B"));
+            settle();
+            report(document.outputsModel()->rowCount() == outs_before + 2,
+                   "two destinations can be hung off one encode");
+            report(document.encodeCount() == encodes_before + 1,
+                   "and the second one does not ask the GPU for another encode");
+
+            // The row has to say so. Identical numbers on two rows are also what two separate
+            // encodes configured alike look like.
+            report(out_at(outs_before, "sharedWith").toStringList().contains(
+                       QLatin1String("Shared B")),
+                   "and each row names the other destinations on its encode");
+
+            document.removeOutput(out_at(outs_before + 1, "outputId").toString());
+            settle();
+            report(document.encodeCount() == encodes_before + 1,
+                   "removing one of two keeps the encode, which the other is still sending");
+            document.removeOutput(out_at(outs_before, "outputId").toString());
+            settle();
+            report(document.encodeCount() == encodes_before,
+                   "and removing the last one takes it with it");
+        }
+
+        // The outputs manager draws the encode graph it is for.
+        {
+            workspace.activate(QStringLiteral("outputs"));
+            settle();
+            QList<QQuickItem*> found =
+                collect(window->contentItem(), QStringLiteral("outputsManagerDialog"));
+            if (found.isEmpty()) {
+                report(false, "the outputs manager exists in the scene graph");
+            } else {
+                QQuickItem* mgr = found.front();
+                QMetaObject::invokeMethod(mgr, "open");
+                settle();
+                report(mgr->isVisible(), "the outputs manager opens from the gear");
+                report(collect(window->contentItem(), QStringLiteral("encodeBlock")).size() ==
+                           document.encodeCount(),
+                       "and draws a block for every encode, which is the GPU's side of it");
+                if (parser.isSet(shot_opt))
+                    grab().save(parser.value(shot_opt) + QStringLiteral("/outputs-manager.png"));
+                QMetaObject::invokeMethod(mgr, "close");
+                settle();
+                report(!mgr->isVisible(), "and closes again");
+            }
         }
 
         // Nothing in the whole project may serialise a credential. Asserted here as well as in

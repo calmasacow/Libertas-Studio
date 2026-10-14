@@ -23,6 +23,13 @@ struct SceneRow {
     bool isEmergency = false;
     /// Marked by the operator; the favourites panel is this filtered.
     bool isFavourite = false;
+    /// How many Main scenes bring this scene up (ADR-0027). Zero on every Main scene, because
+    /// linking runs from Main and never to it -- which is also why Main's rows draw no chain.
+    int linkCount = 0;
+    /// This row's canvas is not the first one, so it can be linked. Carried on the row rather
+    /// than read from the panel's canvas, so the favourites panel -- which mixes canvases --
+    /// gets the right answer per row.
+    bool canLink = false;
 
     friend bool operator==(const SceneRow&, const SceneRow&) = default;
 };
@@ -39,6 +46,8 @@ public:
         IsPreviewRole,
         IsEmergencyRole,
         IsFavouriteRole,
+        LinkCountRole,
+        CanLinkRole,
     };
 
     using RowModelBase::RowModelBase;
@@ -240,6 +249,104 @@ public:
 
 private:
     std::vector<DeckRow> rows_;
+};
+
+struct CanvasRow {
+    QString id;
+    QString name;
+    /// Not "width"/"height": QQuickItem declares both FINAL, so a delegate that is an Item --
+    /// which every delegate here is -- cannot take roles by those names at all. Renaming the
+    /// role is the fix; renaming the delegate's base class is not.
+    int pixelWidth = 0;
+    int pixelHeight = 0;
+    /// Already divided out, because 60000/1001 is not what an operator calls that rate.
+    double fps = 0.0;
+    QString colorSpace;
+    /// The first canvas. Main cannot be removed, renamed, or displaced from index 0 -- the
+    /// command layer refuses all three (ADR-0027), and the panel greys the buttons to match
+    /// rather than letting the operator press something that will only be refused.
+    bool isMain = false;
+    /// How many scenes belong to this canvas. A canvas still holding scenes cannot be removed.
+    int sceneCount = 0;
+    /// This canvas has a safety net designated (ADR-0025).
+    bool hasEmergencyScene = false;
+
+    friend bool operator==(const CanvasRow&, const CanvasRow&) = default;
+};
+
+class CanvasModel : public RowModelBase {
+    Q_OBJECT
+
+public:
+    enum Role {
+        IdRole = Qt::UserRole + 1,
+        NameRole,
+        PixelWidthRole,
+        PixelHeightRole,
+        FpsRole,
+        ColorSpaceRole,
+        IsMainRole,
+        SceneCountRole,
+        HasEmergencySceneRole,
+    };
+
+    using RowModelBase::RowModelBase;
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+
+    void set_rows(std::vector<CanvasRow> rows) { sync(rows_, std::move(rows)); }
+    [[nodiscard]] const std::vector<CanvasRow>& rows() const { return rows_; }
+
+private:
+    std::vector<CanvasRow> rows_;
+};
+
+struct EncodeRow {
+    QString id;
+    QString name;
+    QString canvasName;
+    /// What leaves this encoder: the rescale when it has one, the canvas size when it does not.
+    QString resolution;
+    QString codec;
+    QString implementation;
+    int bitrateKbps = 0;
+    QString preset;
+    /// The destinations fed by this one encode, by name. This is the number the inspector counts
+    /// against the GPU made visible: one encode, several rows under it.
+    QStringList destinations;
+
+    friend bool operator==(const EncodeRow&, const EncodeRow&) = default;
+};
+
+class EncodeModel : public RowModelBase {
+    Q_OBJECT
+
+public:
+    enum Role {
+        IdRole = Qt::UserRole + 1,
+        NameRole,
+        CanvasNameRole,
+        ResolutionRole,
+        CodecRole,
+        ImplementationRole,
+        BitrateRole,
+        PresetRole,
+        DestinationsRole,
+    };
+
+    using RowModelBase::RowModelBase;
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+
+    void set_rows(std::vector<EncodeRow> rows) { sync(rows_, std::move(rows)); }
+    [[nodiscard]] const std::vector<EncodeRow>& rows() const { return rows_; }
+
+private:
+    std::vector<EncodeRow> rows_;
 };
 
 struct OutputRow {

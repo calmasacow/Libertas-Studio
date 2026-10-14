@@ -49,6 +49,9 @@ qt_add_qml_module(libertas-ui
         qml/AddSourceDialog.qml
         qml/AudioMixerPanel.qml
         qml/BroadcastStatsPanel.qml
+        qml/CanvasManagerDialog.qml
+        qml/CanvasPanel.qml
+        qml/ChainIcon.qml
         qml/CheckLabel.qml
         qml/ChoiceField.qml
         qml/ColourField.qml
@@ -62,10 +65,12 @@ qt_add_qml_module(libertas-ui
         qml/Main.qml
         qml/NoticeLog.qml
         qml/NumberField.qml
+        qml/OutputsManagerDialog.qml
         qml/OutputsPanel.qml
         qml/PanelBody.qml
         qml/PanelFrame.qml
         qml/PropertiesPanel.qml
+        qml/SceneLinkDialog.qml
         qml/ScenesPanel.qml
         qml/SettingRow.qml
         qml/ShortcutsPanel.qml

@@ -50,6 +50,8 @@ class Document : public QObject {
     Q_PROPERTY(QAbstractItemModel* favouriteScenes READ favouriteScenesModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* decks READ decksModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* outputs READ outputsModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* canvases READ canvasesModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* encodes READ encodesModel CONSTANT)
 
     Q_PROPERTY(QString projectName READ projectName NOTIFY changed)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY changed)
@@ -66,6 +68,18 @@ class Document : public QObject {
     /// Everything the properties panel shows about the selected node, or empty when nothing is
     /// selected.
     Q_PROPERTY(QVariantMap nodeProperties READ nodeProperties NOTIFY selectionChanged)
+
+    /// The canvas every canvas-shaped panel in the shell is working on: which scenes the
+    /// scenes panel lists, where a new scene lands, which canvas the emergency button
+    /// designates on. Selection, not document state -- it is not saved with the project.
+    Q_PROPERTY(QString currentCanvas READ currentCanvas NOTIFY canvasChanged)
+    Q_PROPERTY(QString currentCanvasName READ currentCanvasName NOTIFY canvasChanged)
+    /// The current canvas is the first one. Linking is a secondary canvas's function, so the
+    /// scenes panel shows no link control at all while this is true (ADR-0027).
+    Q_PROPERTY(bool currentCanvasIsMain READ currentCanvasIsMain NOTIFY canvasChanged)
+    /// How many scenes belong to the current canvas. A canvas still holding scenes cannot be
+    /// removed, so the panel greys its own button rather than offering a refused press.
+    Q_PROPERTY(int currentCanvasSceneCount READ currentCanvasSceneCount NOTIFY changed)
 
     Q_PROPERTY(QStringList problems READ problems NOTIFY changed)
     Q_PROPERTY(QStringList blendModes READ blendModes CONSTANT)
@@ -86,6 +100,8 @@ public:
     [[nodiscard]] QAbstractItemModel* favouriteScenesModel() { return &favourites_; }
     [[nodiscard]] QAbstractItemModel* decksModel() { return &decks_; }
     [[nodiscard]] QAbstractItemModel* outputsModel() { return &outputs_; }
+    [[nodiscard]] QAbstractItemModel* canvasesModel() { return &canvases_; }
+    [[nodiscard]] QAbstractItemModel* encodesModel() { return &encodes_; }
 
     [[nodiscard]] QString projectName() const;
     [[nodiscard]] QString projectPath() const;
@@ -100,11 +116,38 @@ public:
     [[nodiscard]] QVariantMap nodeProperties() const;
     [[nodiscard]] QStringList problems() const;
     [[nodiscard]] QStringList blendModes() const;
+    [[nodiscard]] QString currentCanvas() const { return current_canvas_; }
+    [[nodiscard]] QString currentCanvasName() const;
+    [[nodiscard]] bool currentCanvasIsMain() const;
+    [[nodiscard]] int currentCanvasSceneCount() const;
 
     // ---- selection (UI state, not document state) -------------------------------------------
 
     Q_INVOKABLE void selectScene(const QString& id);
     Q_INVOKABLE void selectNode(const QString& id);
+    Q_INVOKABLE void selectCanvas(const QString& id);
+
+    // ---- canvases ----------------------------------------------------------------------------
+
+    Q_INVOKABLE void addCanvas(const QString& name);
+    Q_INVOKABLE void removeCanvas(const QString& id);
+    Q_INVOKABLE void renameCanvas(const QString& id, const QString& name);
+    Q_INVOKABLE void setCanvasSize(const QString& id, int width, int height);
+    /// The rate as a fraction, because 60000/1001 is a different clock from 60/1 and rounding
+    /// it to 59.94 at the model boundary would lose which one the operator meant.
+    Q_INVOKABLE void setCanvasFps(const QString& id, int num, int den);
+
+    // ---- scene links -------------------------------------------------------------------------
+
+    /// Every scene on Main, as {id, name, ticked, takenBy}, for the link popup of `sceneId`.
+    /// `ticked` is true when that Main scene already brings this scene up; `takenBy` names the
+    /// scene it currently brings up on this canvas instead, and is empty when it is free.
+    Q_INVOKABLE [[nodiscard]] QVariantList mainScenesForLink(const QString& sceneId) const;
+    /// Commit a whole tick-list as one undo step. Links not in the list are removed, links in
+    /// it that point elsewhere on this canvas are moved, and the notice names what moved.
+    Q_INVOKABLE void commitSceneLinks(const QString& sceneId, const QStringList& mainSceneIds);
+    /// How many Main scenes bring `sceneId` up. Drives the chain icon's colour.
+    Q_INVOKABLE [[nodiscard]] int sceneLinkCount(const QString& sceneId) const;
 
     // ---- scenes -----------------------------------------------------------------------------
 
@@ -255,6 +298,16 @@ public:
     Q_INVOKABLE void setOutputDestination(const QString& id, const QString& kind,
                                           const QString& url);
     Q_INVOKABLE void setOutputCredentialRef(const QString& id, const QString& ref);
+    /// Point an output at an encode that already exists -- the Aitum case: encode 1080p once,
+    /// send it to Twitch and Kick (ADR-0029). The outputs manager window is where this lives.
+    Q_INVOKABLE void setOutputEncode(const QString& outputId, const QString& encodeId);
+    /// A new destination hung straight off an existing encode, which is the same reuse said
+    /// the other way round.
+    Q_INVOKABLE void addOutputOnEncode(const QString& encodeId, const QString& name);
+    /// A new encode of the current canvas, with no destination on it yet.
+    Q_INVOKABLE void addEncode();
+    Q_INVOKABLE void renameEncode(const QString& id, const QString& name);
+    Q_INVOKABLE void setEncodeRescale(const QString& id, int width, int height);
 
     // ---- the nodes of the current scene ------------------------------------------------------
     //
@@ -306,6 +359,8 @@ public:
 signals:
     void changed();
     void selectionChanged();
+    /// The shell is now working on a different canvas.
+    void canvasChanged();
     /// Something to say in the status bar: a refused command, a failed save, a recovered journal.
     void notice(const QString& text);
 
@@ -333,6 +388,7 @@ private:
     /// when it happens rather than letting the operator find out mid-stream (ADR-0029).
     void edit_encode_of(const QString& output_id,
                         const std::function<void(ldoc::Encode&)>& change);
+    void edit_canvas(const QString& id, const std::function<void(ldoc::Canvas&)>& change);
 
     std::unique_ptr<lsession::Session> session_;
     SceneModel scenes_;
@@ -342,9 +398,14 @@ private:
     BusModel buses_;
     DeckModel decks_;
     OutputModel outputs_;
+    CanvasModel canvases_;
+    EncodeModel encodes_;
 
     QString selected_scene_;
     QString selected_node_;
+    /// Empty means "the first canvas". Resolved on every read rather than stored as an id, so
+    /// that removing the current canvas cannot leave the shell pointing at nothing.
+    QString current_canvas_;
     QTimer autosave_;
 };
 

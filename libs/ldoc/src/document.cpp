@@ -669,4 +669,22 @@ bool is_valid(const Project& project) {
                         [](const Problem& p) { return p.severity == Severity::Error; });
 }
 
+std::string default_encode_name(const Project& project, const Encode& encode) {
+    const Canvas* c = project.canvas(encode.canvas);
+    const double mbps = static_cast<double>(encode.encoder.bitrate_kbps) / 1000.0;
+    const std::string rate = mbps >= 10.0 || mbps == static_cast<double>(static_cast<int>(mbps))
+                                 ? std::format("{:.0f}", mbps)
+                                 : std::format("{:.1f}", mbps);
+    if (!c)
+        return std::format("{} Mbps", rate);
+    const double fps =
+        c->fps.den == 0 ? 0.0
+                        : static_cast<double>(c->fps.num) / static_cast<double>(c->fps.den);
+    // The height it *sends*, not the canvas's. An encode that rescales to 1080 off a 1440
+    // canvas is a 1080p encode, and calling it 1440p is the same mistake the outputs row made.
+    const std::int32_t height =
+        encode.rescale ? static_cast<std::int32_t>(encode.rescale->y) : c->height;
+    return std::format("{}p{:.0f} {} Mbps", height, fps, rate);
+}
+
 } // namespace ldoc

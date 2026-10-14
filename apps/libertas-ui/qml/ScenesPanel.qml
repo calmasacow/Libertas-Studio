@@ -4,10 +4,21 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Window
 import Libertas
 
 Item {
     id: panel
+
+    // Parented to the window's content item rather than drawn in the panel, which would clip
+    // it -- the same arrangement the sources panel uses for its two dialogs, and still one
+    // surface (ADR-0015).
+    SceneLinkDialog {
+        id: linkDialog
+
+        objectName: "sceneLinkDialog"
+        parent: panel.Window.contentItem
+    }
 
     ListView {
         id: list
@@ -37,6 +48,8 @@ Item {
             required property bool isPreview
             required property bool isEmergency
             required property bool isFavourite
+            required property int linkCount
+            required property bool canLink
 
             readonly property bool selected: Document.selectedScene === row.sceneId
 
@@ -148,6 +161,42 @@ Item {
                             : qsTr("Add to favourites")
                         visible: starMouse.containsMouse
                         hoverArea: starMouse
+                    }
+                }
+
+                // Two links of a chain: which Main scenes bring this one up (ADR-0027).
+                //
+                // Only on a secondary canvas. Linking is purely a secondary canvas's function
+                // and a link always runs *from* Main, so Main's own rows carry no chain at all
+                // -- not a greyed one, none. A control that is always disabled is a question
+                // the operator keeps re-asking.
+                ChainIcon {
+                    objectName: "sceneLink"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: row.canLink
+                    strong: row.linkCount > 0
+                    color: row.linkCount > 0
+                        ? (row.selected ? Theme.c.window : Theme.c.good)
+                        : (row.selected ? Theme.c.window : Theme.c.textMuted)
+                    opacity: row.linkCount > 0 ? 1.0 : (chainMouse.containsMouse ? 0.9 : 0.45)
+
+                    MouseArea {
+                        id: chainMouse
+
+                        anchors.fill: parent
+                        anchors.margins: -3
+                        hoverEnabled: true
+                        onClicked: linkDialog.open(row.sceneId, row.name)
+                    }
+
+                    ToolTipText {
+                        text: row.linkCount === 0
+                            ? qsTr("Nothing on Main brings this scene up")
+                            : row.linkCount === 1
+                              ? qsTr("1 Main scene brings this scene up")
+                              : qsTr("%1 Main scenes bring this scene up").arg(row.linkCount)
+                        visible: chainMouse.containsMouse
+                        hoverArea: chainMouse
                     }
                 }
 

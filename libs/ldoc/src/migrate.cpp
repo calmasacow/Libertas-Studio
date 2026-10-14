@@ -25,25 +25,6 @@ namespace {
 ///    and only one of them is true about the GPU: three outputs that were configured
 ///    identically really were three encodes before, and really are one now.
 ///
-/// What an encode is called. "1080p60 8 Mbps", built from the canvas and the bitrate -- never
-/// the output's name. An encode called "Twitch 1080p" that keeps running after Twitch stops
-/// reads as a bug rather than as the feature it is, and that is precisely the state this change
-/// makes reachable.
-std::string encode_name(const Project& p, const Encode& e) {
-    const Canvas* c = p.canvas(e.canvas);
-    const double mbps = static_cast<double>(e.encoder.bitrate_kbps) / 1000.0;
-    const std::string rate = mbps >= 10.0 || mbps == static_cast<double>(static_cast<int>(mbps))
-                                 ? std::format("{:.0f}", mbps)
-                                 : std::format("{:.1f}", mbps);
-    if (!c)
-        return std::format("{} Mbps", rate);
-    const double fps = c->fps.den == 0 ? 0.0
-                                       : static_cast<double>(c->fps.num) /
-                                             static_cast<double>(c->fps.den);
-    const std::int32_t height = e.rescale ? static_cast<std::int32_t>(e.rescale->y) : c->height;
-    return std::format("{}p{:.0f} {} Mbps", height, fps, rate);
-}
-
 /// Outputs that asked for the same canvas and the same encoder settings become one encode.
 void outputs_to_encodes(Project& p, const std::vector<LegacyOutputEncode>& legacy,
                         std::vector<Problem>& out) {
@@ -69,7 +50,7 @@ void outputs_to_encodes(Project& p, const std::vector<LegacyOutputEncode>& legac
             e.id = Id::generate();
             e.canvas = old.canvas;
             e.encoder = old.encoder;
-            e.name = encode_name(p, e);
+            e.name = default_encode_name(p, e);
             encode_id = e.id;
             made.push_back(Made{old.canvas, old.encoder, e.id});
             p.encodes.push_back(std::move(e));
