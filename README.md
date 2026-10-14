@@ -21,7 +21,7 @@ What exists is a workspace you can use and a document you can edit:
 - **A document model** — scenes as trees, groups, adjustment and reference nodes, canvases, buses,
   decks, outputs, per-canvas overrides. Every panel in the workspace drives it: scenes, sources,
   properties, the audio mixer, and program/preview with the output list.
-- **A command bus** — every change is one of forty-one validated, journaled, undoable
+- **A command bus** — every change is one of forty-four validated, journaled, undoable
   commands. A dragged fader is one undo step, not four hundred. Unsaved work survives the process
   being killed.
 - **A project on disk** — a git-diffable directory of JSON, saved as a transaction. A corrupt scene

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "ldoc/document.hpp"
+#include "ldoc/json.hpp"
 
 #include <vector>
 
@@ -30,9 +31,13 @@ struct Migration {
 /// have no canvas of their own and the only honest answer -- the first canvas, which is the only
 /// one the shell ever worked against -- needs the canvas list to be there.
 ///
+/// `legacy_outputs` comes from `ProjectFile`, and is what a version 1 output carried instead of
+/// naming an encode. Empty is correct for a version 2 file and for a project built in memory.
+///
 /// A project already at `kSchemaVersion` is left exactly as it is. A project *newer* than this
 /// build is not this function's problem: the reader refuses it and the caller opens read-only,
 /// because migrating backwards would mean dropping the fields this build does not know about.
-[[nodiscard]] Migration migrate(Project& project);
+[[nodiscard]] Migration migrate(Project& project,
+                                const std::vector<LegacyOutputEncode>& legacy_outputs = {});
 
 } // namespace ldoc

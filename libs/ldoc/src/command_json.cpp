@@ -274,6 +274,25 @@ Jv body(const RemoveSceneLink& c) {
     return o;
 }
 
+Jv body(const AddEncode& c) {
+    Jv o{Json::objectValue};
+    o["encode"] = detail::enc(c.encode);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RemoveEncode& c) {
+    Jv o{Json::objectValue};
+    o["encode"] = detail::enc(c.encode);
+    return o;
+}
+
+Jv body(const SetEncode& c) {
+    Jv o{Json::objectValue};
+    o["value"] = detail::enc(c.value);
+    return o;
+}
+
 Jv body(const AddOutput& c) {
     Jv o{Json::objectValue};
     o["output"] = detail::enc(c.output);
@@ -494,6 +513,18 @@ std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
         if (!bv)
             return std::unexpected("bus.set has no value");
         out = SetBus{detail::dec_bus(rd, *bv, path)};
+    } else if (name == "encode.add") {
+        const Jv* ev = rd.object(o, "encode", path);
+        if (!ev)
+            return std::unexpected("encode.add has no encode");
+        out = AddEncode{detail::dec_encode(rd, *ev, path), dec_index(rd, o, "index", path)};
+    } else if (name == "encode.remove") {
+        out = RemoveEncode{rd.id(o, "encode", path)};
+    } else if (name == "encode.set") {
+        const Jv* ev = rd.object(o, "value", path);
+        if (!ev)
+            return std::unexpected("encode.set has no value");
+        out = SetEncode{detail::dec_encode(rd, *ev, path)};
     } else if (name == "output.add") {
         const Jv* ov = rd.object(o, "output", path);
         if (!ov)

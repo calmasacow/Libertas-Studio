@@ -77,20 +77,10 @@
       "transition_ms" : 420
     }
   ],
-  "generation" : 1,
-  "id" : "01JD55PV3X040G2081040G2081",
-  "name" : "Golden Show",
-  "outputs" : 
+  "encodes" : 
   [
     {
       "canvas" : "01JD55PV3X2081040G2081040G",
-      "destination" : 
-      {
-        "credential_ref" : "youtube-main",
-        "kind" : "rtmps",
-        "url" : "rtmps://a.rtmps.youtube.com/live2"
-      },
-      "enabled" : false,
       "encoder" : 
       {
         "bitrate_kbps" : 12000,
@@ -107,8 +97,71 @@
         "preset" : "p5",
         "rate_control" : "cbr"
       },
+      "id" : "01JD55PV3XF9X7MYKTF9X7MYKT",
+      "name" : "1440p60 12 Mbps",
+      "rescale" : null
+    },
+    {
+      "canvas" : "01JD55PV3X2081040G2081040G",
+      "encoder" : 
+      {
+        "bitrate_kbps" : 8000,
+        "codec" : "h264",
+        "extra" : {},
+        "implementation" : "nvenc",
+        "keyframe_interval_ms" : 2000,
+        "preset" : "p4",
+        "rate_control" : "cbr"
+      },
+      "id" : "01JD55PV3XFDXQPYVVFDXQPYVV",
+      "name" : "1080p60 8 Mbps",
+      "rescale" : 
+      {
+        "x" : 1920.0,
+        "y" : 1080.0
+      }
+    }
+  ],
+  "generation" : 1,
+  "id" : "01JD55PV3X040G2081040G2081",
+  "name" : "Golden Show",
+  "outputs" : 
+  [
+    {
+      "destination" : 
+      {
+        "credential_ref" : "youtube-main",
+        "kind" : "rtmps",
+        "url" : "rtmps://a.rtmps.youtube.com/live2"
+      },
+      "enabled" : false,
+      "encode" : "01JD55PV3XF9X7MYKTF9X7MYKT",
       "id" : "01JD55PV3XE1R70W3GE1R70W3G",
       "name" : "YouTube"
+    },
+    {
+      "destination" : 
+      {
+        "credential_ref" : "twitch-main",
+        "kind" : "rtmps",
+        "url" : "rtmps://ingest.twitch.tv/app"
+      },
+      "enabled" : false,
+      "encode" : "01JD55PV3XFDXQPYVVFDXQPYVV",
+      "id" : "01JD55PV3XE5RQ2WBHE5RQ2WBH",
+      "name" : "Twitch"
+    },
+    {
+      "destination" : 
+      {
+        "credential_ref" : "kick-main",
+        "kind" : "rtmps",
+        "url" : "rtmps://fa723fc1b171.global-contribute.live-video.net/app"
+      },
+      "enabled" : false,
+      "encode" : "01JD55PV3XFDXQPYVVFDXQPYVV",
+      "id" : "01JD55PV3XE9S74WKJE9S74WKJ",
+      "name" : "Kick"
     }
   ],
   "scene_links" : 

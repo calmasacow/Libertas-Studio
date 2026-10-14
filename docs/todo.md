@@ -168,7 +168,7 @@ Never at a live key.
   is nothing to guess at here — this entry exists only so the panel is not mistaken for
   finished.
 - Asset commands.
-- Compound editing beyond `Batch` (the 41st command).
+- Compound editing beyond `Batch` (the 44th command).
 - **The render path as product code** — `lcapture`, `lcomp` and `lmedia` wired into
   `libertas-render`. The largest remaining piece of work; its transport foundation (`lipc`,
   ADR-0026) exists and is tested headless.

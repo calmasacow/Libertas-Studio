@@ -605,10 +605,16 @@ LTEST_CASE(a_bus_that_sends_to_itself_is_an_error) {
 
 LTEST_CASE(an_enabled_output_needs_somewhere_to_go) {
     Project p = make_default_project("Show");
+    Encode e;
+    e.id = Id::generate();
+    e.name = "1080p60 6 Mbps";
+    e.canvas = p.canvases[0].id;
+    p.encodes.push_back(e);
+
     Output o;
     o.id = Id::generate();
     o.name = "YouTube";
-    o.canvas = p.canvases[0].id;
+    o.encode = e.id;
     o.enabled = true;
     p.outputs.push_back(o);
     CHECK(!is_valid(p));
@@ -617,8 +623,14 @@ LTEST_CASE(an_enabled_output_needs_somewhere_to_go) {
     p.outputs[0].destination.credential_ref = "youtube-main";
     CHECK_MSG(is_valid(p), "{}", errors_of(p));
 
-    // And an output encoding a canvas that does not exist is caught.
-    p.outputs[0].canvas = Id::generate();
+    // An output whose bitstream does not exist has nothing to send: an error, like a deck with
+    // no canvas, rather than a dangling reference (ADR-0029).
+    p.outputs[0].encode = Id::generate();
+    CHECK(!is_valid(p));
+    p.outputs[0].encode = e.id;
+
+    // And an encode of a canvas that does not exist is caught in the same way.
+    p.encodes[0].canvas = Id::generate();
     CHECK(!is_valid(p));
 }
 

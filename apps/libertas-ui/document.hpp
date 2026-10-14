@@ -326,6 +326,10 @@ private:
 
     void edit_deck(const QString& id, const std::function<void(ldoc::Deck&)>& change);
     void edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change);
+    /// Edit the encode an output names. Several outputs may name the same one, so this says so
+    /// when it happens rather than letting the operator find out mid-stream (ADR-0029).
+    void edit_encode_of(const QString& output_id,
+                        const std::function<void(ldoc::Encode&)>& change);
 
     std::unique_ptr<lsession::Session> session_;
     SceneModel scenes_;

@@ -152,6 +152,20 @@ const ldoc::Canvas* Document::current_canvas() const {
     return canvases.empty() ? nullptr : &canvases.front();
 }
 
+namespace {
+
+/// "1080p60 6 Mbps". Named for what it is and never for a destination: an encode called
+/// "Twitch 1080p" that keeps running after Twitch stops reads as a bug (ADR-0029).
+std::string encode_name_for(const ldoc::Canvas& c, std::int32_t bitrate_kbps) {
+    const double mbps = static_cast<double>(bitrate_kbps) / 1000.0;
+    const double fps = c.fps.den == 0
+                           ? 0.0
+                           : static_cast<double>(c.fps.num) / static_cast<double>(c.fps.den);
+    return std::format("{}p{:.0f} {:.0f} Mbps", c.height, fps, mbps);
+}
+
+} // namespace
+
 QVariantMap Document::nodeProperties() const {
     QVariantMap m;
     const ldoc::Node* n = current_node();
@@ -388,10 +402,15 @@ void Document::rebuild() {
         OutputRow row;
         row.id = id_str(o.id);
         row.name = qstr(o.name);
-        row.canvasName = canvas_name(o.canvas);
-        row.codec = qstr(o.encoder.codec);
-        row.implementation = qstr(o.encoder.implementation);
-        row.bitrateKbps = o.encoder.bitrate_kbps;
+        // An output names an encode and the encode names the canvas, so both are one hop
+        // away now (ADR-0029). The row shows the encode's settings because that is what this
+        // destination actually receives -- and if another output names the same encode, these
+        // are the same numbers on both rows, which is true rather than a display bug.
+        const ldoc::Encode* enc = p.encode(o.encode);
+        row.canvasName = enc ? canvas_name(enc->canvas) : QStringLiteral("(missing encode)");
+        row.codec = enc ? qstr(enc->encoder.codec) : QString{};
+        row.implementation = enc ? qstr(enc->encoder.implementation) : QString{};
+        row.bitrateKbps = enc ? enc->encoder.bitrate_kbps : 0;
         const auto kind = ldoc::to_string(o.destination.kind);
         row.destinationKind = QString::fromUtf8(kind.data(),
                                                 static_cast<qsizetype>(kind.size()));
@@ -1331,14 +1350,28 @@ void Document::addOutput(const QString& name) {
         emit notice(QStringLiteral("An output needs a canvas to encode."));
         return;
     }
+    // Its own encode, not a share of an existing one. Sharing is the point of ADR-0029, but it
+    // has to be asked for: a new output that silently joined another's bitstream would make
+    // changing its bitrate change someone else's stream, which is the surprise this model
+    // exists to make visible rather than to hide.
+    ldoc::Encode e;
+    e.id = ldoc::Id::generate();
+    e.canvas = p.canvases.front().id;
+    e.name = encode_name_for(p.canvases.front(), e.encoder.bitrate_kbps);
+
     ldoc::Output o;
     o.id = ldoc::Id::generate();
     o.name = name.isEmpty() ? std::string{"Output"} : to_std(name);
-    o.canvas = p.canvases.front().id;
+    o.encode = e.id;
     // Disabled, with nowhere to send to. An output that arrived enabled and pointed at a URL
     // would be one keystroke from going somewhere the operator did not choose.
     o.enabled = false;
-    run(ldoc::AddOutput{std::move(o), p.outputs.size()});
+
+    // One undo step: nobody who presses Ctrl+Z after adding an output wants the encode left
+    // behind.
+    run(ldoc::make_batch({ldoc::AddEncode{std::move(e), p.encodes.size()},
+                          ldoc::AddOutput{std::move(o), p.outputs.size()}},
+                         "Add output"));
 }
 
 void Document::removeOutput(const QString& id) {
@@ -1375,15 +1408,53 @@ void Document::setOutputEnabled(const QString& id, bool enabled) {
     edit_output(id, [enabled](ldoc::Output& o) { o.enabled = enabled; });
 }
 
+void Document::edit_encode_of(const QString& output_id,
+                              const std::function<void(ldoc::Encode&)>& change) {
+    const auto parsed = parse_id(output_id);
+    if (!parsed)
+        return;
+    const ldoc::Project& p = session_->project();
+    const ldoc::Output* out = nullptr;
+    for (const ldoc::Output& o : p.outputs) {
+        if (o.id == *parsed)
+            out = &o;
+    }
+    if (!out)
+        return;
+    const ldoc::Encode* existing = p.encode(out->encode);
+    if (!existing) {
+        emit notice(QStringLiteral("'%1' has no encode to change.").arg(qstr(out->name)));
+        return;
+    }
+
+    // The one thing this panel must not do quietly. Several destinations can share one
+    // bitstream, and changing it changes all of them -- so say which, by name, rather than let
+    // the operator discover it mid-stream.
+    QStringList shared;
+    for (const ldoc::Output& o : p.outputs) {
+        if (o.encode == out->encode && o.id != out->id)
+            shared.append(qstr(o.name));
+    }
+
+    ldoc::Encode next = *existing;
+    change(next);
+    if (next == *existing)
+        return;
+    run(ldoc::SetEncode{std::move(next)});
+    if (!shared.isEmpty())
+        emit notice(QStringLiteral("'%1' shares this encode with %2, which changed too.")
+                        .arg(qstr(out->name), shared.join(QStringLiteral(", "))));
+}
+
 void Document::setOutputBitrate(const QString& id, int kbps) {
-    edit_output(id, [kbps](ldoc::Output& o) { o.encoder.bitrate_kbps = kbps; });
+    edit_encode_of(id, [kbps](ldoc::Encode& e) { e.encoder.bitrate_kbps = kbps; });
 }
 
 void Document::setOutputEncoder(const QString& id, const QString& codec,
                                 const QString& implementation) {
-    edit_output(id, [&](ldoc::Output& o) {
-        o.encoder.codec = to_std(codec);
-        o.encoder.implementation = to_std(implementation);
+    edit_encode_of(id, [&](ldoc::Encode& e) {
+        e.encoder.codec = to_std(codec);
+        e.encoder.implementation = to_std(implementation);
     });
 }
 

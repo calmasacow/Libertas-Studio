@@ -174,3 +174,39 @@ not running.
 costs a session and reaches nobody, so `validate()` warns); the migration turning one old output
 into an encode-plus-output pair and round-tripping; and the operator's own four-destination,
 two-encode arrangement as a named fixture, because it is the shape this ADR exists for.
+
+## Implementation note, 2026-10-14 — the model half
+
+`Encode` landed on this date, in the same version 1 → 2 bump as ADR-0027 and ADR-0028.
+`Project::encodes`, `Output::encode` in place of `Output::canvas` and `Output::encoder`, and
+`AddEncode` / `RemoveEncode` / `SetEncode` by symmetry with outputs. The golden v2 fixture is
+the shape this ADR was written for: a 1440p encode to YouTube, and one 1080p encode made once
+and sent to both Twitch and Kick. `libertas inspect` reports it as **"2 concurrent encode(s)
+asked of the GPU"** for three destinations, which is the pre-flight number this change exists
+to make readable.
+
+Three decisions the ADR left open, settled here:
+
+**Removing an encode an output still names is refused.** Unlike removing a source — which leaves
+its nodes drawing nothing, exactly as they would unbound — an output with no bitstream is not a
+degraded state the model has a meaning for. It is the same line a deck's canvas sits on:
+`validate()` calls it an error, so the command refuses it (ADR-0023). Point the outputs
+elsewhere, or delete them, first.
+
+**A new output gets its own encode, not a share of an existing one.** Sharing is the point of
+this ADR, but it has to be asked for. An output that silently joined another's bitstream would
+make changing its bitrate change someone else's live stream, which is the surprise this model
+exists to make visible rather than to hide. The outputs panel does the reverse honestly: editing
+a shared encode says, by name, which other destinations changed with it.
+
+**The migration merges, rather than making one encode per output.** Version 1 outputs that asked
+for the same canvas and the same encoder settings become one encode. The two are
+indistinguishable in the document, and only one of them is true about the GPU: three outputs
+configured identically really were three encodes before and really are one now. Each is named
+from what it is — `1080p60 8 Mbps`, built from the canvas and the bitrate — and never from the
+output that happened to own it, for exactly the reason this ADR's consequences give.
+
+**Not built.** Start All / Stop All, which this ADR's ordering-free argument is about, has
+nothing to start: no output actually runs yet, and the shell still reports "Start/Stop Streaming
+is not wired up". Backtrack remains undesigned. An encode left unreferenced by removing its last
+output is kept rather than collected, since nothing yet says which of the two the operator meant.

@@ -80,6 +80,8 @@ std::unordered_set<Id> all_ids(const Project& p) {
         ids.insert(a.id);
     for (const Deck& d : p.decks)
         ids.insert(d.id);
+    for (const Encode& e : p.encodes)
+        ids.insert(e.id);
     for (const Output& o : p.outputs)
         ids.insert(o.id);
     for (const SceneLink& l : p.scene_links)
@@ -160,6 +162,9 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, AddBus>) return "bus.add";
             else if constexpr (std::is_same_v<T, RemoveBus>) return "bus.remove";
             else if constexpr (std::is_same_v<T, SetBus>) return "bus.set";
+            else if constexpr (std::is_same_v<T, AddEncode>) return "encode.add";
+            else if constexpr (std::is_same_v<T, RemoveEncode>) return "encode.remove";
+            else if constexpr (std::is_same_v<T, SetEncode>) return "encode.set";
             else if constexpr (std::is_same_v<T, AddOutput>) return "output.add";
             else if constexpr (std::is_same_v<T, RemoveOutput>) return "output.remove";
             else if constexpr (std::is_same_v<T, SetOutput>) return "output.set";
@@ -246,6 +251,12 @@ std::string describe(const Command& command) {
                 return "Remove bus";
             else if constexpr (std::is_same_v<T, SetBus>)
                 return std::format("Change bus {}", quoted(c.value.name));
+            else if constexpr (std::is_same_v<T, AddEncode>)
+                return std::format("Add encode {}", quoted(c.encode.name));
+            else if constexpr (std::is_same_v<T, RemoveEncode>)
+                return "Remove encode";
+            else if constexpr (std::is_same_v<T, SetEncode>)
+                return std::format("Change encode {}", quoted(c.value.name));
             else if constexpr (std::is_same_v<T, AddOutput>)
                 return std::format("Add output {}", quoted(c.output.name));
             else if constexpr (std::is_same_v<T, RemoveOutput>)
@@ -839,10 +850,10 @@ struct Apply {
                 return std::unexpected(std::format(
                     "deck '{}' renders to this canvas; point it at another one first", d.name));
         }
-        for (const Output& o : p.outputs) {
-            if (o.canvas == c.canvas)
+        for (const Encode& e : p.encodes) {
+            if (e.canvas == c.canvas)
                 return std::unexpected(std::format(
-                    "output '{}' encodes this canvas; point it at another one first", o.name));
+                    "encode '{}' encodes this canvas; point it at another one first", e.name));
         }
         const auto index = static_cast<std::size_t>(it - p.canvases.begin());
         Applied out{AddCanvas{*it, index}, std::format("Remove canvas {}", quoted(it->name))};
@@ -916,19 +927,75 @@ struct Apply {
         return out;
     }
 
+    std::expected<Applied, std::string> operator()(const AddEncode& c) const {
+        if (c.index > p.encodes.size())
+            return std::unexpected(std::format("encode position {} is past the end", c.index));
+        if (c.encode.id.is_nil())
+            return std::unexpected("an encode needs an id");
+        if (c.encode.encoder.bitrate_kbps <= 0)
+            return std::unexpected(
+                std::format("a bitrate of {} kbps is not usable", c.encode.encoder.bitrate_kbps));
+        if (c.encode.rescale && (c.encode.rescale->x <= 0.0 || c.encode.rescale->y <= 0.0))
+            return std::unexpected(std::format("an encode cannot rescale to {}x{}",
+                                               c.encode.rescale->x, c.encode.rescale->y));
+        // An encode without a canvas has nothing to encode at all, which validate() calls an
+        // error -- so unlike a scene reference this really is a precondition.
+        if (!p.canvas(c.encode.canvas))
+            return std::unexpected(
+                std::format("there is no canvas {} to encode", c.encode.canvas.to_string()));
+        if (all_ids(p).contains(c.encode.id))
+            return std::unexpected(
+                std::format("id {} is already in the project", c.encode.id.to_string()));
+        Applied out{RemoveEncode{c.encode.id}, describe(c)};
+        p.encodes.insert(p.encodes.begin() + static_cast<std::ptrdiff_t>(c.index), c.encode);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const RemoveEncode& c) const {
+        const auto it = std::find_if(p.encodes.begin(), p.encodes.end(),
+                                     [&c](const Encode& e) { return e.id == c.encode; });
+        if (it == p.encodes.end())
+            return std::unexpected(std::format("there is no encode {}", c.encode.to_string()));
+        for (const Output& o : p.outputs) {
+            if (o.encode == c.encode)
+                return std::unexpected(std::format(
+                    "output '{}' sends this encode; point it at another one first", o.name));
+        }
+        const auto index = static_cast<std::size_t>(it - p.encodes.begin());
+        Applied out{AddEncode{*it, index}, std::format("Remove encode {}", quoted(it->name))};
+        p.encodes.erase(it);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetEncode& c) const {
+        const auto it = std::find_if(p.encodes.begin(), p.encodes.end(),
+                                     [&c](const Encode& e) { return e.id == c.value.id; });
+        if (it == p.encodes.end())
+            return std::unexpected(std::format("there is no encode {}", c.value.id.to_string()));
+        if (c.value.encoder.bitrate_kbps <= 0)
+            return std::unexpected(
+                std::format("a bitrate of {} kbps is not usable", c.value.encoder.bitrate_kbps));
+        if (c.value.rescale && (c.value.rescale->x <= 0.0 || c.value.rescale->y <= 0.0))
+            return std::unexpected(std::format("an encode cannot rescale to {}x{}",
+                                               c.value.rescale->x, c.value.rescale->y));
+        if (!p.canvas(c.value.canvas))
+            return std::unexpected(
+                std::format("there is no canvas {} to encode", c.value.canvas.to_string()));
+        Applied out{SetEncode{*it}, describe(c)};
+        *it = c.value;
+        return out;
+    }
+
     std::expected<Applied, std::string> operator()(const AddOutput& c) const {
         if (c.index > p.outputs.size())
             return std::unexpected(std::format("output position {} is past the end", c.index));
         if (c.output.id.is_nil())
             return std::unexpected("an output needs an id");
-        if (c.output.encoder.bitrate_kbps <= 0)
+        // An output with no bitstream has nothing to send, the same kind of nothing a deck with
+        // no canvas has. A precondition, not a reference.
+        if (!p.encode(c.output.encode))
             return std::unexpected(
-                std::format("a bitrate of {} kbps is not usable", c.output.encoder.bitrate_kbps));
-        // An output without a canvas has nothing to encode at all, which validate() calls an
-        // error -- so unlike a scene reference this really is a precondition.
-        if (!p.canvas(c.output.canvas))
-            return std::unexpected(
-                std::format("there is no canvas {} to encode", c.output.canvas.to_string()));
+                std::format("there is no encode {} to send", c.output.encode.to_string()));
         if (all_ids(p).contains(c.output.id))
             return std::unexpected(
                 std::format("id {} is already in the project", c.output.id.to_string()));
@@ -954,12 +1021,9 @@ struct Apply {
         if (it == p.outputs.end())
             return std::unexpected(
                 std::format("there is no output {}", c.value.id.to_string()));
-        if (c.value.encoder.bitrate_kbps <= 0)
+        if (!p.encode(c.value.encode))
             return std::unexpected(
-                std::format("a bitrate of {} kbps is not usable", c.value.encoder.bitrate_kbps));
-        if (!p.canvas(c.value.canvas))
-            return std::unexpected(
-                std::format("there is no canvas {} to encode", c.value.canvas.to_string()));
+                std::format("there is no encode {} to send", c.value.encode.to_string()));
         if (c.value.enabled && c.value.destination.url.empty())
             return std::unexpected("an output cannot be enabled with nowhere to send to");
         Applied out{SetOutput{*it}, describe(c)};

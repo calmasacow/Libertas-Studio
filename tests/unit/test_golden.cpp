@@ -15,6 +15,7 @@
 // the same run that checked it has proved nothing.
 
 #include "ldoc/json.hpp"
+#include "ldoc/migrate.hpp"
 #include "ldoc/project_io.hpp"
 #include "lcore/atomic_file.hpp"
 
@@ -23,6 +24,7 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <vector>
 #include <format>
 #include <string>
 
@@ -218,22 +220,64 @@ Project golden_project() {
     deck.transition_ms = 420;
     p.decks.push_back(std::move(deck));
 
+    // Two encodes feeding three destinations, which is the shape ADR-0029 exists for and the
+    // one the operator described: the canvas goes out at 1440p to YouTube, and a second,
+    // rescaled encode is made once and sent to both Twitch and Kick. Named for what they are
+    // and never for a destination, or stopping Twitch while "Twitch 1080p" keeps running would
+    // read as a bug.
+    Encode full;
+    full.id = fixed_id(0x7a);
+    full.name = "1440p60 12 Mbps";
+    full.canvas = main_canvas.id;
+    full.encoder.codec = "h264";
+    full.encoder.implementation = "nvenc";
+    full.encoder.bitrate_kbps = 12000;
+    full.encoder.keyframe_interval_ms = 2000;
+    full.encoder.preset = "p5";
+    full.encoder.rate_control = "cbr";
+    full.encoder.extra.emplace("rc-lookahead", std::int64_t{20});
+    p.encodes.push_back(full);
+
+    Encode downscaled;
+    downscaled.id = fixed_id(0x7b);
+    downscaled.name = "1080p60 8 Mbps";
+    downscaled.canvas = main_canvas.id;
+    downscaled.encoder.codec = "h264";
+    downscaled.encoder.implementation = "nvenc";
+    downscaled.encoder.bitrate_kbps = 8000;
+    downscaled.encoder.keyframe_interval_ms = 2000;
+    downscaled.encoder.preset = "p4";
+    downscaled.encoder.rate_control = "cbr";
+    downscaled.rescale = Vec2{1920.0, 1080.0};
+    p.encodes.push_back(downscaled);
+
     Output youtube;
     youtube.id = fixed_id(0x70);
     youtube.name = "YouTube";
-    youtube.canvas = main_canvas.id;
-    youtube.encoder.codec = "h264";
-    youtube.encoder.implementation = "nvenc";
-    youtube.encoder.bitrate_kbps = 12000;
-    youtube.encoder.keyframe_interval_ms = 2000;
-    youtube.encoder.preset = "p5";
-    youtube.encoder.rate_control = "cbr";
-    youtube.encoder.extra.emplace("rc-lookahead", std::int64_t{20});
+    youtube.encode = full.id;
     youtube.destination.kind = DestinationKind::Rtmps;
     youtube.destination.url = "rtmps://a.rtmps.youtube.com/live2";
     youtube.destination.credential_ref = "youtube-main";
     youtube.enabled = false;
     p.outputs.push_back(std::move(youtube));
+
+    Output twitch;
+    twitch.id = fixed_id(0x71);
+    twitch.name = "Twitch";
+    twitch.encode = downscaled.id;
+    twitch.destination.kind = DestinationKind::Rtmps;
+    twitch.destination.url = "rtmps://ingest.twitch.tv/app";
+    twitch.destination.credential_ref = "twitch-main";
+    p.outputs.push_back(std::move(twitch));
+
+    Output kick;
+    kick.id = fixed_id(0x72);
+    kick.name = "Kick";
+    kick.encode = downscaled.id;
+    kick.destination.kind = DestinationKind::Rtmps;
+    kick.destination.url = "rtmps://fa723fc1b171.global-contribute.live-video.net/app";
+    kick.destination.credential_ref = "kick-main";
+    p.outputs.push_back(std::move(kick));
 
     Asset asset;
     asset.id = fixed_id(0x80);
@@ -309,7 +353,8 @@ LTEST_CASE(the_committed_project_still_opens) {
     CHECK_EQ(p.scenes.size(), std::size_t{3});
     CHECK_EQ(p.sources.size(), std::size_t{2});
     CHECK_EQ(p.buses.size(), std::size_t{2});
-    CHECK_EQ(p.outputs.size(), std::size_t{1});
+    CHECK_EQ(p.encodes.size(), std::size_t{2});
+    CHECK_EQ(p.outputs.size(), std::size_t{3});
     CHECK_EQ(p.assets.size(), std::size_t{1});
 
     // The details most likely to be quietly lost by a format change.
@@ -319,6 +364,12 @@ LTEST_CASE(the_committed_project_still_opens) {
     CHECK(p.canvases[0].emergency_scene.has_value());
     CHECK_EQ(p.assets[0].bytes, 4294967296ULL);
     CHECK_EQ(p.outputs[0].destination.credential_ref, std::string("youtube-main"));
+    // One encode, two destinations: the whole point of ADR-0029, asserted rather than implied.
+    CHECK(p.outputs[1].encode == p.outputs[2].encode);
+    CHECK(p.outputs[0].encode != p.outputs[1].encode);
+    REQUIRE(p.encode(p.outputs[1].encode) != nullptr);
+    CHECK(p.encode(p.outputs[1].encode)->rescale.has_value());
+    CHECK_EQ(p.encode(p.outputs[1].encode)->encoder.bitrate_kbps, 8000);
     CHECK_EQ(p.decks[0].transition_ms, 420);
 
     const Scene* live = p.scene(p.decks[0].program_scene.value());
@@ -381,6 +432,71 @@ LTEST_CASE(a_version_1_project_opens_and_is_migrated) {
             return pr.message.find("older format were assigned") != std::string::npos;
         });
     CHECK_MSG(reassigned, "the scene reassignment was not reported");
+}
+
+LTEST_CASE(a_version_1_outputs_encoder_becomes_an_encode) {
+    // ADR-0029's half of the same bump. The v1 fixture's one output carried its own canvas and
+    // encoder settings; after the migration it names an Encode that carries them instead, and
+    // nothing about the stream it would produce has changed.
+    const ScratchDir sd;
+    const fs::path dir = sd.copy_of(fixture_v1_dir());
+    auto opened = open_project(dir);
+    REQUIRE_MSG(opened.has_value(), "{}", opened.error());
+
+    const Project& p = opened->project;
+    REQUIRE(p.outputs.size() == 1);
+    REQUIRE(p.encodes.size() == 1);
+
+    const Encode* e = p.encode(p.outputs[0].encode);
+    REQUIRE(e != nullptr);
+    CHECK_EQ(e->encoder.bitrate_kbps, 12000);
+    CHECK_EQ(e->encoder.implementation, std::string("nvenc"));
+    CHECK_EQ(e->encoder.preset, std::string("p5"));
+    CHECK(e->canvas == p.canvases[0].id);
+    // Named for the stream it is, never for the destination that happened to own it.
+    CHECK_MSG(e->name.find("Mbps") != std::string::npos, "the encode was not named: '{}'",
+              e->name);
+    CHECK_MSG(e->name.find("YouTube") == std::string::npos,
+              "the encode was named after a destination: '{}'", e->name);
+    CHECK_MSG(is_valid(p), "the migrated project does not validate");
+}
+
+LTEST_CASE(outputs_that_asked_for_the_same_thing_end_up_sharing_one_encode) {
+    // Three v1 outputs configured identically were three encodes on the GPU and are one now.
+    // Built in memory rather than from a fixture: the point is the merge rule, not the bytes.
+    Project p = golden_project();
+    p.schema_version = 1;
+    p.encodes.clear();
+    p.outputs.clear();
+    p.scene_links.clear();
+
+    std::vector<LegacyOutputEncode> legacy;
+    EncoderConfig shared;
+    shared.implementation = "nvenc";
+    shared.bitrate_kbps = 8000;
+    for (int i = 0; i < 3; ++i) {
+        Output o;
+        o.id = Id::generate();
+        o.name = std::format("Destination {}", i);
+        p.outputs.push_back(o);
+        legacy.push_back(LegacyOutputEncode{o.id, p.canvases[0].id, shared});
+    }
+    // And one that asked for something different, which must stay separate.
+    EncoderConfig other = shared;
+    other.bitrate_kbps = 3000;
+    Output odd;
+    odd.id = Id::generate();
+    odd.name = "Low";
+    p.outputs.push_back(odd);
+    legacy.push_back(LegacyOutputEncode{odd.id, p.canvases[0].id, other});
+
+    const Migration m = migrate(p, legacy);
+    CHECK(m.happened());
+    CHECK_EQ(p.encodes.size(), std::size_t{2});
+    CHECK(p.outputs[0].encode == p.outputs[1].encode);
+    CHECK(p.outputs[1].encode == p.outputs[2].encode);
+    CHECK(p.outputs[3].encode != p.outputs[0].encode);
+    CHECK_EQ(p.schema_version, kSchemaVersion);
 }
 
 LTEST_CASE(a_migrated_project_saves_as_the_current_version) {

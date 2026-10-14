@@ -27,6 +27,7 @@ Jv enc(const Deck& d);
 Jv enc(const Source& s);
 Jv enc(const Asset& a);
 Jv enc(const Output& o);
+Jv enc(const Encode& e);
 Jv enc(const SceneLink& l);
 
 // ---- writing --------------------------------------------------------------------------------
@@ -319,12 +320,21 @@ Jv enc(const Destination& d) {
     return o;
 }
 
+Jv enc(const Encode& e) {
+    Jv o{Json::objectValue};
+    o["id"] = enc(e.id);
+    o["name"] = e.name;
+    o["canvas"] = enc(e.canvas);
+    o["encoder"] = enc(e.encoder);
+    o["rescale"] = e.rescale ? enc(*e.rescale) : Jv{Json::nullValue};
+    return o;
+}
+
 Jv enc(const Output& o_) {
     Jv o{Json::objectValue};
     o["id"] = enc(o_.id);
     o["name"] = o_.name;
-    o["canvas"] = enc(o_.canvas);
-    o["encoder"] = enc(o_.encoder);
+    o["encode"] = enc(o_.encode);
     o["destination"] = enc(o_.destination);
     o["enabled"] = o_.enabled;
     return o;
@@ -421,6 +431,7 @@ std::string project_to_json(const Project& project) {
     root["buses"] = enc_array(project.buses);
     root["decks"] = enc_array(project.decks);
     root["sources"] = enc_array(project.sources);
+    root["encodes"] = enc_array(project.encodes);
     root["outputs"] = enc_array(project.outputs);
     root["settings"] = enc(project.settings);
 
@@ -853,23 +864,45 @@ Deck dec_deck(Rd& rd, const Jv& v, std::string_view path) {
     return d;
 }
 
+EncoderConfig dec_encoder_config(Rd& rd, const Jv& parent, const char* key,
+                                 std::string_view path) {
+    EncoderConfig cfg;
+    const Jv* e = rd.object(parent, key, path);
+    if (!e)
+        return cfg;
+    cfg.codec = rd.text(*e, "codec", path, cfg.codec);
+    cfg.implementation = rd.text(*e, "implementation", path, cfg.implementation);
+    cfg.bitrate_kbps = rd.integer32(*e, "bitrate_kbps", path, cfg.bitrate_kbps);
+    cfg.keyframe_interval_ms =
+        rd.integer32(*e, "keyframe_interval_ms", path, cfg.keyframe_interval_ms);
+    cfg.preset = rd.text(*e, "preset", path);
+    cfg.rate_control = rd.text(*e, "rate_control", path, cfg.rate_control);
+    cfg.extra = dec_params(rd, *e, "extra", path);
+    return cfg;
+}
+
+Encode dec_encode(Rd& rd, const Jv& v, std::string_view path) {
+    Encode e;
+    if (!v.isObject()) {
+        rd.fail(path, "an encode is not an object");
+        return e;
+    }
+    e.id = rd.id(v, "id", path);
+    e.name = rd.text(v, "name", path);
+    e.canvas = rd.id(v, "canvas", path);
+    e.encoder = dec_encoder_config(rd, v, "encoder", path);
+    if (v.isMember("rescale") && !v["rescale"].isNull())
+        e.rescale = dec_vec2(rd, v["rescale"], path);
+    return e;
+}
+
 Output dec_output(Rd& rd, const Jv& v, std::string_view path) {
     Output o;
     o.id = rd.id(v, "id", path);
     o.name = rd.text(v, "name", path);
-    o.canvas = rd.id(v, "canvas", path);
-    if (const Jv* e = rd.object(v, "encoder", path)) {
-        o.encoder.codec = rd.text(*e, "codec", path, o.encoder.codec);
-        o.encoder.implementation = rd.text(*e, "implementation", path,
-                                           o.encoder.implementation);
-        o.encoder.bitrate_kbps = rd.integer32(*e, "bitrate_kbps", path,
-                                              o.encoder.bitrate_kbps);
-        o.encoder.keyframe_interval_ms =
-            rd.integer32(*e, "keyframe_interval_ms", path, o.encoder.keyframe_interval_ms);
-        o.encoder.preset = rd.text(*e, "preset", path);
-        o.encoder.rate_control = rd.text(*e, "rate_control", path, o.encoder.rate_control);
-        o.encoder.extra = dec_params(rd, *e, "extra", path);
-    }
+    // Absent in version 1, where the output carried the canvas and the encoder settings
+    // directly; the migration fills it in from `legacy_outputs` below.
+    o.encode = v.isMember("encode") ? rd.id(v, "encode", path) : Id::nil();
     if (const Jv* d = rd.object(v, "destination", path)) {
         o.destination.kind = rd.enumerated(*d, "kind", path, destination_kind_from_string,
                                            o.destination.kind);
@@ -1114,9 +1147,25 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
             p.sources.push_back(dec_source(rd, v, "project.sources"));
     }
 
-    if (const Jv* a = rd.array(*root, "outputs", "project")) {
+    if (const Jv* a = rd.array(*root, "encodes", "project")) {
         for (const Jv& v : *a)
+            p.encodes.push_back(dec_encode(rd, v, "project.encodes"));
+    }
+
+    std::vector<LegacyOutputEncode> legacy;
+    if (const Jv* a = rd.array(*root, "outputs", "project")) {
+        for (const Jv& v : *a) {
             p.outputs.push_back(dec_output(rd, v, "project.outputs"));
+            // A version 1 output held its own canvas and encoder settings. They are kept here
+            // rather than thrown away, because the migration turns them into Encodes and an
+            // output that lost its bitrate on the way in would be a silent downgrade.
+            if (v.isObject() && v.isMember("canvas") && !v.isMember("encode")) {
+                legacy.push_back(LegacyOutputEncode{p.outputs.back().id,
+                                                    rd.id(v, "canvas", "project.outputs"),
+                                                    dec_encoder_config(rd, v, "encoder",
+                                                                       "project.outputs")});
+            }
+        }
     }
 
     if (const Jv* sv = rd.object(*root, "settings", "project"))
@@ -1140,7 +1189,7 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
 
     if (!rd.ok())
         return std::unexpected(rd.error());
-    return ProjectFile{std::move(p), std::move(scene_refs)};
+    return ProjectFile{std::move(p), std::move(scene_refs), std::move(legacy)};
 }
 
 } // namespace ldoc

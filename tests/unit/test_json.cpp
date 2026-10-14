@@ -139,13 +139,20 @@ Project random_project(std::mt19937& rng) {
     src.settings.emplace("full_range", false);
     p.sources.push_back(src);
 
+    Encode enc;
+    enc.id = Id::generate();
+    enc.name = "1440p60 12 Mbps";
+    enc.canvas = p.canvases[0].id;
+    enc.encoder.implementation = "nvenc";
+    enc.encoder.bitrate_kbps = 12000;
+    enc.encoder.extra.emplace("rc-lookahead", std::int64_t{20});
+    enc.rescale = Vec2{1920.0, 1080.0};
+    p.encodes.push_back(enc);
+
     Output out;
     out.id = Id::generate();
     out.name = "YouTube";
-    out.canvas = p.canvases[0].id;
-    out.encoder.implementation = "nvenc";
-    out.encoder.bitrate_kbps = 12000;
-    out.encoder.extra.emplace("rc-lookahead", std::int64_t{20});
+    out.encode = enc.id;
     out.destination.kind = DestinationKind::Rtmps;
     out.destination.url = "rtmps://a.rtmps.youtube.com/live2";
     out.destination.credential_ref = "youtube-main";
@@ -413,10 +420,16 @@ LTEST_CASE(the_file_format_has_nowhere_to_put_a_stream_key) {
     // fails -- which is the point. The project directory is meant to be diffable and shareable,
     // and those two things are only safe together while this stays true.
     Project p = make_default_project("Show");
+    Encode e;
+    e.id = Id::generate();
+    e.name = "1080p60 6 Mbps";
+    e.canvas = p.canvases[0].id;
+    p.encodes.push_back(e);
+
     Output o;
     o.id = Id::generate();
     o.name = "Twitch";
-    o.canvas = p.canvases[0].id;
+    o.encode = e.id;
     o.destination.kind = DestinationKind::Rtmp;
     o.destination.url = "rtmp://ingest.example/app";
     o.destination.credential_ref = "twitch-main";

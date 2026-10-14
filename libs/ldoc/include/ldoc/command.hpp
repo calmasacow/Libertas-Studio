@@ -284,6 +284,30 @@ struct SetBus {
     friend bool operator==(const SetBus&, const SetBus&) = default;
 };
 
+// ---- encodes --------------------------------------------------------------------------------
+
+struct AddEncode {
+    Encode encode;
+    std::size_t index = 0;
+    friend bool operator==(const AddEncode&, const AddEncode&) = default;
+};
+
+/// Refused while an output still names it (ADR-0029).
+///
+/// Unlike removing a source -- which leaves its nodes drawing nothing, exactly as they would
+/// unbound -- an output with no bitstream is not a degraded state the model has a meaning for.
+/// It is the same line a deck's canvas sits on: validate() calls it an error, so the command
+/// refuses it. Point the outputs elsewhere, or delete them, first.
+struct RemoveEncode {
+    Id encode;
+    friend bool operator==(const RemoveEncode&, const RemoveEncode&) = default;
+};
+
+struct SetEncode {
+    Encode value;
+    friend bool operator==(const SetEncode&, const SetEncode&) = default;
+};
+
 // ---- outputs --------------------------------------------------------------------------------
 
 struct AddOutput {
@@ -388,7 +412,8 @@ using Command =
                  SetDeckPreview, AddSceneLink, RemoveSceneLink,
                  SetCanvasEmergencyScene, SetNodeSource, AddSource, RemoveSource, SetSource,
                  AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus, SetBus, AddOutput,
-                 RemoveOutput, SetOutput, SetProjectSettings, Batch>;
+                 RemoveOutput, SetOutput, AddEncode, RemoveEncode, SetEncode,
+                 SetProjectSettings, Batch>;
 
 struct BatchBody {
     std::vector<Command> commands;

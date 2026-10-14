@@ -414,7 +414,7 @@ std::expected<OpenResult, std::string> open_project(const fs::path& dir) {
 
     // Only now, with the scenes loaded, can an older project be brought up to date: a version 1
     // scene has no canvas of its own and the answer depends on the canvas list.
-    Migration migration = migrate(result.project);
+    Migration migration = migrate(result.project, file->legacy_outputs);
     for (Problem& problem : migration.problems)
         result.problems.push_back(std::move(problem));
 

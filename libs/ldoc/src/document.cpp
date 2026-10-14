@@ -100,6 +100,12 @@ Scene* Project::scene(const Id& wanted) {
     return it == scenes.end() ? nullptr : &*it;
 }
 
+const Encode* Project::encode(const Id& wanted) const {
+    const auto it = std::find_if(encodes.begin(), encodes.end(),
+                                 [&wanted](const Encode& e) { return e.id == wanted; });
+    return it == encodes.end() ? nullptr : &*it;
+}
+
 const SceneLink* Project::scene_link(const Id& wanted) const {
     const auto it = std::find_if(scene_links.begin(), scene_links.end(),
                                  [&wanted](const SceneLink& l) { return l.id == wanted; });
@@ -281,6 +287,7 @@ public:
         check_scenes();
         check_scene_links();
         check_decks();
+        check_encodes();
         check_outputs();
         check_reference_cycles();
         check_precomp_cycles();
@@ -322,6 +329,8 @@ private:
             define(a.id, "asset", a.path);
         for (const Deck& d : p_.decks)
             define(d.id, "deck", d.name);
+        for (const Encode& e : p_.encodes)
+            define(e.id, "encode", e.name);
         for (const Output& o : p_.outputs)
             define(o.id, "output", o.name);
         for (const SceneLink& l : p_.scene_links)
@@ -543,14 +552,27 @@ private:
         }
     }
 
+    void check_encodes() {
+        for (const Encode& e : p_.encodes) {
+            if (!exists_as(e.canvas, "canvas"))
+                err(e.id, std::format("encode '{}' encodes canvas {}, which does not exist",
+                                      e.name, e.canvas.to_string()));
+            if (e.encoder.bitrate_kbps <= 0)
+                err(e.id, std::format("encode '{}' has a bitrate of {} kbps", e.name,
+                                      e.encoder.bitrate_kbps));
+            if (e.rescale && (e.rescale->x <= 0.0 || e.rescale->y <= 0.0))
+                err(e.id, std::format("encode '{}' rescales to {}x{}", e.name, e.rescale->x,
+                                      e.rescale->y));
+        }
+    }
+
     void check_outputs() {
         for (const Output& o : p_.outputs) {
-            if (!exists_as(o.canvas, "canvas"))
-                err(o.id, std::format("output '{}' encodes canvas {}, which does not exist",
-                                      o.name, o.canvas.to_string()));
-            if (o.encoder.bitrate_kbps <= 0)
-                err(o.id, std::format("output '{}' has a bitrate of {} kbps", o.name,
-                                      o.encoder.bitrate_kbps));
+            // An output with no bitstream has nothing to send, which is the same kind of
+            // nothing a deck with no canvas has: an error, not a dangling reference.
+            if (!exists_as(o.encode, "encode"))
+                err(o.id, std::format("output '{}' sends encode {}, which does not exist",
+                                      o.name, o.encode.to_string()));
             if (o.enabled && o.destination.url.empty())
                 err(o.id, std::format("output '{}' is enabled but has no destination", o.name));
         }

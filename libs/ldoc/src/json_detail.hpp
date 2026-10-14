@@ -44,6 +44,7 @@ Jv enc(const Canvas& c);
 Jv enc(const Source& s);
 Jv enc(const Bus& b);
 Jv enc(const Output& o);
+Jv enc(const Encode& e);
 Jv enc(const SceneLink& l);
 Jv enc(const Settings& s);
 
@@ -122,6 +123,9 @@ Source dec_source(Rd& rd, const Jv& o, std::string_view path);
 Bus dec_bus(Rd& rd, const Jv& o, std::string_view path);
 Deck dec_deck(Rd& rd, const Jv& o, std::string_view path);
 Output dec_output(Rd& rd, const Jv& o, std::string_view path);
+Encode dec_encode(Rd& rd, const Jv& o, std::string_view path);
+EncoderConfig dec_encoder_config(Rd& rd, const Jv& parent, const char* key,
+                                 std::string_view path);
 Settings dec_settings(Rd& rd, const Jv& o, std::string_view path);
 
 std::optional<Jv> parse_text(std::string_view text, std::string& error);

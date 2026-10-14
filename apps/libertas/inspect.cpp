@@ -121,7 +121,7 @@ int inspect_project(const fs::path& dir, bool verbose) {
     // The same migration `open_project` runs, for the same reason: without it every project
     // written by an older build is reported as broken, which is a lie about the project and a
     // libel against the format. Nothing is written back -- this command only looks.
-    const ldoc::Migration migrated = ldoc::migrate(p);
+    const ldoc::Migration migrated = ldoc::migrate(p, file->legacy_outputs);
     if (migrated.happened())
         std::printf("  %-18s version %d, brought up to %d for this report only\n", "migration",
                     migrated.from, p.schema_version);
@@ -181,14 +181,33 @@ int inspect_project(const fs::path& dir, bool verbose) {
                     ldoc::is_self_contained(src.type) ? "  [safe for emergency use]" : "");
     }
 
+    // Before the outputs, because an output now names one of these and the pre-flight question
+    // is how many encodes the GPU is being asked for (ADR-0029).
+    heading("encodes");
+    if (p.encodes.empty())
+        std::printf("  (none)\n");
+    for (const ldoc::Encode& e : p.encodes) {
+        const ldoc::Canvas* c = p.canvas(e.canvas);
+        int sent_to = 0;
+        for (const ldoc::Output& o : p.outputs)
+            sent_to += (o.encode == e.id) ? 1 : 0;
+        std::printf("  %-28s %s %s %d kbps%s  -> %d destination(s)\n", e.name.c_str(),
+                    c ? c->name.c_str() : "(missing canvas)", e.encoder.implementation.c_str(),
+                    e.encoder.bitrate_kbps,
+                    e.rescale ? std::format("  rescaled {:.0f}x{:.0f}", e.rescale->x,
+                                            e.rescale->y).c_str()
+                              : "",
+                    sent_to);
+    }
+    std::printf("  %-28s %zu concurrent encode(s) asked of the GPU\n", "", p.encodes.size());
+
     heading("outputs");
     if (p.outputs.empty())
         std::printf("  (none)\n");
     for (const ldoc::Output& o : p.outputs) {
-        const ldoc::Canvas* c = p.canvas(o.canvas);
-        std::printf("  %-20s %s %s %d kbps -> %s%s\n", o.name.c_str(),
-                    c ? c->name.c_str() : "(missing canvas)", o.encoder.implementation.c_str(),
-                    o.encoder.bitrate_kbps,
+        const ldoc::Encode* e = p.encode(o.encode);
+        std::printf("  %-20s %s -> %s%s\n", o.name.c_str(),
+                    e ? e->name.c_str() : "(missing encode)",
                     o.destination.url.empty() ? "(nowhere)" : o.destination.url.c_str(),
                     o.enabled ? "  [enabled]" : "");
         // Never the credential itself: the format cannot hold one (ADR-0025's sibling reasoning

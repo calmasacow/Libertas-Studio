@@ -224,15 +224,45 @@ struct Destination {
     friend bool operator==(const Destination&, const Destination&) = default;
 };
 
-/// One encode of one canvas going to one place.
+/// One encode of one canvas: a bitstream, named, that any number of destinations can receive.
 ///
-/// N outputs across M canvases falls out of this being a list rather than a mode. Two outputs off
-/// the same canvas share its composite; two canvases do not (ADR-0020).
+/// First-class rather than a property of an output (ADR-0029), because "send Twitch's 1080p
+/// encode to Kick and Facebook as well" is the thing operators actually want and the GPU
+/// actually cares about. As a field on Output it could only be expressed as one output borrowing
+/// another's encoder, which raises an ownership question with no good answer: deleting the
+/// Twitch output would take Kick and Facebook down with it.
+///
+/// What this makes impossible is worth as much as what it makes possible. An output names an
+/// encode and an encode names a canvas, so there is no edge that can point back and a cycle
+/// cannot be written down. And `encodes.size()` is the number to compare against the measured
+/// NVENC ceiling -- a figure `validate()` can state without walking anything.
+struct Encode {
+    Id id;
+    /// What the UI offers to reuse. **Name it for what it is -- "1080p60 8 Mbps" -- and never
+    /// for a destination**: an encode called "Twitch 1080p" that keeps running after Twitch
+    /// stops reads as a bug rather than as the feature it is.
+    std::string name;
+    /// What is being encoded.
+    Id canvas;
+    EncoderConfig encoder;
+    /// Twitch's 1080p out of a 1440p canvas. Absent means the canvas's own size.
+    std::optional<Vec2> rescale;
+
+    friend bool operator==(const Encode&, const Encode&) = default;
+};
+
+/// One destination receiving one encode.
+///
+/// N outputs across M canvases falls out of this being a list rather than a mode. Outputs
+/// naming the same encode share one bitstream and therefore share everything about it --
+/// bitrate, keyframe cadence, resolution, colour. There is no per-destination bitrate when
+/// sharing, because there is one bitstream; an operator who wants Kick at a different bitrate
+/// wants a second encode, and now has to say so.
 struct Output {
     Id id;
     std::string name;
-    Id canvas;
-    EncoderConfig encoder;
+    /// Which bitstream this destination receives.
+    Id encode;
     Destination destination;
     bool enabled = false;
 
@@ -265,6 +295,8 @@ struct Project {
     std::vector<Deck> decks;
     std::vector<Source> sources;
     std::vector<Asset> assets;
+    /// The bitstreams. An output names one; several may name the same one.
+    std::vector<Encode> encodes;
     std::vector<Output> outputs;
     Settings settings;
 
@@ -274,6 +306,7 @@ struct Project {
     [[nodiscard]] Scene* scene(const Id& wanted);
     [[nodiscard]] const Bus* bus(const Id& wanted) const;
     [[nodiscard]] const Source* source(const Id& wanted) const;
+    [[nodiscard]] const Encode* encode(const Id& wanted) const;
 
     friend bool operator==(const Project&, const Project&) = default;
 };

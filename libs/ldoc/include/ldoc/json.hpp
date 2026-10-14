@@ -47,10 +47,24 @@ struct SceneRef {
     friend bool operator==(const SceneRef&, const SceneRef&) = default;
 };
 
+/// What a version 1 output carried before ADR-0029 made an encode a document object.
+///
+/// Filled only when the file is version 1. The migration turns each of these into an `Encode`
+/// and points its output at it, sharing one encode between outputs that asked for the same
+/// thing. Keeping it out of `Output` is deliberate: the model should not grow a field whose only
+/// purpose is to remember a shape it no longer has.
+struct LegacyOutputEncode {
+    Id output;
+    Id canvas;
+    EncoderConfig encoder;
+};
+
 struct ProjectFile {
     /// `scenes` is empty; they live in their own files and are loaded by `project_io`.
     Project project;
     std::vector<SceneRef> scenes;
+    /// Empty for a version 2 file. See LegacyOutputEncode.
+    std::vector<LegacyOutputEncode> legacy_outputs;
 };
 
 [[nodiscard]] std::expected<ProjectFile, std::string> project_from_json(std::string_view text);

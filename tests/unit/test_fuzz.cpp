@@ -125,10 +125,16 @@ ldoc::Project rich_project() {
     vertical.fps = ldoc::Fps::ntsc(60);
     p.canvases.push_back(vertical);
 
+    ldoc::Encode enc;
+    enc.id = ldoc::Id::generate();
+    enc.name = "1440p60 12 Mbps";
+    enc.canvas = p.canvases[0].id;
+    p.encodes.push_back(enc);
+
     ldoc::Output out;
     out.id = ldoc::Id::generate();
     out.name = "YouTube";
-    out.canvas = p.canvases[0].id;
+    out.encode = enc.id;
     out.destination.url = "rtmps://example/live";
     out.destination.credential_ref = "youtube-main";
     p.outputs.push_back(out);

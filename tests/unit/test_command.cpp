@@ -34,6 +34,8 @@ struct Fixture {
     Id existing_source;
     Id spare_canvas;
     Id existing_bus;
+    Id existing_encode;
+    Id unused_encode;
     Id existing_output;
     Id spare_scene;
     Id vertical_scene;
@@ -84,11 +86,27 @@ struct Fixture {
 
         existing_bus = project.buses.front().id;
 
+        Encode enc;
+        enc.id = Id::generate();
+        enc.name = "1080p60 9 Mbps";
+        enc.canvas = canvas;
+        enc.encoder.bitrate_kbps = 9000;
+        existing_encode = enc.id;
+        project.encodes.push_back(std::move(enc));
+
+        // An encode nothing sends, so the removal case has one it is allowed to take.
+        Encode unused;
+        unused.id = Id::generate();
+        unused.name = "720p30 2 Mbps";
+        unused.canvas = canvas;
+        unused.encoder.bitrate_kbps = 2000;
+        unused_encode = unused.id;
+        project.encodes.push_back(std::move(unused));
+
         Output out;
         out.id = Id::generate();
         out.name = "YouTube";
-        out.canvas = canvas;
-        out.encoder.bitrate_kbps = 9000;
+        out.encode = existing_encode;
         out.destination.url = "rtmps://example/live";
         out.destination.credential_ref = "youtube-main";
         existing_output = out.id;
@@ -214,11 +232,19 @@ std::vector<Command> every_command_shape(const Fixture& f) {
     Output twitch;
     twitch.id = Id::generate();
     twitch.name = "Twitch";
-    twitch.canvas = f.canvas;
-    twitch.encoder.bitrate_kbps = 6000;
+    twitch.encode = f.existing_encode;
     twitch.destination.url = "rtmp://ingest.example/app";
 
-    Output rebitrated = f.project.outputs.front();
+    Output renamed_output = f.project.outputs.front();
+    renamed_output.name = "YouTube Main";
+
+    Encode spare_encode;
+    spare_encode.id = Id::generate();
+    spare_encode.name = "720p60 3 Mbps";
+    spare_encode.canvas = f.canvas;
+    spare_encode.encoder.bitrate_kbps = 3000;
+
+    Encode rebitrated = f.project.encodes.front();
     rebitrated.encoder.bitrate_kbps = 12000;
 
     Settings tuned = f.project.settings;
@@ -265,7 +291,10 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         SetBus{louder},
         AddOutput{twitch, 0},
         RemoveOutput{f.existing_output},
-        SetOutput{rebitrated},
+        SetOutput{renamed_output},
+        AddEncode{spare_encode, 0},
+        RemoveEncode{f.unused_encode},
+        SetEncode{rebitrated},
         SetProjectSettings{tuned},
     };
 }
@@ -405,11 +434,18 @@ Command random_command(std::mt19937& rng, const Project& p) {
         return SetBus{b};
     }
     case 20: {
+        if (p.encodes.empty()) {
+            Encode e;
+            e.id = Id::generate();
+            e.name = std::format("Encode {}", rng() % 100);
+            e.canvas = canvas;
+            e.encoder.bitrate_kbps = 1000 + static_cast<int>(rng() % 20000);
+            return AddEncode{e, 0};
+        }
         Output o;
         o.id = Id::generate();
         o.name = std::format("Out {}", rng() % 100);
-        o.canvas = canvas;
-        o.encoder.bitrate_kbps = 1000 + static_cast<int>(rng() % 20000);
+        o.encode = p.encodes[rng() % p.encodes.size()].id;
         o.destination.url = "rtmp://example/app";
         return AddOutput{o, rng() % (p.outputs.size() + 1)};
     }
@@ -417,11 +453,11 @@ Command random_command(std::mt19937& rng, const Project& p) {
         return RemoveOutput{p.outputs.empty() ? Id::generate()
                                               : p.outputs[rng() % p.outputs.size()].id};
     case 22: {
-        if (p.outputs.empty())
+        if (p.outputs.empty() || p.encodes.empty())
             return SetProjectName{"no outputs"};
         Output o = p.outputs[rng() % p.outputs.size()];
-        o.encoder.bitrate_kbps = 1000 + static_cast<int>(rng() % 20000);
-        o.canvas = canvas;
+        o.name = std::format("Out {}", rng() % 100);
+        o.encode = p.encodes[rng() % p.encodes.size()].id;
         return SetOutput{o};
     }
     case 23: {
@@ -1007,14 +1043,13 @@ LTEST_CASE(an_output_needs_a_canvas_but_a_bus_does_not_need_its_listeners) {
     Output orphan;
     orphan.id = Id::generate();
     orphan.name = "Nowhere";
-    orphan.canvas = Id::generate();
-    orphan.encoder.bitrate_kbps = 6000;
+    orphan.encode = Id::generate();
     CHECK(!apply(f.project, AddOutput{orphan, 0}).has_value());
     CHECK(f.project == before);
 
-    Output broke = f.project.outputs.front();
+    Encode broke = f.project.encodes.front();
     broke.encoder.bitrate_kbps = 0;
-    CHECK(!apply(f.project, SetOutput{broke}).has_value());
+    CHECK(!apply(f.project, SetEncode{broke}).has_value());
 
     Output live = f.project.outputs.front();
     live.enabled = true;
