@@ -8,7 +8,10 @@
 #include "ldoc/command.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <functional>
+#include <span>
 
 namespace libertas::ui {
 namespace {
@@ -175,6 +178,9 @@ QVariantMap Document::layerProperties() const {
     // different thing from muted -- so both are reported rather than collapsed into one flag.
     if (const auto* layer = std::get_if<ldoc::LayerData>(&n->data)) {
         m["hasAudio"] = true;
+        // What the settings dialog is opened against. Empty when the layer is bound to nothing,
+        // which is what disables the gear rather than opening an empty panel.
+        m["sourceId"] = layer->source ? id_str(*layer->source) : QString{};
         m["audioBus"] = layer->audio.bus ? id_str(*layer->audio.bus) : QString{};
         m["audioGain"] = layer->audio.gain_db;
         m["audioMute"] = layer->audio.mute;
@@ -191,6 +197,7 @@ QVariantMap Document::layerProperties() const {
         m["audioBusName"] = bus_name;
     } else {
         m["hasAudio"] = false;
+        m["sourceId"] = QString{};
     }
     return m;
 }
@@ -261,6 +268,10 @@ void Document::rebuild() {
                     row.effectCount = static_cast<int>(n.effects.size());
                     if (const auto* layer = std::get_if<ldoc::LayerData>(&n.data)) {
                         if (layer->source) {
+                            // The id is carried even when the source has gone: a row that says
+                            // "(missing source)" with no id would look identical to an unbound
+                            // one, and they want different things done to them.
+                            row.sourceId = id_str(*layer->source);
                             if (const ldoc::Source* src = p.source(*layer->source))
                                 row.sourceName = qstr(src->name);
                             else
@@ -498,6 +509,246 @@ void Document::setEmergencyScene(const QString& id) {
 
 // ---- inputs -------------------------------------------------------------------------------
 
+namespace {
+
+/// sRGB hex, which is what a human types and reads. The conversion to scene-linear happens in
+/// `Rgba` and nowhere else (ldoc/types.hpp), so this stays a pure spelling change.
+QString hex_of(const ldoc::Rgba& rgba) {
+    const auto c = rgba.to_srgb8();
+    return QStringLiteral("#%1%2%3")
+        .arg(c[0], 2, 16, QLatin1Char('0'))
+        .arg(c[1], 2, 16, QLatin1Char('0'))
+        .arg(c[2], 2, 16, QLatin1Char('0'));
+}
+
+/// The other direction. Returns nothing for anything it cannot read, rather than black: a typo
+/// in a hex field silently turning a card black is the kind of thing nobody notices until the
+/// show.
+std::optional<ldoc::Rgba> hex_to_rgba(const QString& text) {
+    QString hex = text.trimmed();
+    if (hex.startsWith(QLatin1Char('#')))
+        hex = hex.mid(1);
+    if (hex.size() != 6 && hex.size() != 8)
+        return std::nullopt;
+    bool ok = false;
+    const uint packed = hex.toUInt(&ok, 16);
+    if (!ok)
+        return std::nullopt;
+    if (hex.size() == 6) {
+        return ldoc::Rgba::from_srgb8(static_cast<std::uint8_t>((packed >> 16) & 0xFFu),
+                                      static_cast<std::uint8_t>((packed >> 8) & 0xFFu),
+                                      static_cast<std::uint8_t>(packed & 0xFFu));
+    }
+    return ldoc::Rgba::from_srgb8(static_cast<std::uint8_t>((packed >> 24) & 0xFFu),
+                                  static_cast<std::uint8_t>((packed >> 16) & 0xFFu),
+                                  static_cast<std::uint8_t>((packed >> 8) & 0xFFu),
+                                  static_cast<std::uint8_t>(packed & 0xFFu));
+}
+
+QString swatch_of(const ldoc::Source& src) {
+    const auto it = src.settings.find("color");
+    if (it == src.settings.end())
+        return {};
+    const auto* rgba = std::get_if<ldoc::Rgba>(&it->second);
+    return rgba ? hex_of(*rgba) : QString{};
+}
+
+/// One row of a source type's settings panel.
+///
+/// A table rather than a class per type. Ten of these are a description of what a source *is*,
+/// and a description is easier to read, review and extend as data than as code -- the render
+/// process will eventually be handed exactly these keys, and a table is what can be compared
+/// against what it accepts.
+struct FieldSpec {
+    /// The key in `Source::settings`. Empty for a note.
+    const char* key;
+    /// What the field is called -- or, for a note, the whole line of prose.
+    const char* label;
+    /// "text", "path", "bool", "int", "choice", "colour", or "note".
+    const char* kind;
+    /// The default for text, path, choice and colour.
+    const char* text = "";
+    bool flag = false;
+    std::int64_t number = 0;
+    /// A "choice" field's options, separated by '|'.
+    const char* choices = "";
+    /// Printed after an "int" field: a unit, not a value.
+    const char* suffix = "";
+};
+
+// A note is honest about what this build cannot do, placed above the field it is about rather
+// than collected at the top where nobody reads it.
+
+constexpr FieldSpec kMedia[] = {
+    {"localFile", "File", "path", "", false, 0, "", ""},
+    // Looping by default is not a preference. `check_emergency_scene` reads this key by name
+    // and warns when it is off, and a clip that plays once is a safety net that expires.
+    {"loop", "Loop", "bool", "", true},
+    {"", "A media source in an emergency scene has to loop, or the safety net runs out part "
+         "way through the emergency (ADR-0025).", "note"},
+    {"restartOnActivate", "Restart playback when the source becomes active", "bool", "", true},
+    {"clearOnEnd", "Show nothing when playback ends", "bool", "", true},
+    {"closeWhenInactive", "Close the file when the source is not showing", "bool", "", false},
+    {"hardwareDecode", "Use hardware decoding when available", "bool", "", false},
+    {"speedPercent", "Speed", "int", "", false, 100, "", "%"},
+};
+
+constexpr FieldSpec kImage[] = {
+    {"file", "Image file", "path"},
+    {"unloadWhenHidden", "Unload the image when it is not showing", "bool", "", false},
+    {"alphaLinear", "Apply alpha in linear space", "bool", "", false},
+};
+
+constexpr FieldSpec kText[] = {
+    {"text", "Text", "text"},
+    {"font", "Font", "text", "Sans"},
+    {"size", "Size", "int", "", false, 48, "", "px"},
+    {"color", "Colour", "colour", "#ffffff"},
+    {"alignment", "Alignment", "choice", "Left", false, 0, "Left|Centre|Right"},
+};
+
+constexpr FieldSpec kColour[] = {
+    {"color", "Colour", "colour", "#3b82f6"},
+    {"width", "Width", "int", "", false, 1920, "", "px"},
+    {"height", "Height", "int", "", false, 1080, "", "px"},
+};
+
+// Which screen, and which window, are chosen by the portal picker at capture time and cannot be
+// chosen here: a Wayland client is not told what is on the machine and may not pick for itself
+// (ADR-0003). That is a property of the platform, not a gap in this build, so it is stated as
+// such rather than left as an empty dropdown.
+constexpr FieldSpec kScreen[] = {
+    {"", "Which screen is chosen in the portal's own picker when capture starts. A Wayland "
+         "client cannot enumerate or choose one for itself (ADR-0003).", "note"},
+    {"showCursor", "Show the cursor", "bool", "", true},
+    {"pauseWhenHidden", "Stop capturing while the source is not on screen", "bool", "", true},
+};
+
+constexpr FieldSpec kWindow[] = {
+    {"", "Which window is chosen in the portal's own picker when capture starts. A Wayland "
+         "client cannot enumerate or choose one for itself (ADR-0003).", "note"},
+    {"showCursor", "Show the cursor", "bool", "", true},
+    {"pauseWhenHidden", "Stop capturing while the source is not on screen", "bool", "", true},
+};
+
+constexpr FieldSpec kCamera[] = {
+    {"", "This build enumerates no devices, so the node is typed rather than picked from a "
+         "list. `libertas probe` reports what is attached to this machine.", "note"},
+    {"device", "Device", "text", "/dev/video0"},
+    {"resolution", "Resolution", "choice", "Leave unchanged", false, 0,
+     "Leave unchanged|1920x1080|1280x720|960x540|640x480"},
+    {"frameRate", "Frame rate", "choice", "Leave unchanged", false, 0,
+     "Leave unchanged|60|59.94|50|30|29.97|25|24"},
+    {"colourRange", "Colour range", "choice", "Default", false, 0, "Default|Partial|Full"},
+    {"buffering", "Use buffering", "bool", "", true},
+    {"autoresetOnTimeout", "Reset the device when it stops sending", "bool", "", false},
+    {"framesUntilTimeout", "Frames until timeout", "int", "", false, 5},
+};
+
+constexpr FieldSpec kBrowser[] = {
+    {"url", "URL", "text", "https://"},
+    {"", "A browser engine runs as a worker process of its own and is never loaded into ours "
+         "(ADR-0004), so a page that wedges costs this source and nothing else.", "note"},
+    {"width", "Width", "int", "", false, 1920, "", "px"},
+    {"height", "Height", "int", "", false, 1080, "", "px"},
+    {"fps", "Frame rate", "int", "", false, 30, "", "fps"},
+    {"css", "Custom CSS", "text"},
+    {"shutdownWhenHidden", "Shut the page down when it is not showing", "bool", "", false},
+    {"refreshOnActivate", "Reload when the source becomes active", "bool", "", false},
+};
+
+constexpr FieldSpec kAudioInput[] = {
+    {"", "This build enumerates no devices, so the node is typed rather than picked from a "
+         "list. `libertas probe` reports what PipeWire offers.", "note"},
+    {"device", "Device", "text", "default"},
+    {"channels", "Channels", "choice", "Stereo", false, 0, "Mono|Stereo"},
+    {"useDeviceTiming", "Timestamp from the device rather than the clock", "bool", "", true},
+};
+
+constexpr FieldSpec kAudioOutput[] = {
+    {"", "This build enumerates no devices, so the node is typed rather than picked from a "
+         "list. `libertas probe` reports what PipeWire offers.", "note"},
+    {"device", "Device", "text", "default"},
+    {"channels", "Channels", "choice", "Stereo", false, 0, "Mono|Stereo"},
+    {"useDeviceTiming", "Timestamp from the device rather than the clock", "bool", "", true},
+};
+
+std::span<const FieldSpec> schema_for(std::string_view type) {
+    if (type == "source.media")        return kMedia;
+    if (type == "source.image")        return kImage;
+    if (type == "source.text")         return kText;
+    if (type == "source.color")        return kColour;
+    if (type == "source.screen")       return kScreen;
+    if (type == "source.window")       return kWindow;
+    if (type == "source.v4l2")         return kCamera;
+    if (type == "source.browser")      return kBrowser;
+    if (type == "source.audio-input")  return kAudioInput;
+    if (type == "source.audio-output") return kAudioOutput;
+    // A type this build does not know -- a project from a later one. No fields rather than a
+    // guess at them, and the dialog says so on its face instead of offering an empty grid.
+    return {};
+}
+
+bool is_note(const FieldSpec& f) { return std::string_view{f.kind} == "note"; }
+
+QVariant default_of(const FieldSpec& f) {
+    const std::string_view kind{f.kind};
+    if (kind == "bool")
+        return f.flag;
+    if (kind == "int")
+        return QVariant::fromValue(static_cast<qlonglong>(f.number));
+    return QString::fromUtf8(f.text);
+}
+
+/// A stored value read back as the kind the schema declares, or invalid when it is stored as
+/// something else entirely -- a hand-edited project, or a key a later build meant differently.
+QVariant stored_as(const ldoc::ParamValue& v, std::string_view kind) {
+    if (kind == "bool") {
+        const auto* b = std::get_if<bool>(&v);
+        return b ? QVariant{*b} : QVariant{};
+    }
+    if (kind == "int") {
+        if (const auto* i = std::get_if<std::int64_t>(&v))
+            return QVariant::fromValue(static_cast<qlonglong>(*i));
+        if (const auto* d = std::get_if<double>(&v))
+            return QVariant::fromValue(static_cast<qlonglong>(std::llround(*d)));
+        return {};
+    }
+    if (kind == "colour") {
+        const auto* c = std::get_if<ldoc::Rgba>(&v);
+        return c ? QVariant{hex_of(*c)} : QVariant{};
+    }
+    const auto* s = std::get_if<std::string>(&v);
+    return s ? QVariant{qstr(*s)} : QVariant{};
+}
+
+/// What a brand-new source of this type is: every field the schema names, written out.
+///
+/// Not left sparse. The project format stores defaults rather than omitting them (ldoc's
+/// `ParamValue`), precisely so that a later build changing its mind about a default cannot
+/// silently change what an existing project means. A source created with an empty settings map
+/// is the sparse case arriving by the back door.
+ldoc::ParamMap default_settings(std::string_view type) {
+    ldoc::ParamMap out;
+    for (const FieldSpec& f : schema_for(type)) {
+        if (is_note(f))
+            continue;
+        const std::string_view kind{f.kind};
+        if (kind == "bool")
+            out.emplace(f.key, f.flag);
+        else if (kind == "int")
+            out.emplace(f.key, f.number);
+        else if (kind == "colour")
+            out.emplace(f.key, hex_to_rgba(QString::fromLatin1(f.text)).value_or(ldoc::Rgba{}));
+        else
+            out.emplace(f.key, std::string{f.text});
+    }
+    return out;
+}
+
+} // namespace
+
+
 QVariantList Document::sourceTypes() const {
     struct Entry {
         const char* id;
@@ -557,16 +808,12 @@ void Document::addSourceAsLayer(const QString& name, const QString& type, bool v
     src.id = ldoc::Id::generate();
     src.name = name.isEmpty() ? std::string{"Source"} : to_std(name);
     src.type = to_std(type);
-    // A media source in an emergency scene has to loop or the net expires (ADR-0025), and
-    // looping is the right default for every other use of one too.
-    if (src.type == "source.media")
-        src.settings.emplace("loop", true);
+    // Fully configured from the moment it exists, from the same table the gear's panel draws
+    // from. That is what gives a colour its real swatch for the add dialog to show, and what
+    // makes a media source loop -- which the emergency scene needs (ADR-0025) and which the
+    // check for one looks for by name.
+    src.settings = default_settings(src.type);
     const ldoc::Id source_id = src.id;
-
-    // A colour is the one source we can draw honestly with no renderer, so it is given one and
-    // the add dialog shows the real swatch rather than a stand-in.
-    if (src.type == "source.color")
-        src.settings.emplace("color", ldoc::Rgba::from_srgb8(0x3b, 0x82, 0xf6));
 
     ldoc::Node layer = ldoc::make_node(ldoc::NodeKind::Layer, src.name);
     layer.visible = visible;
@@ -609,23 +856,6 @@ void Document::addExistingSourceAsLayer(const QString& sourceId, bool visible) {
     selectLayer(id_str(layer_id));
 }
 
-namespace {
-
-QString swatch_of(const ldoc::Source& src) {
-    const auto it = src.settings.find("color");
-    if (it == src.settings.end())
-        return {};
-    const auto* rgba = std::get_if<ldoc::Rgba>(&it->second);
-    if (!rgba)
-        return {};
-    const auto c = rgba->to_srgb8();
-    return QStringLiteral("#%1%2%3")
-        .arg(c[0], 2, 16, QLatin1Char('0'))
-        .arg(c[1], 2, 16, QLatin1Char('0'))
-        .arg(c[2], 2, 16, QLatin1Char('0'));
-}
-
-} // namespace
 
 QVariantMap Document::source_tile(const ldoc::Source& src) const {
     const ldoc::Project& p = session_->project();
@@ -682,6 +912,92 @@ QVariantList Document::recentSources(int limit) const {
     return out;
 }
 
+// ---- a source's own settings ------------------------------------------------------------
+
+
+QVariantList Document::sourceSettingsSchema(const QString& type) const {
+    QVariantList out;
+    for (const FieldSpec& f : schema_for(to_std(type))) {
+        QVariantMap m;
+        m["kind"] = QString::fromLatin1(f.kind);
+        m["key"] = QString::fromLatin1(f.key);
+        m["label"] = QString::fromUtf8(f.label);
+        m["value"] = is_note(f) ? QVariant{QString{}} : default_of(f);
+        m["suffix"] = QString::fromLatin1(f.suffix);
+        const QString choices = QString::fromLatin1(f.choices);
+        m["choices"] = choices.isEmpty() ? QStringList{} : choices.split(QLatin1Char('|'));
+        out.append(m);
+    }
+    return out;
+}
+
+QVariantMap Document::sourceDetails(const QString& id) const {
+    const auto parsed = parse_id(id);
+    const ldoc::Source* src = parsed ? session_->project().source(*parsed) : nullptr;
+    if (!src)
+        return {};
+
+    QVariantMap m = source_tile(*src);
+    QVariantMap settings;
+    for (const FieldSpec& f : schema_for(src->type)) {
+        if (is_note(f))
+            continue;
+        QVariant v;
+        if (const auto it = src->settings.find(f.key); it != src->settings.end())
+            v = stored_as(it->second, f.kind);
+        // Absent, or stored as something this field cannot be: either way the default shows,
+        // so every field is always editable rather than blank and unexplained.
+        settings[QString::fromLatin1(f.key)] = v.isValid() ? v : default_of(f);
+    }
+    m["settings"] = settings;
+    m["fieldCount"] = static_cast<int>(settings.size());
+    return m;
+}
+
+void Document::applySourceSettings(const QString& id, const QString& name,
+                                   const QVariantMap& values) {
+    const auto parsed = parse_id(id);
+    const ldoc::Source* src = parsed ? session_->project().source(*parsed) : nullptr;
+    if (!src) {
+        emit notice(QStringLiteral("That source is no longer in the project."));
+        return;
+    }
+
+    ldoc::Source copy = *src;
+    if (!name.trimmed().isEmpty())
+        copy.name = to_std(name.trimmed());
+
+    for (const FieldSpec& f : schema_for(copy.type)) {
+        if (is_note(f))
+            continue;
+        const auto it = values.constFind(QString::fromLatin1(f.key));
+        if (it == values.constEnd())
+            continue;
+        const std::string_view kind{f.kind};
+        if (kind == "bool") {
+            copy.settings.insert_or_assign(std::string{f.key}, it->toBool());
+        } else if (kind == "int") {
+            copy.settings.insert_or_assign(std::string{f.key},
+                                           static_cast<std::int64_t>(it->toLongLong()));
+        } else if (kind == "colour") {
+            // Refused rather than rounded to something: see `hex_to_rgba`.
+            if (const auto rgba = hex_to_rgba(it->toString()))
+                copy.settings.insert_or_assign(std::string{f.key}, *rgba);
+            else
+                emit notice(QStringLiteral("'%1' is not a colour, so %2 was left as it was.")
+                                .arg(it->toString(), QString::fromUtf8(f.label)));
+        } else {
+            copy.settings.insert_or_assign(std::string{f.key}, to_std(it->toString()));
+        }
+    }
+
+    // Nothing was actually changed -- the dialog was opened and accepted. An undo step for that
+    // is a step the operator has to press Ctrl+Z through later to reach a real one.
+    if (copy == *src)
+        return;
+    run(ldoc::SetSource{std::move(copy)});
+}
+
 void Document::addSource(const QString& name, const QString& type) {
     if (type.isEmpty())
         return;
@@ -689,10 +1005,7 @@ void Document::addSource(const QString& name, const QString& type) {
     src.id = ldoc::Id::generate();
     src.name = name.isEmpty() ? std::string{"Input"} : to_std(name);
     src.type = to_std(type);
-    // A media source in an emergency scene has to loop or the net expires (ADR-0025), and
-    // looping is the right default for every other use of one too.
-    if (src.type == "source.media")
-        src.settings.emplace("loop", true);
+    src.settings = default_settings(src.type);
     run(ldoc::AddSource{std::move(src), session_->project().sources.size()});
 }
 

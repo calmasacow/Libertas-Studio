@@ -8,7 +8,10 @@
 # answer -- including whether a drop is legal -- comes back from there, so what the operator sees
 # is what the headless tests cover.
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick QuickShapes)
+# QuickDialogs2 is here for one thing: the file chooser behind a source's path setting. It is
+# the desktop's own dialog -- the XDG portal, on Wayland -- which is the only way a client gets a
+# path the sandbox will honour, and the one deliberate exception to ADR-0015's single surface.
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick QuickShapes QuickDialogs2)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -48,7 +51,9 @@ qt_add_qml_module(libertas-ui
         qml/BroadcastStatsPanel.qml
         qml/CheckLabel.qml
         qml/ChoiceField.qml
+        qml/ColourField.qml
         qml/ControlsPanel.qml
+        qml/DialogButton.qml
         qml/DragGhost.qml
         qml/DropOverlay.qml
         qml/FavouritesPanel.qml
@@ -62,11 +67,14 @@ qt_add_qml_module(libertas-ui
         qml/PanelFrame.qml
         qml/PropertiesPanel.qml
         qml/ScenesPanel.qml
+        qml/SettingRow.qml
         qml/ShortcutsPanel.qml
+        qml/SourceSettingsDialog.qml
         qml/SourcesPanel.qml
         qml/StatRow.qml
         qml/StatusBar.qml
         qml/TabStrip.qml
+        qml/TextLine.qml
         qml/ToolButton.qml
         qml/ToolTipText.qml
         qml/WorkspaceTabs.qml
@@ -79,6 +87,7 @@ target_link_libraries(libertas-ui PRIVATE
     libertas::ltheme
     Qt6::Gui
     Qt6::Quick
+    Qt6::QuickDialogs2
     Qt6::QuickShapes
 )
 

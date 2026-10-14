@@ -473,67 +473,23 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 8
 
-                Rectangle {
+                DialogButton {
                     objectName: "addExistingButton"
-                    width: 110
-                    height: 26
-                    radius: 2
+                    text: qsTr("Add existing")
+                    primary: true
+                    minimumWidth: 110
                     enabled: dialog.selectedSource !== "" && Document.selectedScene !== ""
-                    color: !enabled ? "transparent"
-                         : addMouse.pressed ? Theme.c.accent
-                         : addMouse.containsMouse ? Theme.c.panelHeaderActive
-                         : "transparent"
-                    border.width: 1
-                    border.color: !enabled ? Theme.c.border
-                                : addMouse.containsMouse ? Theme.c.accent
-                                : Theme.c.border
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: qsTr("Add existing")
-                        font.pixelSize: 11
-                        color: parent.enabled ? Theme.c.text : Theme.c.textMuted
-                        opacity: parent.enabled ? 1.0 : 0.45
-                    }
-
-                    MouseArea {
-                        id: addMouse
-
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        onClicked: {
-                            Document.addExistingSourceAsLayer(dialog.selectedSource,
-                                                              dialog.makeVisible);
-                            dialog.close();
-                        }
+                    onClicked: {
+                        Document.addExistingSourceAsLayer(dialog.selectedSource,
+                                                          dialog.makeVisible);
+                        dialog.close();
                     }
                 }
 
-                Rectangle {
+                DialogButton {
                     objectName: "closeAddSourceButton"
-                    width: 80
-                    height: 26
-                    radius: 2
-                    color: closeMouse.pressed ? Theme.c.accent
-                         : closeMouse.containsMouse ? Theme.c.panelHeaderActive
-                         : "transparent"
-                    border.width: 1
-                    border.color: closeMouse.containsMouse ? Theme.c.accent : Theme.c.border
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: qsTr("Close")
-                        font.pixelSize: 11
-                        color: Theme.c.text
-                    }
-
-                    MouseArea {
-                        id: closeMouse
-
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        onClicked: dialog.close()
-                    }
+                    text: qsTr("Close")
+                    onClicked: dialog.close()
                 }
             }
         }

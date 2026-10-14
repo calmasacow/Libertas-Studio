@@ -47,6 +47,7 @@ QVariant LayerModel::data(const QModelIndex& index, int role) const {
     case NameRole:        return r->name;
     case KindRole:        return r->kind;
     case SourceNameRole:  return r->sourceName;
+    case SourceIdRole:    return r->sourceId;
     case DepthRole:       return r->depth;
     case VisibleRole:     return r->visible;
     case LockedRole:      return r->locked;
@@ -60,6 +61,7 @@ QHash<int, QByteArray> LayerModel::roleNames() const {
     return {
         {IdRole, "layerId"},     {NameRole, "name"},
         {KindRole, "kind"},      {SourceNameRole, "sourceName"},
+        {SourceIdRole, "sourceId"},
         {DepthRole, "depth"},    {VisibleRole, "layerVisible"},
         {LockedRole, "locked"},  {IsGroupRole, "isGroup"},
         {EffectCountRole, "effectCount"},

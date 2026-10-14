@@ -839,6 +839,187 @@ int main(int argc, char** argv) {
         document.undo();
         settle();
 
+
+        // ---- a source's own settings, behind the gear -------------------------------------
+        //
+        // The dialog commits nothing until it is accepted, so what is checked is the commit:
+        // one command, with every value stored as the kind its field declares. A colour that
+        // arrives as a string, or a count that arrives as a double, is a project that reloads
+        // as something else.
+        document.addSourceAsLayer(QStringLiteral("Lower Third"),
+                                  QStringLiteral("source.browser"));
+        settle();
+        const QString browser_id = document.layerProperties().value("sourceId").toString();
+        const QString browser_layer = document.selectedLayer();
+        report(!browser_id.isEmpty(), "a layer carries the id of the source it is bound to");
+
+        for (const QVariant& v : document.sourceTypes()) {
+            const QString type = v.toMap().value("id").toString();
+            if (document.sourceSettingsSchema(type).isEmpty()) {
+                report(false, qPrintable(QStringLiteral("'%1' has no settings schema").arg(type)));
+                break;
+            }
+        }
+        report(true, "every source type has settings the gear can show");
+        report(document.sourceSettingsSchema(QStringLiteral("source.nonesuch")).isEmpty(),
+               "and a type this build does not know reports none rather than guessing");
+
+        {
+            bool well_formed = true;
+            for (const QVariant& v : document.sourceSettingsSchema(
+                     QStringLiteral("source.v4l2"))) {
+                const QVariantMap f = v.toMap();
+                const bool note = f.value("kind").toString() == QLatin1String("note");
+                well_formed = well_formed && !f.value("label").toString().isEmpty() &&
+                              (note ? f.value("key").toString().isEmpty()
+                                    : !f.value("key").toString().isEmpty());
+            }
+            report(well_formed, "every field is named and every note is keyless");
+        }
+
+        const QVariantMap browser = document.sourceDetails(browser_id);
+        report(!browser.isEmpty() && browser.value("typeTitle").toString() ==
+                                         QLatin1String("Browser"),
+               "the gear is given the source it is opened on");
+        report(browser.value("settings").toMap().value("fps").toInt() == 30,
+               "with the type's defaults showing through where nothing is stored");
+        report(document.sourceDetails(QStringLiteral("not-an-id")).isEmpty(),
+               "and asking about a source that is gone gives nothing, not a crash");
+
+        // Accepting without changing anything must not leave a step to undo past later.
+        const QString undo_before_settings = document.undoDescription();
+        document.applySourceSettings(browser_id, QStringLiteral("Lower Third"),
+                                     browser.value("settings").toMap());
+        settle();
+        report(document.undoDescription() == undo_before_settings,
+               "accepting a settings panel unchanged adds no undo step");
+
+        {
+            QVariantMap edited = browser.value("settings").toMap();
+            edited["url"] = QStringLiteral("https://example.invalid/overlay");
+            edited["fps"] = 60;
+            edited["shutdownWhenHidden"] = true;
+            document.applySourceSettings(browser_id, QStringLiteral("Overlay"), edited);
+            settle();
+            const QVariantMap after = document.sourceDetails(browser_id);
+            report(after.value("name").toString() == QLatin1String("Overlay"),
+                   "the settings panel renames the source");
+            report(after.value("settings").toMap().value("url").toString() ==
+                       QLatin1String("https://example.invalid/overlay"),
+                   "and stores what was typed");
+            report(after.value("settings").toMap().value("fps").toInt() == 60 &&
+                       after.value("settings").toMap().value("shutdownWhenHidden").toBool(),
+                   "a number stays a number and a checkbox a boolean");
+            report(document.undoDescription() != undo_before_settings,
+                   "as one undo step for the whole panel");
+            document.undo();
+            settle();
+            report(document.sourceDetails(browser_id).value("name").toString() ==
+                           QLatin1String("Lower Third") &&
+                       document.sourceDetails(browser_id).value("settings").toMap()
+                               .value("fps").toInt() == 30,
+                   "and one undo takes the name and every field back together");
+            document.redo();
+            settle();
+        }
+
+        // A colour has to reach the document as a colour, because that is what the compositor
+        // will read -- and a hex string that cannot be read is refused rather than becoming
+        // black, which is a difference nobody notices until the show.
+        document.addSourceAsLayer(QStringLiteral("Card"), QStringLiteral("source.color"));
+        settle();
+        {
+            const QString card_id = document.layerProperties().value("sourceId").toString();
+            QVariantMap settings = document.sourceDetails(card_id).value("settings").toMap();
+            report(settings.value("color").toString().startsWith('#'),
+                   "a colour reaches the panel as hex, which is what a human types");
+            settings["color"] = QStringLiteral("#ff8800");
+            settings["width"] = 1280;
+            document.applySourceSettings(card_id, QString{}, settings);
+            settle();
+            const QVariantMap after = document.sourceDetails(card_id);
+            report(after.value("swatch").toString() == QLatin1String("#ff8800"),
+                   "and goes back as one, through the project");
+            report(after.value("settings").toMap().value("width").toInt() == 1280,
+                   "beside the fields that are not colours");
+
+            QString refusal;
+            QMetaObject::Connection cc = QObject::connect(
+                &document, &libertas::ui::Document::notice,
+                [&refusal](const QString& t) { refusal = t; });
+            QVariantMap bad = after.value("settings").toMap();
+            bad["color"] = QStringLiteral("not a colour");
+            document.applySourceSettings(card_id, QString{}, bad);
+            settle();
+            QObject::disconnect(cc);
+            report(!refusal.isEmpty(), "a colour that cannot be read is refused out loud");
+            report(document.sourceDetails(card_id).value("swatch").toString() ==
+                       QLatin1String("#ff8800"),
+                   "and the colour that was there is left alone rather than going black");
+        }
+
+        // The gear, and what disables it. A group has nothing bound to it, and neither does a
+        // bare layer -- so neither has settings, and the button says so instead of opening an
+        // empty panel.
+        {
+            const QList<QQuickItem*> gears =
+                collect(window->contentItem(), QStringLiteral("sourceSettingsButton"));
+            report(gears.size() == 1, "the Sources panel has a gear in its footer");
+            document.selectLayer(browser_layer);
+            settle();
+            report(!gears.isEmpty() && gears.front()->isEnabled(),
+                   "enabled on a layer that is bound to a source");
+            document.addGroup(QStringLiteral("Overlays"));
+            settle();
+            report(document.layerProperties().value("sourceId").toString().isEmpty(),
+                   "a group is bound to nothing");
+            report(!gears.isEmpty() && !gears.front()->isEnabled(),
+                   "so the gear is disabled on one");
+            document.undo();
+            settle();
+        }
+
+        // And the panel itself, on screen. Driven through the same function the gear and the
+        // double-click call, so this covers the QML rather than only the C++ under it.
+        {
+            const QList<QQuickItem*> panels =
+                collect(window->contentItem(), QStringLiteral("sourceSettingsDialog"));
+            report(panels.size() == 1, "the settings panel is in the scene graph");
+            if (!panels.isEmpty()) {
+                report(!panels.front()->isVisible(), "closed until something opens it");
+                QMetaObject::invokeMethod(panels.front(), "open",
+                                          Q_ARG(QVariant, QVariant{browser_id}));
+                settle();
+                report(panels.front()->isVisible(), "and visible once a source is handed to it");
+
+                int expected = 0;
+                for (const QVariant& v : document.sourceSettingsSchema(
+                         QStringLiteral("source.browser")))
+                    expected += v.toMap().value("kind").toString() == QLatin1String("note")
+                                    ? 0 : 1;
+                int drawn_fields = 0;
+                for (const QQuickItem* r : collect(window->contentItem(),
+                                                   QStringLiteral("sourceSettingRow"))) {
+                    if (r->height() > 1.0 && r->width() > 1.0)
+                        ++drawn_fields;
+                }
+                report(drawn_fields >= expected,
+                       "with a row drawn for every field the schema names");
+
+                const QList<QQuickItem*> previews =
+                    collect(window->contentItem(), QStringLiteral("sourceSettingsPreview"));
+                report(previews.size() == 1 && previews.front()->height() > 20.0,
+                       "and a preview above them with real size");
+
+                QMetaObject::invokeMethod(panels.front(), "close");
+                settle();
+                report(!panels.front()->isVisible(), "Cancel puts it away");
+            }
+        }
+
+        document.selectLayer(browser_layer);
+        settle();
+
         // ---- the audio mixer -------------------------------------------------------------
         //
         // No audio host exists yet, so what is checked here is the document half: the buses, the

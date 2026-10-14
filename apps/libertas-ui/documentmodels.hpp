@@ -59,6 +59,9 @@ struct LayerRow {
     QString kind;
     /// What the layer is bound to, for the second line of the row. Empty when nothing is.
     QString sourceName;
+    /// The id of that source, so a row can open its settings without a lookup by name --
+    /// names are not unique and two cameras called "Cam" are a normal thing to have.
+    QString sourceId;
     /// Depth in the scene tree; a layers panel is a flattened tree with indentation.
     int depth = 0;
     bool visible = true;
@@ -78,6 +81,7 @@ public:
         NameRole,
         KindRole,
         SourceNameRole,
+        SourceIdRole,
         DepthRole,
         VisibleRole,
         LockedRole,

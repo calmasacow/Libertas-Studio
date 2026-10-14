@@ -18,6 +18,12 @@ Item {
     required property string label
     property real value: 0
     property int decimals: 2
+    /// The caption column. Wider in a dialog than in a docked panel, where 54 is all there is
+    /// to give it, so it is a property rather than the constant it used to be.
+    property int labelWidth: 54
+    property int labelAlign: Text.AlignLeft
+    /// A unit printed inside the box, after the number. Never a value.
+    property string suffix: ""
 
     signal committed(real newValue)
 
@@ -28,7 +34,8 @@ Item {
 
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
-        width: 54
+        width: field.labelWidth
+        horizontalAlignment: field.labelAlign
         text: field.label
         font.pixelSize: 11
         color: Theme.c.textMuted
@@ -57,12 +64,24 @@ Item {
             acceptedButtons: Qt.NoButton
         }
 
+        Text {
+            id: unit
+
+            anchors.right: parent.right
+            anchors.rightMargin: 6
+            anchors.verticalCenter: parent.verticalCenter
+            visible: field.suffix !== ""
+            text: field.suffix
+            font.pixelSize: 10
+            color: Theme.c.textMuted
+        }
+
         TextInput {
             id: input
 
             anchors.fill: parent
             anchors.leftMargin: 5
-            anchors.rightMargin: 5
+            anchors.rightMargin: unit.visible ? unit.width + 10 : 5
             verticalAlignment: TextInput.AlignVCenter
             font.pixelSize: 11
             color: field.enabled ? Theme.c.text : Theme.c.textMuted

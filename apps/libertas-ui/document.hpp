@@ -150,6 +150,33 @@ public:
     /// appended to the project, so this is the tail reversed -- the real order, not a guess.
     Q_INVOKABLE [[nodiscard]] QVariantList recentSources(int limit) const;
 
+    // ---- a source's own settings, behind the gear in the Sources panel ----------------------
+    //
+    // A source's settings are document state, not pipeline state: they are what the render
+    // process will be told to open when it exists, and they serialise into the project today.
+    // So editing them now is real work rather than a mock-up -- the same reasoning that applies
+    // to the outputs panel, which configures encoders no encoder reads yet.
+
+    /// What a source of this type is configured by, in the order the dialog should draw it.
+    /// Each entry carries `key`, `label`, `kind` and `value` -- the type's default -- plus
+    /// `choices` and `suffix` where the kind uses them.
+    ///
+    /// A `note` entry has no key and no value: it is a line of prose the dialog prints above
+    /// the field it is about. They are in the schema rather than looked up separately so that
+    /// a note sits where it belongs instead of all of them piling up at the top.
+    Q_INVOKABLE [[nodiscard]] QVariantList sourceSettingsSchema(const QString& type) const;
+    /// Everything the settings dialog needs: the tile fields plus `settings`, which is the
+    /// stored values with the type's defaults showing through wherever a key is absent.
+    Q_INVOKABLE [[nodiscard]] QVariantMap sourceDetails(const QString& id) const;
+    /// Commit a dialog's worth of edits as one `SetSource`, and so one undo step.
+    ///
+    /// Values are coerced to the kind the schema declares for each key, which is what stops a
+    /// field from changing which alternative of `ParamValue` a setting is stored as merely by
+    /// being typed into. Keys the schema does not name are left exactly as they were: a project
+    /// written by a later build keeps settings this one cannot draw.
+    Q_INVOKABLE void applySourceSettings(const QString& id, const QString& name,
+                                         const QVariantMap& values);
+
     Q_INVOKABLE void addSource(const QString& name, const QString& type);
     Q_INVOKABLE void removeSource(const QString& id);
     Q_INVOKABLE void renameSource(const QString& id, const QString& name);

@@ -26,6 +26,28 @@ Item {
     /// The add menu is open. Closed by picking something, or by the + again.
     property bool adding: false
 
+    /// The layer whose name is being typed over, or empty. Held here rather than in the row so
+    /// that something outside the row -- F2 -- can start a rename, and so that two rows cannot
+    /// both be in edit at once.
+    property string renaming: ""
+
+    /// Open a source's settings. Takes the source id rather than the layer's, because that is
+    /// what is being configured: one camera in six scenes has one set of settings, and editing
+    /// it from any of the six is editing the same thing.
+    function configure(sourceId) {
+        if (sourceId !== "")
+            settingsDialog.open(sourceId);
+    }
+
+    // Renaming has to stay reachable now that double-click opens the settings instead. F2 is
+    // where every file manager and every NLE put it, and it acts on the selected row wherever
+    // the pointer is.
+    Shortcut {
+        sequence: "F2"
+        enabled: Document.selectedLayer !== ""
+        onActivated: panel.renaming = Document.selectedLayer
+    }
+
     Text {
         anchors.centerIn: parent
         visible: Document.selectedScene === ""
@@ -56,6 +78,7 @@ Item {
             required property string name
             required property string kind
             required property string sourceName
+            required property string sourceId
             required property int depth
             required property bool layerVisible
             required property bool locked
@@ -63,6 +86,7 @@ Item {
             required property int effectCount
 
             readonly property bool selected: Document.selectedLayer === row.layerId
+            readonly property bool editing: panel.renaming === row.layerId
 
             width: ListView.view.width
             height: 26
@@ -76,11 +100,16 @@ Item {
                 anchors.fill: parent
                 hoverEnabled: true
                 onClicked: Document.selectLayer(row.layerId)
+                // Double-click opens the settings for what the row is bound to, which is what
+                // OBS does and what the operator asked for. A group, or a layer bound to
+                // nothing, has no settings to open -- so there it still starts a rename, which
+                // is the only thing a double-click could usefully mean on one.
                 onDoubleClicked: {
-                    rename.text = row.name;
-                    rename.visible = true;
-                    rename.forceActiveFocus();
-                    rename.selectAll();
+                    Document.selectLayer(row.layerId);
+                    if (row.sourceId !== "")
+                        panel.configure(row.sourceId);
+                    else
+                        panel.renaming = row.layerId;
                 }
             }
 
@@ -125,7 +154,7 @@ Item {
 
                 Text {
                     width: parent.width
-                    visible: !rename.visible
+                    visible: !row.editing
                     text: row.name
                     font.pixelSize: 12
                     font.weight: row.isGroup ? Font.DemiBold : Font.Normal
@@ -137,7 +166,7 @@ Item {
 
                 Text {
                     width: parent.width
-                    visible: !rename.visible && row.sourceName !== ""
+                    visible: !row.editing && row.sourceName !== ""
                     text: row.sourceName
                     font.pixelSize: 9
                     color: row.selected ? Theme.c.window : Theme.c.textMuted
@@ -153,22 +182,29 @@ Item {
                 anchors.leftMargin: 6
                 anchors.right: badges.left
                 anchors.verticalCenter: parent.verticalCenter
-                visible: false
+                visible: row.editing
                 font.pixelSize: 12
                 color: row.selected ? Theme.c.window : Theme.c.text
                 selectionColor: Theme.c.accent
                 selectByMouse: true
 
+                onVisibleChanged: {
+                    if (visible) {
+                        text = row.name;
+                        forceActiveFocus();
+                        selectAll();
+                    }
+                }
                 onAccepted: {
-                    visible = false;
+                    panel.renaming = "";
                     if (text !== row.name)
                         Document.renameLayer(row.layerId, text);
                 }
                 onActiveFocusChanged: {
-                    if (!activeFocus)
-                        visible = false;
+                    if (!activeFocus && row.editing)
+                        panel.renaming = "";
                 }
-                Keys.onEscapePressed: visible = false
+                Keys.onEscapePressed: panel.renaming = ""
             }
 
             Row {
@@ -231,6 +267,13 @@ Item {
         onClosed: panel.adding = false
     }
 
+    // The gear's panel, parented the same way and for the same reasons.
+    SourceSettingsDialog {
+        id: settingsDialog
+
+        objectName: "sourceSettingsDialog"
+        parent: panel.Window.contentItem
+    }
 
     Rectangle {
         id: footer
@@ -279,6 +322,22 @@ Item {
                 tip: qsTr("Add group")
                 enabled: Document.selectedScene !== ""
                 onClicked: Document.addGroup("")
+            }
+
+            // The gear, where OBS puts it: what the selected row is *bound to*, not the row.
+            // Disabled on a group and on a layer bound to nothing, because neither has
+            // anything to configure, and the tip says which it is rather than leaving a dead
+            // button to be poked at.
+            ToolButton {
+                objectName: "sourceSettingsButton"
+                label: "⚙"
+                tip: Document.selectedLayer === "" ? qsTr("Settings")
+                   : Document.layerProperties.sourceId === ""
+                     ? qsTr("This has no source to configure")
+                     : qsTr("Settings for %1").arg(Document.layerProperties.name)
+                enabled: Document.selectedLayer !== "" &&
+                         Document.layerProperties.sourceId !== ""
+                onClicked: panel.configure(Document.layerProperties.sourceId)
             }
         }
 

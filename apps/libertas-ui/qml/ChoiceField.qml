@@ -18,6 +18,9 @@ Item {
     required property string label
     property var choices: []
     property string value: ""
+    /// See NumberField: a dialog can afford a wider caption column than a docked panel can.
+    property int labelWidth: 54
+    property int labelAlign: Text.AlignLeft
 
     signal committed(string newValue)
 
@@ -28,7 +31,8 @@ Item {
 
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
-        width: 54
+        width: field.labelWidth
+        horizontalAlignment: field.labelAlign
         text: field.label
         font.pixelSize: 11
         color: Theme.c.textMuted
