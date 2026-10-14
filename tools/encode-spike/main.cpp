@@ -107,13 +107,21 @@ int main(int argc, char** argv) {
         } else if (a == "--slots" && i + 1 < args.size()) {
             slots = static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(), nullptr, 10));
         } else if (a == "--idle-timeout" && i + 1 < args.size()) {
-            const double secs = std::strtod(std::string(args[++i]).c_str(), nullptr);
-            // Negated range test so NaN fails too; the bound keeps milliseconds inside uint32.
-            if (!(secs >= 0.0 && secs <= 4'000'000.0)) {
-                lc::error("--idle-timeout takes seconds, 0 or more (0 = never), got '{}'", args[i]);
+            const std::string raw{args[++i]};
+            char* end = nullptr;
+            const double secs = std::strtod(raw.c_str(), &end);
+            // strtod returns 0 for text it cannot read, so without the end pointer a typo would
+            // mean "never time out" -- the hang this flag exists to end. The range test also
+            // catches NaN and inf and keeps milliseconds inside uint32.
+            if (end == raw.c_str() || *end != '\0' || !(secs >= 0.0 && secs <= 4'000'000.0)) {
+                lc::error("--idle-timeout takes seconds, 0 or more (0 = never), got '{}'", raw);
                 return 2;
             }
-            idle_timeout_ms = static_cast<std::uint32_t>(secs * 1000.0);
+            // A positive value always means a timeout. Truncating 0.0004 s to 0 ms would turn
+            // the smallest timeout anyone could type into "never", which is the one value it
+            // cannot be allowed to mean.
+            const double ms = secs * 1000.0;
+            idle_timeout_ms = secs > 0.0 && ms < 1.0 ? 1u : static_cast<std::uint32_t>(ms);
         } else if (a == "--fps" && i + 1 < args.size()) {
             fps = static_cast<std::int32_t>(std::strtol(std::string(args[++i]).c_str(), nullptr, 10));
         } else if (a == "--bitrate" && i + 1 < args.size()) {

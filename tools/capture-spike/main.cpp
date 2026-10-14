@@ -874,15 +874,24 @@ int main(int argc, char** argv) {
             if (wl_slots == 0)
                 wl_slots = 1;
         } else if (a == "--idle-timeout" && i + 1 < args.size()) {
-            const double secs = std::strtod(std::string(args[++i]).c_str(), nullptr);
-            // Written as a negated range test so NaN fails it too; the upper bound keeps the
-            // conversion to milliseconds inside uint32 (about 49 days).
-            if (!(secs >= 0.0 && secs <= 4'000'000.0)) {
+            const std::string raw{args[++i]};
+            char* end = nullptr;
+            const double secs = std::strtod(raw.c_str(), &end);
+            // The end pointer is the point: strtod does not fail, it returns 0 and converts
+            // nothing. Without this, `--idle-timeout nope` would read as 0 -- "wait for ever" --
+            // and a typo would restore the exact hang this flag exists to end. The negated range
+            // test also catches NaN and inf; the upper bound keeps the conversion to
+            // milliseconds inside uint32 (about 49 days).
+            if (end == raw.c_str() || *end != '\0' || !(secs >= 0.0 && secs <= 4'000'000.0)) {
                 lc::error("--idle-timeout takes seconds, 0 or more (0 waits for ever), got '{}'",
-                          args[i]);
+                          raw);
                 return 1;
             }
-            idle_timeout_ms = static_cast<std::uint32_t>(secs * 1000.0);
+            // A positive value always means a timeout. Truncating 0.0004 s to 0 ms would turn
+            // the smallest timeout anyone could type into "never", which is the one value it
+            // cannot be allowed to mean.
+            const double ms = secs * 1000.0;
+            idle_timeout_ms = secs > 0.0 && ms < 1.0 ? 1u : static_cast<std::uint32_t>(ms);
         } else if (a == "--frames" && i + 1 < args.size()) {
             wl_frames = static_cast<std::uint32_t>(std::strtoul(std::string(args[++i]).c_str(),
                                                                 nullptr, 10));
