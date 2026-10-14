@@ -28,10 +28,7 @@ std::string_view name_of(const std::array<std::pair<T, std::string_view>, N>& ta
 
 constexpr std::array<std::pair<NodeKind, std::string_view>, 6> kNodeKinds = {{
     {NodeKind::Group, "group"},
-    // The pre-ADR-0028 word, still on the wire: it changes with its migration in the format bump
-    // ADR-0027 and ADR-0028 share, not on its own. Anything showing a kind to the operator
-    // should not read this table, because it is the file format's vocabulary, not the screen's.
-    {NodeKind::Source, "layer"},
+    {NodeKind::Source, "source"},
     {NodeKind::Adjustment, "adjustment"},
     {NodeKind::Mask, "mask"},
     {NodeKind::Reference, "reference"},
@@ -53,6 +50,11 @@ constexpr std::array<std::pair<ReferenceMode, std::string_view>, 2> kReferenceMo
 
 std::string_view to_string(NodeKind k) { return name_of(kNodeKinds, k); }
 std::optional<NodeKind> node_kind_from_string(std::string_view s) {
+    // Version 1 wrote "layer" for what version 2 calls a source (ADR-0028). Accepted on the way
+    // in for as long as a version 1 project can be opened at all, which is the same promise the
+    // migration makes; never written out.
+    if (s == "layer")
+        return NodeKind::Source;
     return lookup(kNodeKinds, s);
 }
 

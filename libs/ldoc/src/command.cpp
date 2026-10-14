@@ -148,9 +148,7 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetDeckPreview>) return "deck.set-preview";
             else if constexpr (std::is_same_v<T, SetCanvasEmergencyScene>)
                 return "canvas.set-emergency-scene";
-            // The pre-ADR-0028 word, kept on the wire until the shared format bump: see
-            // SetNodeSource.
-            else if constexpr (std::is_same_v<T, SetNodeSource>) return "layer.set-source";
+            else if constexpr (std::is_same_v<T, SetNodeSource>) return "node.set-source";
             else if constexpr (std::is_same_v<T, AddSource>) return "source.add";
             else if constexpr (std::is_same_v<T, RemoveSource>) return "source.remove";
             else if constexpr (std::is_same_v<T, SetSource>) return "source.set";

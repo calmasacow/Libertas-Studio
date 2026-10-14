@@ -31,12 +31,9 @@ std::optional<ldoc::Id> parse_id(const QString& s) {
     return ldoc::Id::parse(to_std(s));
 }
 
-/// A node's kind as the screen says it. `ldoc::to_string` is the file format's word, and for a
-/// source node that is still "layer" until the format bump ADR-0027 and ADR-0028 share -- which
-/// the properties panel would otherwise print. When the bump lands this is `to_string` again.
+/// A node's kind as a string for QML. Since the format bump this is simply the format's own
+/// word: `to_string` says "source" where it used to say "layer" (ADR-0028).
 QString kind_str(ldoc::NodeKind k) {
-    if (k == ldoc::NodeKind::Source)
-        return QStringLiteral("source");
     const auto s = ldoc::to_string(k);
     return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size()));
 }

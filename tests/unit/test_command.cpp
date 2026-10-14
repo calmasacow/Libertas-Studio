@@ -806,6 +806,28 @@ LTEST_CASE(random_command_sequences_undo_and_redo_to_the_exact_same_project) {
     }
 }
 
+LTEST_CASE(the_version_1_name_for_binding_a_source_is_still_read) {
+    // The journal is replayed during crash recovery, which is the worst possible place for a
+    // strict parser: refusing an entry written by last week's build loses exactly the work the
+    // journal exists to save. So "layer.set-source" is still accepted (ADR-0028) -- and
+    // "node.set-source" is the only name ever written.
+    Fixture f;
+    const Id source = f.existing_source;
+
+    const auto old_name = command_from_json(
+        std::format(R"({{"cmd":"layer.set-source","scene":"{}","node":"{}","source":"{}"}})",
+                    f.scene.to_string(), f.loose.to_string(), source.to_string()));
+    REQUIRE_MSG(old_name.has_value(), "{}", old_name.error());
+    CHECK(std::holds_alternative<SetNodeSource>(*old_name));
+    CHECK(apply(f.project, *old_name).has_value());
+
+    CHECK_EQ(std::string{command_name(SetNodeSource{f.scene, f.loose, source})},
+             std::string{"node.set-source"});
+    CHECK_MSG(command_to_json(SetNodeSource{f.scene, f.loose, source}).find("layer.") ==
+                  std::string::npos,
+              "the old name was written back out");
+}
+
 LTEST_CASE(every_applied_command_survives_the_journal_shaped_round_trip) {
     // Each command is applied, serialised, parsed back and applied to a fresh copy; the two
     // projects must agree. This is replay, which is what the journal does after a crash.

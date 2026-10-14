@@ -31,17 +31,10 @@ std::string fps_text(const ldoc::Fps& f) {
                       : std::format("{}/{} ({:.3f})", f.num, f.den, f.hz());
 }
 
-/// The kind as the operator would say it. `ldoc::to_string` is the file format's word, and for a
-/// source node that is still "layer" until the format bump ADR-0027 and ADR-0028 share; this
-/// goes back to being `to_string` when it lands.
-std::string_view kind_word(ldoc::NodeKind k) {
-    return k == ldoc::NodeKind::Source ? std::string_view{"source"} : ldoc::to_string(k);
-}
-
 void print_tree(const std::vector<ldoc::Node>& nodes, const ldoc::Project& p, int depth) {
     for (const ldoc::Node& n : nodes) {
         std::string line(static_cast<std::size_t>(depth) * 2 + 4, ' ');
-        line += std::format("{} {}", kind_word(n.kind()),
+        line += std::format("{} {}", ldoc::to_string(n.kind()),
                             n.name.empty() ? "(unnamed)" : n.name);
         if (!n.visible)
             line += "  [hidden]";

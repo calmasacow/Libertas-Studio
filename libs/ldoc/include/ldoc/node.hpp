@@ -55,9 +55,8 @@ enum class NodeKind : std::uint8_t {
     Group,
     /// A source placed in this scene, bound to a project-level Source. See SourceData.
     ///
-    /// Serialised as `"layer"`, the word this kind had before ADR-0028. The string changes in
-    /// the format bump ADR-0027 and ADR-0028 share, with its migration, and not before: changing
-    /// it alone would be a second bump that the shared one exists to prevent.
+    /// Serialised as `"source"`. Version 1 wrote `"layer"`, which `node_kind_from_string` still
+    /// accepts and nothing writes any more (ADR-0028).
     Source,
     /// Effects only, applied to the composite beneath it. What makes blend modes genuinely
     /// useful, and what OBS has no equivalent of.

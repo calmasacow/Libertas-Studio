@@ -472,7 +472,10 @@ std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
         out = SetDeckPreview{rd.id(o, "deck", path), rd.id_opt(o, "scene", path)};
     } else if (name == "canvas.set-emergency-scene") {
         out = SetCanvasEmergencyScene{rd.id(o, "canvas", path), rd.id_opt(o, "scene", path)};
-    } else if (name == "layer.set-source") { // see SetNodeSource for why not "node."
+    // "layer.set-source" is the version 1 spelling. Still read, never written: the journal
+    // is replayed during crash recovery, and refusing an older entry there would lose the
+    // work the journal exists to save (ADR-0028).
+    } else if (name == "node.set-source" || name == "layer.set-source") {
         out = SetNodeSource{rd.id(o, "scene", path), rd.id(o, "node", path),
                             rd.id_opt(o, "source", path)};
     } else if (name == "source.add") {

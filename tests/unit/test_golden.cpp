@@ -514,6 +514,16 @@ LTEST_CASE(a_migrated_project_saves_as_the_current_version) {
     CHECK_EQ(reread->project.schema_version, kSchemaVersion);
     CHECK_MSG(text->find("canvas_overrides") == std::string::npos,
               "the saved project still carries the field the bump removed");
+
+    // And the scene files use the new word for a source node. Version 1 wrote "layer"
+    // (ADR-0028); the reader still accepts it, the writer never produces it again.
+    for (const Scene& sc : opened->project.scenes) {
+        const auto scene_text =
+            lc::read_file(dir / "scenes" / std::format("{}.json", sc.id.to_string()));
+        REQUIRE(scene_text.has_value());
+        CHECK_MSG(scene_text->find("\"layer\"") == std::string::npos,
+                  "scene '{}' was written with the version 1 word for a source node", sc.name);
+    }
 }
 
 LTEST_CASE(this_build_still_writes_the_committed_bytes) {

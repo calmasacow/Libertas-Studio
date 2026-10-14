@@ -185,9 +185,10 @@ struct SetEffectEnabled {
 /// Sources are project-level, so this is a reference rather than ownership: two source nodes
 /// binding the same source show one camera, not two.
 ///
-/// Its wire name is still `layer.set-source`, the only command name carrying the old word. It
-/// becomes `node.set-source` in the format bump ADR-0027 and ADR-0028 share, because the journal
-/// and the websocket API read it too and the name is a promise to both.
+/// Its wire name is `node.set-source`. It was `layer.set-source` before the version 2 bump, and
+/// the reader still accepts that spelling: the journal is read during crash recovery, which is
+/// the worst possible place for a strict parser, and `command_name()` is documented as stable
+/// on the websocket API. Only the new name is ever written.
 struct SetNodeSource {
     Id scene;
     Id node;

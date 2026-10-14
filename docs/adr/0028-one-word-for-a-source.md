@@ -118,3 +118,25 @@ undo history ("Hide layer"), the Properties panel's empty state and its kind fie
 routing line and tips, the Info panel's count, the settings dialog's use count and the shortcut
 names all still said "layer". They say "source" now, following the operator's call that the word
 leaves the screen as well as the code.
+
+## Implementation note, 2026-10-14 — the wire format, in the combined bump
+
+The rest of it landed with `kSchemaVersion` going to 2, beside ADR-0027 and ADR-0029, which is
+the single migration the note above exists to protect.
+
+- **`"kind": "layer"` is now `"kind": "source"`.** `node_kind_from_string` still accepts
+  `"layer"`, for as long as a version 1 project can be opened at all; nothing writes it.
+- **`layer.set-source` is now `node.set-source`.** The reader accepts both. The journal is
+  replayed during crash recovery, and refusing an entry written by last week's build would lose
+  exactly the work the journal exists to save — so the old spelling stays readable rather than
+  tidy. `command_name()` only ever returns the new one, which is what the websocket API's
+  stability promise is about.
+- **`kind_str()` in `document.cpp` and `kind_word()` in `inspect.cpp` are deleted.** They existed
+  only to say "source" where `to_string` said "layer", and both call sites are back on
+  `to_string`. Leaving them would have quietly kept two vocabularies alive, which is what this
+  ADR is against.
+- **The four `layer.*` action ids in `lsession` are still untouched**, for the reason given
+  above: they are keys in the operator's bindings TOML, which no schema version covers.
+
+The frozen `golden-project-v1` fixture still contains `"kind": "layer"`, which is what makes the
+compatibility claim a test rather than an assertion.

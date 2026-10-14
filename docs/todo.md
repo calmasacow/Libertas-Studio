@@ -173,29 +173,45 @@ Never at a live key.
   `libertas-render`. The largest remaining piece of work; its transport foundation (`lipc`,
   ADR-0026) exists and is tested headless.
 
-## What the combined format bump still owes
+## The combined format bump, done on 2026-10-14
 
-[ADR-0028](adr/0028-one-word-for-a-source.md) is **built in the C++ and not on the wire** — see
-"Done" below. Three things were deliberately left for the single bump ADR-0027 and ADR-0029 share,
-and they are listed here so the bump does not have to rediscover them:
+`kSchemaVersion` is **2**, and all three ADRs that were waiting for it landed together, in that
+order: [ADR-0027](adr/0027-scenes-belong-to-a-canvas.md) (scenes belong to a canvas, links are
+cues), [ADR-0029](adr/0029-an-encode-is-a-thing.md) (an encode is a document object an output
+names) and [ADR-0028](adr/0028-one-word-for-a-source.md)'s wire half. Each ADR now carries an
+implementation note recording what was decided while building it.
 
-1. **`"kind": "layer"`.** A source node still serialises under the old word. One line in
-   `node.cpp`, and the migration that goes with it.
-2. **`layer.set-source` → `node.set-source`.** It is the only command still carrying the word, and
-   it is a format in two places: the crash-recovery journal and the websocket API, which
-   `command_name()` documents as stable. The reader should accept both names for a while rather
-   than refusing an older journal — crash recovery is the worst possible place for a strict
-   parser.
-3. **`kind_str()` in `document.cpp` and `kind_word()` in `inspect.cpp`.** Two small helpers that
-   return "source" where `ldoc::to_string(NodeKind)` still returns "layer", because that function
-   serves the file format and the screen at once. **Delete both when the wire word changes** and
-   go back to `to_string`; leaving them would quietly keep two vocabularies alive.
+Everything the old "still owes" list named is done: `"kind": "layer"` is `"source"` on the wire
+with `"layer"` still accepted on the way in; `layer.set-source` is `node.set-source` with the
+old name still read, because the journal is replayed during crash recovery and that is the worst
+possible place for a strict parser; and `kind_str()` in `document.cpp` and `kind_word()` in
+`inspect.cpp` are deleted, with both call sites back on `to_string`.
 
-Not part of the bump, and deliberately so: the four `layer.*` action ids in `lsession`
+The four `layer.*` action ids in `lsession` are **still deliberately untouched**
 (`layer.delete`, `layer.move-forward`, `layer.move-back`, `layer.toggle-visible`). They are keys
-in the operator's bindings TOML, which no `kSchemaVersion` covers, so renaming them would silently
-unbind keys the operator chose. Their display names already say "source". If they are ever
-renamed it needs either a migration of that file or an alias in `find_action`.
+in the operator's bindings TOML, which no `kSchemaVersion` covers, so renaming them would
+silently unbind keys the operator chose. Their display names already say "source". Renaming them
+needs either a migration of that file or an alias in `find_action`.
+
+The golden fixture is now a pair. `golden-project-v1` is **frozen and must never be
+regenerated** -- its value is that it was written by a build predating the change, so opening it
+exercises the real migration rather than a reconstruction of what version 1 is believed to have
+looked like. `golden-project-v2` is the byte-for-byte fixture, and carries a scene link, a
+vertical scene of its own, and two encodes feeding three destinations.
+
+### What this did not build
+
+- **The canvas the shell is working on.** Every panel still works against `canvases.front()`.
+  A new scene lands on the first canvas and the scenes panel shows every canvas's scenes at
+  once. This is the bulk of ADR-0027 and it waits on the Canvas panel below.
+- **The linking panel.** The model is there -- `Project::scene_links`, `AddSceneLink`,
+  `RemoveSceneLink` -- and the three open questions under "the linking panel" still need the
+  operator.
+- **Start All / Stop All.** Nothing to start: no output actually runs yet, and the shell still
+  reports "Start/Stop Streaming is not wired up".
+- **Backtrack**, which has no document shape yet.
+- **Garbage-collecting an encode** whose last output was removed. It is kept, because nothing
+  yet says which of the two the operator meant.
 
 ## Verified on argus and the dev box, 2026-10-13 and 2026-10-14
 
