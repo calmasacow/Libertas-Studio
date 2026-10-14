@@ -162,6 +162,11 @@ Never at a live key.
 
 ## Deferred by choice
 
+- **Tweaks to the source settings panel.** The operator looked at the built panel on
+  2026-10-13, said "there is some things that need tweaking", and on 2026-10-14 put it on
+  the back burner as not yet finalised. Nothing is known about what the tweaks are, so there
+  is nothing to guess at here — this entry exists only so the panel is not mistaken for
+  finished.
 - Asset commands.
 - Compound editing beyond `Batch` (the 40th command).
 - **The render path as product code** — `lcapture`, `lcomp` and `lmedia` wired into
