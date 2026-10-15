@@ -182,6 +182,17 @@ int main(int argc, char** argv) {
     QObject::connect(&document, &libertas::ui::Document::notice, &app, say);
     QObject::connect(&shortcuts, &libertas::ui::Shortcuts::notice, &app, say);
 
+    // Each canvas has its own Scenes and Sources panels, so the workspace has to be told
+    // which canvases exist -- to title them "Scenes: Vertical", to offer the closed ones in
+    // the status bar, to create a new canvas's pair, and to drop a gone canvas's. Kept as a
+    // connection here rather than a pointer from one singleton to the other: the document
+    // does not otherwise know there is a workspace, and should not learn.
+    const auto sync_canvas_panels = [&workspace, &document] {
+        workspace.syncCanvases(document.canvasIds(), document.canvasNames());
+    };
+    QObject::connect(&document, &libertas::ui::Document::changed, &app, sync_canvas_panels);
+    sync_canvas_panels();
+
     engine.load(QUrl(QStringLiteral("qrc:/qt/qml/Libertas/qml/Main.qml")));
 
     if (engine.rootObjects().isEmpty())
@@ -1547,11 +1558,39 @@ int main(int argc, char** argv) {
             report(document.currentCanvasIsMain(),
                    "the shell starts on Main, which is the first canvas");
 
+            report(workspace.title(QStringLiteral("scenes")) ==
+                       QLatin1String("Scenes: Main"),
+                   "a scene list says which canvas it is of");
+
             const int scenes_on_main = document.scenesModel()->rowCount();
             document.addCanvas(QStringLiteral("Vertical"));
             settle();
             report(document.canvasesModel()->rowCount() == canvases_before + 1,
                    "a canvas can be added");
+
+            // Each canvas gets its own pair of panels, not one pair filtered to whichever
+            // canvas is current -- otherwise two canvases cannot be worked on side by side,
+            // which is the only reason to have two.
+            const QString vertical_id = document.currentCanvas();
+            const QString v_scenes = QStringLiteral("scenes:") + vertical_id;
+            const QString v_sources = QStringLiteral("sources:") + vertical_id;
+            report(workspace.layoutHasPanel(v_scenes) && workspace.layoutHasPanel(v_sources),
+                   "and gets a scenes and a sources panel of its own");
+            report(workspace.title(v_scenes) == QLatin1String("Scenes: Vertical") &&
+                       workspace.title(v_sources) == QLatin1String("Sources: Vertical"),
+                   "both titled with the canvas they belong to");
+            document.renameCanvas(vertical_id, QStringLiteral("Portrait"));
+            settle();
+            report(workspace.title(v_scenes) == QLatin1String("Scenes: Portrait"),
+                   "and renaming the canvas retitles them");
+            document.renameCanvas(vertical_id, QStringLiteral("Vertical"));
+            settle();
+
+            // Main's list is untouched by any of it: the two are separate models, so the
+            // second canvas cannot empty the first the way a shared filtered one did.
+            report(static_cast<int>(
+                       document.scenesFor(QString{})->rowCount()) == scenes_on_main,
+                   "Main's own list still has Main's scenes");
             report(!document.currentCanvasIsMain(),
                    "and adding one selects it, because that is what the operator is about to "
                    "put scenes on");
@@ -1661,6 +1700,11 @@ int main(int argc, char** argv) {
             settle();
             report(document.canvasesModel()->rowCount() == canvases_before,
                    "an empty canvas can be removed");
+            // And its panels go with it. A tab called "Scenes: Vertical" for a canvas that
+            // no longer exists can never show anything, and the operator did not close it so
+            // would not think to.
+            report(!workspace.layoutHasPanel(v_scenes) && !workspace.layoutHasPanel(v_sources),
+                   "taking its two panels with it");
             report(document.currentCanvasIsMain(),
                    "and the shell falls back to Main rather than pointing at nothing");
             report(document.scenesModel()->rowCount() == scenes_on_main,

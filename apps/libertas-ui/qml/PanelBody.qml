@@ -17,6 +17,18 @@ Item {
 
     required property string panelId
 
+    /// "scenes" and "scenes:<canvasId>" are the same panel showing different canvases. The
+    /// first canvas keeps the bare id -- it always exists and cannot move (ADR-0027) -- so a
+    /// layout written before canvases had panels still loads.
+    readonly property string panelKind: {
+        const at = body.panelId.indexOf(":");
+        return at < 0 ? body.panelId : body.panelId.substring(0, at);
+    }
+    readonly property string panelCanvas: {
+        const at = body.panelId.indexOf(":");
+        return at < 0 ? "" : body.panelId.substring(at + 1);
+    }
+
     Rectangle {
         anchors.fill: parent
         color: Theme.c.panelBackground
@@ -33,7 +45,7 @@ Item {
         anchors.fill: parent
         active: sourceComponent !== null
         sourceComponent: {
-            switch (body.panelId) {
+            switch (body.panelKind) {
             case "scenes":
                 return scenesComponent;
             case "sources":
@@ -67,13 +79,17 @@ Item {
     Component {
         id: scenesComponent
 
-        ScenesPanel {}
+        ScenesPanel {
+            canvasId: body.panelCanvas
+        }
     }
 
     Component {
         id: sourcesComponent
 
-        SourcesPanel {}
+        SourcesPanel {
+            canvasId: body.panelCanvas
+        }
     }
 
     Component {

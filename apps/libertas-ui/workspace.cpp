@@ -471,10 +471,37 @@ QStringList Workspace::closedPanels() const {
         if (!layout().has_panel(p.id))
             out << QString::fromLatin1(p.id);
     }
+    // And the per-canvas pairs. The first canvas's two are already in the table above under
+    // their plain ids, so this starts at the second.
+    for (int i = 1; i < canvas_ids_.size(); ++i) {
+        for (const char* kind : {"scenes", "sources"}) {
+            const QString id = QString::fromLatin1(kind) + QLatin1Char(':') + canvas_ids_[i];
+            if (!layout().has_panel(to_std(id)))
+                out << id;
+        }
+    }
     return out;
 }
 
 QString Workspace::title(const QString& panel) const {
+    // "Scenes: Vertical". Which canvas a scene list belongs to is the one thing a second
+    // scene list has to say, and saying it in the tab is the only place it is always visible
+    // -- a panel can be the only one in its group, with no neighbour to contrast against.
+    const qsizetype colon = panel.indexOf(QLatin1Char(':'));
+    const QString kind = colon < 0 ? panel : panel.left(colon);
+    if (kind == QLatin1String("scenes") || kind == QLatin1String("sources")) {
+        const QString canvas = colon < 0
+                                   ? (canvas_ids_.isEmpty() ? QString{} : canvas_ids_.front())
+                                   : panel.mid(colon + 1);
+        const qsizetype at = canvas_ids_.indexOf(canvas);
+        const QString name = at >= 0 && at < canvas_names_.size() ? canvas_names_[at] : QString{};
+        const QString base = kind == QLatin1String("scenes") ? QStringLiteral("Scenes")
+                                                             : QStringLiteral("Sources");
+        // No canvases yet, or one this workspace has not been told about: the bare word is
+        // still right, and is better than "Scenes: ".
+        return name.isEmpty() ? base : base + QStringLiteral(": ") + name;
+    }
+
     const std::string id = to_std(panel);
     for (const KnownPanel& p : kKnownPanels) {
         if (id == p.id)
@@ -488,10 +515,112 @@ QString Workspace::title(const QString& panel) const {
     return t;
 }
 
+bool Workspace::layoutHasPanel(const QString& panel) const {
+    return layout().has_panel(to_std(panel));
+}
+
+void Workspace::syncCanvases(const QStringList& ids, const QStringList& names) {
+    const bool list_changed = ids != canvas_ids_ || names != canvas_names_;
+    canvas_ids_ = ids;
+    canvas_names_ = names;
+
+    // Panels of canvases that are gone. Removed rather than left behind: a tab called
+    // "Scenes: Vertical" for a canvas that no longer exists is a tab that can never show
+    // anything, and the operator did not close it so would not think to.
+    QSet<QString> alive;
+    for (const QString& id : ids)
+        alive.insert(id);
+
+    llayout::Layout next = history_.current();
+    bool touched = false;
+    for (const std::string& panel : next.panels()) {
+        const QString q = QString::fromStdString(panel);
+        const qsizetype colon = q.indexOf(QLatin1Char(':'));
+        if (colon < 0)
+            continue;
+        const QString kind = q.left(colon);
+        if (kind != QLatin1String("scenes") && kind != QLatin1String("sources"))
+            continue;
+        if (!alive.contains(q.mid(colon + 1)))
+            touched = next.close_panel(panel) || touched;
+    }
+
+    // A canvas's pair is created once, the first time it is seen. After that the operator
+    // owns whether they are on screen: re-adding one they closed would be the shell arguing
+    // with them every time the document changed.
+    //
+    // Only once there is a viewport. The first sync happens before the window has a size --
+    // the document is loaded before the QML is -- and docking into a zero-area layout is
+    // refused. Marking the canvas seen at that point would mean its panels were never made.
+    const bool have_viewport = vp_.bounds.w > 0.0 && vp_.bounds.h > 0.0;
+    if (have_viewport) {
+        for (int i = 1; i < ids.size(); ++i) {
+            if (canvases_seen_.contains(ids[i]))
+                continue;
+            bool made_both = true;
+            for (const char* kind : {"scenes", "sources"}) {
+                const std::string want =
+                    (QString::fromLatin1(kind) + QLatin1Char(':') + ids[i]).toStdString();
+                if (next.has_panel(want))
+                    continue;
+                // Beside Main's, as a tab. That is where the operator is already looking for
+                // a scene list, and it is the arrangement they asked for.
+                const llayout::NodeId beside = next.node_of_panel(kind);
+                if (beside == llayout::kInvalidNode) {
+                    // Main's own panel is closed, so there is nothing to sit beside. Not an
+                    // error and not a reason to give up on this canvas for good.
+                    made_both = false;
+                    continue;
+                }
+                const llayout::DockResult r =
+                    next.dock(want, beside, llayout::Zone::Center, vp_, constraints_);
+                if (r.ok()) {
+                    touched = true;
+                    // Docking brings the new tab forward. Right when the operator has just
+                    // made the canvas; wrong when a project is merely being opened, where
+                    // they are looking at Main and did not ask for anything.
+                    if (!canvas_panels_built_)
+                        static_cast<void>(next.activate(kind));
+                } else {
+                    made_both = false;
+                }
+            }
+            // Seen only if it actually got its panels. A refused dock is a thing to try again
+            // next time, not a canvas to write off.
+            if (made_both)
+                canvases_seen_.insert(ids[i]);
+        }
+        if (!ids.isEmpty())
+            canvases_seen_.insert(ids.front());
+    }
+    if (have_viewport)
+        canvas_panels_built_ = true;
+    // Forget canvases that have gone, so one that comes back by undo gets its panels again.
+    canvases_seen_.intersect(alive);
+
+    if (touched && history_.commit(std::move(next))) {
+        touch();
+        return;
+    }
+    if (list_changed) {
+        // The titles changed even though the tree did not -- a canvas was renamed.
+        ++revision_;
+        refresh_models();
+        emit layoutChanged();
+    }
+}
+
 void Workspace::setViewport(qreal w, qreal h) {
     if (qFuzzyCompare(vp_.bounds.w, w) && qFuzzyCompare(vp_.bounds.h, h))
         return;
+    const bool was_unsized = vp_.bounds.w <= 0.0 || vp_.bounds.h <= 0.0;
     vp_.bounds = llayout::Rect{0.0, 0.0, w, h};
+    // The document is loaded before the window has a size, so the first canvas sync could not
+    // dock anything -- docking into a zero-area layout is refused. A project opened with a
+    // second canvas already in it would otherwise never get that canvas's panels, because
+    // nothing changes afterwards to trigger another sync.
+    if (was_unsized && w > 0.0 && h > 0.0 && !canvas_ids_.isEmpty())
+        syncCanvases(canvas_ids_, canvas_names_);
     // A resize is not a layout change: the tree holds proportions, so nothing to save and nothing
     // to undo. Only the derived geometry moved.
     ++revision_;

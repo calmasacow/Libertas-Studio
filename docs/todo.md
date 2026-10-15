@@ -201,20 +201,39 @@ vertical scene of its own, and two encodes feeding three destinations.
 
 ### What this did not build
 
-- **The canvas the shell is working on.** Every panel still works against `canvases.front()`.
-  A new scene lands on the first canvas and the scenes panel shows every canvas's scenes at
-  once. This is the bulk of ADR-0027 and it waits on the Canvas panel below.
-- **The linking panel.** The model is there -- `Project::scene_links`, `AddSceneLink`,
-  `RemoveSceneLink` -- and the three open questions under "the linking panel" still need the
-  operator.
 - **Start All / Stop All.** Nothing to start: no output actually runs yet, and the shell still
   reports "Start/Stop Streaming is not wired up".
 - **Backtrack**, which has no document shape yet.
-- **Sharing an encode from the UI.** The model holds it, the inspector counts it and the
-  outputs panel now *shows* it, but nothing in the shell can point one output at another's
-  encode. The golden fixture has Twitch and Kick sharing only because it was written by hand.
-  This is the Aitum-shaped reuse the operator asked for and it is not reachable yet; it most
-  likely belongs in the outputs manager window rather than on the row.
+## The canvas UI, built on 2026-10-14
+
+ADR-0027's UI half and ADR-0029's amendment, after the operator settled the four questions they
+were waiting on. Each is recorded as an amendment on its ADR.
+
+- **A Canvas panel**, a tab beside Outputs with the same `+ − gear` footer. The gear opens a
+  Canvas Manager for name, size and rate.
+- **A Scenes and a Sources panel per canvas** -- "Scenes: Main", "Sources: Vertical" -- created
+  when the canvas is, removed when it goes, each with its own selected scene. Main keeps the
+  plain `scenes`/`sources` panel ids, so an older layout file still loads.
+- **Linking**, from a chain icon on the rows of a secondary canvas only. It asks which Main
+  scenes bring this scene up, says before committing which links a tick would move, and
+  commits the whole tick-list as one undo step.
+- **An outputs manager** behind the Outputs gear: encodes with their destinations hanging off
+  them, and `+ destination` to put another one on the same bitstream. Until this existed
+  nothing in the shell could make two destinations share an encode at all.
+
+### Still open here
+
+- **Reordering canvases.** `AddCanvas`/`RemoveCanvas` exist and Main is pinned at index 0, but
+  there is no move: a canvas list of any length is in creation order and stays there.
+- **Moving a scene between canvases.** `Scene::canvas` is settled at creation. A canvas holding
+  scenes cannot be removed and the refusal says "move or delete them first" -- which is
+  currently advice with no gesture behind it.
+- **An encode of a canvas other than the current one.** `addEncode` uses the current canvas and
+  the manager has no canvas picker, so a vertical canvas cannot be given its own output yet.
+- **Choosing an existing encode from an output row.** Deliberately not built: the operator chose
+  the manager window over a per-row dropdown (ADR-0029 amendment). `setOutputEncode` exists and
+  is covered, but nothing in the UI calls it -- the manager hangs new destinations off an
+  encode instead of moving existing ones between encodes.
 
 ## Found by launching it, 2026-10-14
 

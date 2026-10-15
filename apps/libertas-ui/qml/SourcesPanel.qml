@@ -23,6 +23,19 @@ import Libertas
 Item {
     id: panel
 
+    /// Which canvas's selected scene this tree belongs to. Empty means the first canvas --
+    /// the plain "sources" panel id. Titled "Sources: Vertical" in the tab, so two canvases
+    /// can be worked on side by side rather than one at a time (ADR-0027).
+    property string canvasId: ""
+
+    /// Make this panel's canvas the one the shell is working on, before doing something to
+    /// it. The node commands act on "the selected node of the current canvas's scene", so a
+    /// second Sources panel has to say which canvas it means before it adds or moves
+    /// anything -- otherwise the + on "Sources: Vertical" would quietly build Main's scene.
+    function use() {
+        Document.selectCanvas(panel.canvasId);
+    }
+
     objectName: "sourcesPanel"
 
     /// The add menu is open. Closed by picking something, or by the + again.
@@ -67,7 +80,7 @@ Item {
         anchors.bottom: footer.top
         clip: true
         visible: Document.selectedScene !== ""
-        model: Document.nodes
+        model: Document.nodesFor(panel.canvasId)
         boundsBehavior: Flickable.StopAtBounds
 
         delegate: Rectangle {
@@ -101,13 +114,13 @@ Item {
 
                 anchors.fill: parent
                 hoverEnabled: true
-                onClicked: Document.selectNode(row.nodeId)
+                onClicked: Document.selectNodeOn(panel.canvasId, row.nodeId)
                 // Double-click opens the settings for what the row is bound to, which is what
                 // OBS does and what the operator asked for. A group, or a source node bound to
                 // nothing, has no settings to open -- so there it still starts a rename, which
                 // is the only thing a double-click could usefully mean on one.
                 onDoubleClicked: {
-                    Document.selectNode(row.nodeId);
+                    Document.selectNodeOn(panel.canvasId, row.nodeId);
                     if (row.sourceId !== "")
                         panel.configure(row.sourceId);
                     else
@@ -142,7 +155,10 @@ Item {
 
                     anchors.fill: parent
                     hoverEnabled: true
-                    onClicked: Document.setNodeVisible(row.nodeId, !row.nodeVisible)
+                        onClicked: {
+                        panel.use();
+                        Document.setNodeVisible(row.nodeId, !row.nodeVisible);
+                    }
                 }
             }
 
@@ -303,8 +319,9 @@ Item {
             ToolButton {
                 label: "+"
                 tip: qsTr("Add a source")
-                enabled: Document.selectedScene !== ""
+                enabled: Document.selectedSceneOn(panel.canvasId) !== ""
                 onClicked: {
+                    panel.use();
                     panel.adding = true;
                     addDialog.open();
                 }
@@ -316,14 +333,20 @@ Item {
                 label: "−"
                 tip: qsTr("Remove")
                 enabled: Document.selectedNode !== ""
-                onClicked: Document.removeNode(Document.selectedNode)
+                onClicked: {
+                        panel.use();
+                        Document.removeNode(Document.selectedNode);
+                    }
             }
 
             ToolButton {
                 label: "▣"
                 tip: qsTr("Add group")
                 enabled: Document.selectedScene !== ""
-                onClicked: Document.addGroup("")
+                onClicked: {
+                        panel.use();
+                        Document.addGroup("");
+                    }
             }
 
             // The gear, where OBS puts it: what the selected row is *bound to*, not the row.
@@ -353,14 +376,20 @@ Item {
                 label: "▲"
                 tip: qsTr("Move forward")
                 enabled: Document.selectedNode !== ""
-                onClicked: Document.moveNode(Document.selectedNode, -1)
+                onClicked: {
+                        panel.use();
+                        Document.moveNode(Document.selectedNode, -1);
+                    }
             }
 
             ToolButton {
                 label: "▼"
                 tip: qsTr("Move back")
                 enabled: Document.selectedNode !== ""
-                onClicked: Document.moveNode(Document.selectedNode, 1)
+                onClicked: {
+                        panel.use();
+                        Document.moveNode(Document.selectedNode, 1);
+                    }
             }
         }
     }

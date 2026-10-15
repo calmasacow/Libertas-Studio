@@ -266,3 +266,39 @@ Asked where it should live by default; the operator's answer was that it is just
 could go anywhere, but by default it should be a tab in the same space as the Outputs panel.
 That is also the arrangement that makes the two panels' footers read as one idea: both get the
 same `+ − gear` row, and in both the gear opens a manager window rather than editing in place.
+
+### Each canvas gets its own Scenes and Sources panels
+
+Superseding the first cut of the UI, which had one scenes panel filtered to whichever canvas
+was current. The operator's correction:
+
+> the sources and scenes panels need to be "Sources: (CanvasName)" and "Scenes: (CanvasName)"
+> so when a secondary canvas is created not only is a Canvas Panel created ... but separate
+> Source and Scene panels for that canvas must be created
+
+A filter and a second panel are not the same thing, and the difference is the point of having
+more than one canvas. Filtering shows one canvas at a time: to put a camera on the vertical
+scene you leave the landscape one, and the two can never be seen together. Separate panels show
+both at once, which is what building a dual-canvas show actually looks like.
+
+So each canvas has its own scene list, its own node tree, and **its own selected scene** —
+switching canvas and switching back lands where you left off, because the selection was never
+shared. Panel ids are `scenes:<canvasId>` and `sources:<canvasId>`, and creating a canvas
+creates its pair, tabbed beside Main's; removing the canvas removes them, because a tab titled
+for a canvas that no longer exists can never show anything and the operator did not close it so
+would not think to. A pair is created once, the first time its canvas is seen: after that
+whether they are on screen is the operator's business, and re-adding one they closed would be
+the shell arguing with them every time the document changed.
+
+**Main keeps the plain ids `scenes` and `sources`.** It is the one canvas that always exists,
+cannot be removed and cannot change places, so it is the one whose panel id can be a constant —
+and that is also what lets a layout file written before any of this keep loading. The title is
+still resolved: "Scenes: Main".
+
+Two things follow from there being more than one of these panels at once. The canvas the shell
+is working on now **follows the click** — picking a row in "Scenes: Vertical" is how an operator
+says "Vertical now", and requiring a trip to the canvas list first would be a step that exists
+only because of how the selection is stored. And `setCanvasEmergencyScene` takes its canvas from
+the *scene* rather than from whichever canvas is current: a scene belongs to exactly one canvas,
+so "which canvas is this the safety net for" has one answer, and it must not be possible to get
+it wrong by having the wrong panel focused.

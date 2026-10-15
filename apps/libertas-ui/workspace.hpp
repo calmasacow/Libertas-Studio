@@ -13,6 +13,7 @@
 #include <QPointF>
 #include <QtQml/qqmlregistration.h>
 #include <QRectF>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -164,6 +165,23 @@ public:
     Q_INVOKABLE void openPanel(const QString& panel);
     Q_INVOKABLE [[nodiscard]] QString title(const QString& panel) const;
 
+    /// Tell the workspace which canvases exist, so it can keep a Scenes and a Sources panel
+    /// per canvas and title them "Scenes: Vertical".
+    ///
+    /// Called by the shell whenever the document changes. Panels for a canvas are created the
+    /// first time that canvas is seen and removed when it goes; a panel the operator closed
+    /// afterwards stays closed, because "the canvas exists" and "the operator wants it on
+    /// screen" are different questions and only the first one is being answered here.
+    ///
+    /// The first canvas is Main, and its two panels keep the plain ids "scenes" and
+    /// "sources": it always exists, it cannot be removed and it cannot change places
+    /// (ADR-0027), so it is the one canvas whose panel id can be a constant -- which is also
+    /// what lets a layout written before any of this existed keep working.
+    void syncCanvases(const QStringList& ids, const QStringList& names);
+
+    /// Whether the active workspace currently holds this panel.
+    Q_INVOKABLE [[nodiscard]] bool layoutHasPanel(const QString& panel) const;
+
     // --- saved workspaces ---
     [[nodiscard]] QAbstractItemModel* workspacesModel() { return &workspace_tabs_; }
     [[nodiscard]] int workspaceCount() const;
@@ -245,6 +263,17 @@ private:
 
     /// Which panel the keyboard acts on, and the one the UI draws a ring around.
     QString focused_;
+
+    /// The canvases, in order, as the document last reported them. Index 0 is Main.
+    QStringList canvas_ids_;
+    QStringList canvas_names_;
+    /// Canvases whose panels have been created once already. A canvas is given its pair of
+    /// panels the first time it is seen and never again, so closing one stays closed.
+    QSet<QString> canvases_seen_;
+    /// Whether any canvas panels have been created yet. The batch made when a project is
+    /// opened must not steal the tab: the operator is looking at Main. A canvas created
+    /// afterwards should come forward, because they just made it.
+    bool canvas_panels_built_ = false;
 
     std::filesystem::path config_path_;
     QString layout_source_;

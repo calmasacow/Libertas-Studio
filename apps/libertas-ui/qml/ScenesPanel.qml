@@ -10,6 +10,36 @@ import Libertas
 Item {
     id: panel
 
+    /// Which canvas this list belongs to. Empty means the first canvas, which is what the
+    /// plain "scenes" panel id means (ADR-0027: Main always exists and cannot move, so it is
+    /// the one canvas whose panel id can be a constant).
+    ///
+    /// Every canvas gets its own scene list, titled "Scenes: Vertical" in the tab. Filtering
+    /// one shared list by a current canvas was tried first and is not the same thing: two
+    /// canvases cannot then be worked on side by side, which is the whole point of having
+    /// more than one.
+    property string canvasId: ""
+
+    /// Which scene this canvas's list is on.
+    ///
+    /// Pushed from a signal rather than bound to an invokable: a binding on a Q_INVOKABLE has
+    /// nothing to re-evaluate on, so it would be read once and then quietly stop being true.
+    property string selectedScene: ""
+
+    function refreshSelection() {
+        panel.selectedScene = Document.selectedSceneOn(panel.canvasId);
+    }
+
+    Component.onCompleted: panel.refreshSelection()
+    onCanvasIdChanged: panel.refreshSelection()
+
+    Connections {
+        target: Document
+
+        function onSelectionChanged() { panel.refreshSelection(); }
+        function onChanged() { panel.refreshSelection(); }
+    }
+
     // Parented to the window's content item rather than drawn in the panel, which would clip
     // it -- the same arrangement the sources panel uses for its two dialogs, and still one
     // surface (ADR-0015).
@@ -28,7 +58,7 @@ Item {
         anchors.top: parent.top
         anchors.bottom: footer.top
         clip: true
-        model: Document.scenes
+        model: Document.scenesFor(panel.canvasId)
         currentIndex: -1
         boundsBehavior: Flickable.StopAtBounds
 
@@ -51,7 +81,7 @@ Item {
             required property int linkCount
             required property bool canLink
 
-            readonly property bool selected: Document.selectedScene === row.sceneId
+            readonly property bool selected: panel.selectedScene === row.sceneId
 
             width: ListView.view.width
             height: 24
@@ -65,7 +95,7 @@ Item {
                 anchors.fill: parent
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton
-                onClicked: Document.selectScene(row.sceneId)
+                onClicked: Document.selectSceneOn(panel.canvasId, row.sceneId)
                 onDoubleClicked: {
                     rename.text = row.name;
                     rename.visible = true;
@@ -292,21 +322,21 @@ Item {
             ToolButton {
                 label: "+"
                 tip: qsTr("Add scene")
-                onClicked: Document.addScene("")
+                onClicked: Document.addSceneOn(panel.canvasId, "")
             }
 
             ToolButton {
                 label: "−"
                 tip: qsTr("Remove scene")
-                enabled: Document.selectedScene !== ""
-                onClicked: Document.removeScene(Document.selectedScene)
+                enabled: panel.selectedScene !== ""
+                onClicked: Document.removeScene(panel.selectedScene)
             }
 
             ToolButton {
                 label: "⧉"
                 tip: qsTr("Duplicate scene")
-                enabled: Document.selectedScene !== ""
-                onClicked: Document.duplicateScene(Document.selectedScene)
+                enabled: panel.selectedScene !== ""
+                onClicked: Document.duplicateScene(panel.selectedScene)
             }
         }
 
@@ -316,8 +346,8 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             label: "⚠"
             tip: qsTr("Use as the emergency scene for this canvas")
-            enabled: Document.selectedScene !== ""
-            onClicked: Document.setEmergencyScene(Document.selectedScene)
+            enabled: panel.selectedScene !== ""
+            onClicked: Document.setEmergencyScene(panel.selectedScene)
         }
     }
 }

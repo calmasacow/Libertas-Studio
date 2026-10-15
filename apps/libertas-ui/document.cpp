@@ -89,8 +89,8 @@ Document::Document(QObject* parent) : QObject(parent) {
             save();
     });
 
-    if (!session_->project().scenes.empty())
-        selected_scene_ = id_str(session_->project().scenes.front().id);
+    // Which scene each canvas starts on is settled by rebuild(), which does it per canvas and
+    // has to anyway -- a canvas can gain its first scene at any time.
     rebuild();
 }
 
@@ -131,8 +131,85 @@ QStringList Document::blendModes() const {
     return out;
 }
 
+QString Document::canvas_key(const QString& canvasId) const {
+    // Empty means the first canvas. The layout's plain "scenes"/"sources" panel ids carry no
+    // canvas, and Main is the one canvas guaranteed to exist and to stay at index 0, so it is
+    // the one that can be named by omission.
+    if (!canvasId.isEmpty())
+        return canvasId;
+    const auto& canvases = session_->project().canvases;
+    return canvases.empty() ? QString{} : id_str(canvases.front().id);
+}
+
+QAbstractItemModel* Document::scenesFor(const QString& canvasId) {
+    const QString key = canvas_key(canvasId);
+    auto it = scenes_by_canvas_.find(key);
+    if (it == scenes_by_canvas_.end()) {
+        // Parented to this, so the QML engine treats it as C++-owned and a binding that
+        // outlives its panel does not take the model with it.
+        it = scenes_by_canvas_.emplace(key, new SceneModel(this)).first;
+    }
+    return it->second;
+}
+
+QAbstractItemModel* Document::nodesFor(const QString& canvasId) {
+    const QString key = canvas_key(canvasId);
+    auto it = nodes_by_canvas_.find(key);
+    if (it == nodes_by_canvas_.end())
+        it = nodes_by_canvas_.emplace(key, new NodeModel(this)).first;
+    return it->second;
+}
+
+QString Document::selectedSceneOn(const QString& canvasId) const {
+    const auto it = selected_scene_.find(canvas_key(canvasId));
+    return it == selected_scene_.end() ? QString{} : it->second;
+}
+
+void Document::selectSceneOn(const QString& canvasId, const QString& sceneId) {
+    const QString key = canvas_key(canvasId);
+    const bool same_canvas = current_canvas_ == key ||
+                             (current_canvas_.isEmpty() && key == canvas_key(QString{}));
+    if (selectedSceneOn(key) == sceneId && same_canvas)
+        return;
+    selected_scene_[key] = sceneId;
+    selected_node_.clear();
+    // The canvas the shell is working on follows the click. Picking a row in "Scenes:
+    // Vertical" is how an operator says "Vertical now" -- requiring a second click in the
+    // canvas list first would be a step that exists only because of how this is stored.
+    if (!same_canvas) {
+        current_canvas_ = key;
+        emit canvasChanged();
+    }
+    rebuild();
+}
+
+QString Document::canvasNameOf(const QString& canvasId) const {
+    const auto parsed = parse_id(canvas_key(canvasId));
+    const ldoc::Canvas* c = parsed ? session_->project().canvas(*parsed) : nullptr;
+    return c ? qstr(c->name) : QString{};
+}
+
+QStringList Document::canvasIds() const {
+    QStringList out;
+    for (const ldoc::Canvas& c : session_->project().canvases)
+        out << id_str(c.id);
+    return out;
+}
+
+QStringList Document::canvasNames() const {
+    QStringList out;
+    for (const ldoc::Canvas& c : session_->project().canvases)
+        out << qstr(c.name);
+    return out;
+}
+
 const ldoc::Scene* Document::current_scene() const {
-    const auto id = parse_id(selected_scene_);
+    const auto id = parse_id(selectedSceneOn(current_canvas_));
+    return id ? session_->project().scene(*id) : nullptr;
+}
+
+const ldoc::Scene* Document::scene_of_canvas(const QString& canvasId) const {
+    const auto id = parse_id(selectedSceneOn(canvasId));
     return id ? session_->project().scene(*id) : nullptr;
 }
 
@@ -183,19 +260,17 @@ int Document::currentCanvasSceneCount() const {
     return n;
 }
 
-void Document::selectCanvas(const QString& id) {
+void Document::selectCanvas(const QString& raw) {
+    // Normalised, so selectCanvas("") -- what a panel bound to the first canvas passes --
+    // means that canvas rather than "no canvas".
+    const QString id = canvas_key(raw);
     if (current_canvas_ == id)
         return;
     current_canvas_ = id;
-    // The scenes panel lists one canvas's scenes, so changing canvas can strand the selection
-    // on a scene that is no longer shown. Drop it rather than leave the sources panel showing
-    // a scene the operator cannot see.
-    const ldoc::Scene* sel = current_scene();
-    const ldoc::Canvas* now = current_canvas();
-    if (sel && now && sel->canvas != now->id) {
-        selected_scene_.clear();
-        selected_node_.clear();
-    }
+    // Nothing to strand: each canvas keeps its own place in its own scene list, so switching
+    // canvas and switching back lands where the operator left off. Only the node selection is
+    // global, and it belongs to a scene that is no longer being shown.
+    selected_node_.clear();
     emit canvasChanged();
     rebuild();
 }
@@ -293,16 +368,28 @@ void Document::rebuild() {
     // *gaining* a scene when there is none selected -- which happens when an undo brings back
     // everything that was deleted. Without the second case the panels stay on "no scene
     // selected" with a full scene list beside them, and nothing but a click gets out of it.
-    if (!current_scene()) {
-        selected_scene_ = p.scenes.empty() ? QString{} : id_str(p.scenes.front().id);
+    for (const ldoc::Canvas& c : p.canvases) {
+        const QString key = id_str(c.id);
+        const ldoc::Scene* held = scene_of_canvas(key);
+        if (held && held->canvas == c.id)
+            continue;
+        // Land on this canvas's first scene, or on nothing if it has none yet.
+        QString first;
+        for (const ldoc::Scene& sc : p.scenes) {
+            if (sc.canvas == c.id) {
+                first = id_str(sc.id);
+                break;
+            }
+        }
+        selected_scene_[key] = first;
         selected_node_.clear();
     }
     if (!selected_node_.isEmpty() && !current_node())
         selected_node_.clear();
 
-    // The canvas the shell is working on. Scenes belong to a canvas now (ADR-0027), so the
-    // scenes panel lists one canvas's scenes rather than every canvas's at once.
-    const ldoc::Canvas* shown = current_canvas();
+    // Scenes belong to a canvas (ADR-0027), and each canvas has its own pair of panels --
+    // "Scenes: Main", "Scenes: Vertical" -- so each gets its own model rather than one model
+    // filtered to whichever canvas is current.
     const ldoc::Id main_canvas = p.canvases.empty() ? ldoc::Id{} : p.canvases.front().id;
 
     const auto scene_row = [&](const ldoc::Scene& s) {
@@ -329,7 +416,10 @@ void Document::rebuild() {
         return row;
     };
 
-    std::vector<SceneRow> scenes;
+    std::map<QString, std::vector<SceneRow>> scenes_per_canvas;
+    for (const ldoc::Canvas& c : p.canvases)
+        scenes_per_canvas[id_str(c.id)]; // every canvas gets a list, including an empty one
+
     std::vector<SceneRow> favourites;
     for (const ldoc::Scene& s : p.scenes) {
         SceneRow row = scene_row(s);
@@ -338,15 +428,25 @@ void Document::rebuild() {
         // canvas.
         if (row.isFavourite)
             favourites.push_back(row);
-        if (shown && s.canvas != shown->id)
-            continue;
-        scenes.push_back(std::move(row));
+        scenes_per_canvas[id_str(s.canvas)].push_back(std::move(row));
     }
     favourites_.set_rows(std::move(favourites));
-    scenes_.set_rows(std::move(scenes));
+    for (auto& [canvas, rows] : scenes_per_canvas) {
+        auto* model = static_cast<SceneModel*>(scenesFor(canvas));
+        model->set_rows(std::move(rows));
+    }
+    // A canvas that has gone keeps its model, emptied. A panel can outlive its canvas by a
+    // frame, and an empty list is a better thing for it to be showing than the last canvas's.
+    for (auto& [canvas, model] : scenes_by_canvas_) {
+        if (!scenes_per_canvas.contains(canvas))
+            model->set_rows({});
+    }
 
+    // One node list per canvas: the Sources panel of a canvas shows that canvas's selected
+    // scene, so two canvases on screen at once show two different trees.
+    const auto node_rows = [&](const ldoc::Scene* s) {
     std::vector<NodeRow> rows;
-    if (const ldoc::Scene* s = current_scene()) {
+    if (s) {
         // Flattened depth-first, which is what the Sources panel is: the tree with indentation.
         const std::function<void(const std::vector<ldoc::Node>&, int)> walk =
             [&](const std::vector<ldoc::Node>& nodes, int depth) {
@@ -379,7 +479,18 @@ void Document::rebuild() {
             };
         walk(s->roots, 0);
     }
-    nodes_.set_rows(std::move(rows));
+    return rows;
+    };
+
+    for (const ldoc::Canvas& c : p.canvases) {
+        const QString key = id_str(c.id);
+        auto* model = static_cast<NodeModel*>(nodesFor(key));
+        model->set_rows(node_rows(scene_of_canvas(key)));
+    }
+    for (auto& [canvas, model] : nodes_by_canvas_) {
+        if (!scenes_per_canvas.contains(canvas))
+            model->set_rows({});
+    }
 
     std::vector<SourceRow> sources;
     for (const ldoc::Source& src : p.sources) {
@@ -583,11 +694,12 @@ void Document::run(const ldoc::Command& command) {
 // ---- selection --------------------------------------------------------------------------------
 
 void Document::selectScene(const QString& id) {
-    if (selected_scene_ == id)
-        return;
-    selected_scene_ = id;
-    selected_node_.clear();
-    rebuild();
+    // A scene names its canvas, so a bare "select this scene" can route itself. Keeps every
+    // existing caller -- and the favourites panel, which deliberately spans canvases --
+    // working without each one having to know which canvas it just reached into.
+    const auto parsed = parse_id(id);
+    const ldoc::Scene* s = parsed ? session_->project().scene(*parsed) : nullptr;
+    selectSceneOn(s ? id_str(s->canvas) : current_canvas_, id);
 }
 
 void Document::selectNode(const QString& id) {
@@ -626,9 +738,9 @@ void Document::removeCanvas(const QString& id) {
     // Dropping the selection first. The canvas is about to stop existing, and current_canvas()
     // falling back to Main is the right answer -- but only if nothing is still naming the one
     // that went.
+    selected_scene_.erase(id);
     if (current_canvas_ == id) {
         current_canvas_.clear();
-        selected_scene_.clear();
         selected_node_.clear();
         emit canvasChanged();
     }
@@ -790,16 +902,28 @@ void Document::commitSceneLinks(const QString& sceneId, const QStringList& mainS
 // ---- scenes -----------------------------------------------------------------------------------
 
 void Document::addScene(const QString& name) {
-    const ldoc::Canvas* canvas = current_canvas();
+    addSceneOn(current_canvas_, name);
+}
+
+void Document::selectNodeOn(const QString& canvasId, const QString& nodeId) {
+    const QString key = canvas_key(canvasId);
+    if (current_canvas_ != key) {
+        current_canvas_ = key;
+        emit canvasChanged();
+    }
+    selectNode(nodeId);
+}
+
+void Document::addSceneOn(const QString& canvasId, const QString& name) {
+    const auto parsed = parse_id(canvas_key(canvasId));
+    const ldoc::Canvas* canvas = parsed ? session_->project().canvas(*parsed) : nullptr;
     if (!canvas)
         return;
     ldoc::Scene s;
     s.id = ldoc::Id::generate();
     s.name = name.isEmpty() ? std::string{"Scene"} : to_std(name);
-    // The canvas the shell is working on, which is still "the first one" -- see current_canvas.
-    // Once the Canvas panel exists this becomes a real selection the operator makes; until then
-    // a new scene lands where every existing scene already is, which is what was true before
-    // scenes had an owner at all (ADR-0027).
+    // The canvas whose list the + was pressed in. Every canvas has its own scenes panel, so
+    // there is no guessing left to do here (ADR-0027).
     s.canvas = canvas->id;
     const QString id = id_str(s.id);
     run(ldoc::AddScene{std::move(s), session_->project().scenes.size()});
@@ -863,7 +987,12 @@ QStringList Document::emergencySceneProblems(const QString& id) const {
 
 void Document::setEmergencyScene(const QString& id) {
     const auto parsed = parse_id(id);
-    const ldoc::Canvas* canvas = current_canvas();
+    // The canvas comes from the scene, not from whichever canvas happens to be current. A
+    // scene belongs to exactly one canvas, so "which canvas is this the safety net for" has
+    // one answer and it is not a question the operator should be able to get wrong by having
+    // the wrong panel focused (ADR-0025, ADR-0027).
+    const ldoc::Scene* s = parsed ? session_->project().scene(*parsed) : nullptr;
+    const ldoc::Canvas* canvas = s ? session_->project().canvas(s->canvas) : nullptr;
     if (!parsed || !canvas)
         return;
     // The command would accept this regardless -- ADR-0023 -- so the check belongs here, in the

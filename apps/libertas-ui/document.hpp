@@ -17,6 +17,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string_view>
 
@@ -93,14 +94,37 @@ public:
     static void configure(std::filesystem::path project_dir);
     static Document* create(QQmlEngine*, QJSEngine*);
 
-    [[nodiscard]] QAbstractItemModel* scenesModel() { return &scenes_; }
-    [[nodiscard]] QAbstractItemModel* nodesModel() { return &nodes_; }
+    /// The current canvas's pair. The `scenes` and `nodes` QML properties and the self-check
+    /// go through these; a panel bound to one particular canvas uses scenesFor/nodesFor.
+    [[nodiscard]] QAbstractItemModel* scenesModel() { return scenesFor(current_canvas_); }
+    [[nodiscard]] QAbstractItemModel* nodesModel() { return nodesFor(current_canvas_); }
     [[nodiscard]] QAbstractItemModel* sourcesModel() { return &sources_; }
     [[nodiscard]] QAbstractItemModel* busesModel() { return &buses_; }
     [[nodiscard]] QAbstractItemModel* favouriteScenesModel() { return &favourites_; }
     [[nodiscard]] QAbstractItemModel* decksModel() { return &decks_; }
     [[nodiscard]] QAbstractItemModel* outputsModel() { return &outputs_; }
     [[nodiscard]] QAbstractItemModel* canvasesModel() { return &canvases_; }
+
+    /// The scene list of one canvas, and the node tree of that canvas's selected scene.
+    ///
+    /// Each canvas gets its own pair of panels -- "Scenes: Main", "Sources: Vertical" -- so
+    /// each needs its own model and its own selected scene. An empty `canvasId` means the
+    /// first canvas, which is how the layout's plain "scenes" and "sources" panel ids keep
+    /// working: Main is `canvases[0]` and the command layer will not let it be otherwise
+    /// (ADR-0027), so it is the one canvas whose panel id can be a constant.
+    Q_INVOKABLE [[nodiscard]] QAbstractItemModel* scenesFor(const QString& canvasId);
+    Q_INVOKABLE [[nodiscard]] QAbstractItemModel* nodesFor(const QString& canvasId);
+    /// Which scene that canvas's panels are showing.
+    Q_INVOKABLE [[nodiscard]] QString selectedSceneOn(const QString& canvasId) const;
+    /// Select a scene in a particular canvas's list. The canvas the shell is working on
+    /// follows: clicking a row in "Scenes: Vertical" is how an operator says "Vertical now".
+    Q_INVOKABLE void selectSceneOn(const QString& canvasId, const QString& sceneId);
+    /// The name a panel title puts after "Scenes: ". Empty `canvasId` means the first canvas.
+    Q_INVOKABLE [[nodiscard]] QString canvasNameOf(const QString& canvasId) const;
+    /// Every canvas id, first one first. Drives the per-canvas panels the workspace keeps.
+    Q_INVOKABLE [[nodiscard]] QStringList canvasIds() const;
+    /// The same list, by name, in the same order.
+    Q_INVOKABLE [[nodiscard]] QStringList canvasNames() const;
     [[nodiscard]] QAbstractItemModel* encodesModel() { return &encodes_; }
 
     [[nodiscard]] QString projectName() const;
@@ -111,7 +135,10 @@ public:
     [[nodiscard]] bool canRedo() const;
     [[nodiscard]] QString undoDescription() const;
     [[nodiscard]] QString redoDescription() const;
-    [[nodiscard]] QString selectedScene() const { return selected_scene_; }
+    /// The current canvas's selected scene. Properties, Controls and the emergency
+    /// designation all mean this one; a panel bound to a particular canvas asks
+    /// selectedSceneOn instead.
+    [[nodiscard]] QString selectedScene() const { return selectedSceneOn(current_canvas_); }
     [[nodiscard]] QString selectedNode() const { return selected_node_; }
     [[nodiscard]] QVariantMap nodeProperties() const;
     [[nodiscard]] QStringList problems() const;
@@ -152,6 +179,11 @@ public:
     // ---- scenes -----------------------------------------------------------------------------
 
     Q_INVOKABLE void addScene(const QString& name);
+    /// Add a scene to a named canvas. Empty `canvasId` means the first one.
+    Q_INVOKABLE void addSceneOn(const QString& canvasId, const QString& name);
+    /// Select a node in a particular canvas's tree. The canvas the shell is working on
+    /// follows, exactly as it does for a scene.
+    Q_INVOKABLE void selectNodeOn(const QString& canvasId, const QString& nodeId);
     Q_INVOKABLE void removeScene(const QString& id);
     Q_INVOKABLE void renameScene(const QString& id, const QString& name);
     Q_INVOKABLE void duplicateScene(const QString& id);
@@ -368,6 +400,9 @@ private:
     void rebuild();
     void run(const ldoc::Command& command);
     [[nodiscard]] const ldoc::Scene* current_scene() const;
+    [[nodiscard]] const ldoc::Scene* scene_of_canvas(const QString& canvasId) const;
+    /// `canvasId`, or the first canvas's id when it is empty.
+    [[nodiscard]] QString canvas_key(const QString& canvasId) const;
     [[nodiscard]] const ldoc::Node* current_node() const;
     /// The canvas the shell is currently working against. One canvas until Phase 2 gives the UI
     /// a way to choose; taking the first is honest rather than pretending otherwise.
@@ -391,9 +426,12 @@ private:
     void edit_canvas(const QString& id, const std::function<void(ldoc::Canvas&)>& change);
 
     std::unique_ptr<lsession::Session> session_;
-    SceneModel scenes_;
+    /// One per canvas, keyed by id, created on demand and owned by this object. Kept after a
+    /// canvas goes rather than deleted: a panel can outlive its canvas by a frame, and an
+    /// empty model is a better thing for it to be bound to than a dangling pointer.
+    std::map<QString, SceneModel*> scenes_by_canvas_;
+    std::map<QString, NodeModel*> nodes_by_canvas_;
     SceneModel favourites_;
-    NodeModel nodes_;
     SourceModel sources_;
     BusModel buses_;
     DeckModel decks_;
@@ -401,7 +439,8 @@ private:
     CanvasModel canvases_;
     EncodeModel encodes_;
 
-    QString selected_scene_;
+    /// Per canvas: each canvas's panels keep their own place in their own scene list.
+    std::map<QString, QString> selected_scene_;
     QString selected_node_;
     /// Empty means "the first canvas". Resolved on every read rather than stored as an id, so
     /// that removing the current canvas cannot leave the shell pointing at nothing.
