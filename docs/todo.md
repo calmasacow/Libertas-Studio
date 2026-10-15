@@ -8,6 +8,71 @@ Design decisions the operator has asked for that are **not built yet**, kept her
 lost between sessions. Anything here that changes the document model needs an ADR before it is
 written, because the model is what every other decision hangs off.
 
+## The mixer shows sources, not just buses
+
+Asked for on 2026-10-14, after the operator looked at the running shell and said the faders
+"make no sense". They do not, and the reason is that every strip in the panel is a **bus** — a
+destination — while the thing an operator reaches for is a **source**. Both strips in the golden
+project read "nothing feeding", so the panel is two faders on silence.
+
+What was asked for, in the operator's words:
+
+> Yes there should be channels for each source that has audio in the active scene. There should
+> prolly be a divider as well that seperates sources and the outputs. Typically in OBS the
+> outputs are not shown. That said I want them left in for now.
+
+So the panel becomes two sections with a divider between them:
+
+- **Sources** — one strip per source node *in the active scene* that has audio. This is the OBS
+  layout and the one people arrive expecting.
+- **Outputs** — the existing bus strips, below the divider. Kept deliberately, though OBS hides
+  them; the operator wants to see them for now, so this is not a thing to quietly drop later
+  without asking.
+
+### What the model already has
+
+No model change, and therefore no ADR, as far as this goes:
+
+- `ldoc::SourceData::audio` is an `AudioRouting{bus, sends, gain_db, mute}`
+  (`libs/ldoc/include/ldoc/node.hpp:41`), so a source node already owns everything a strip needs.
+- `ldoc::SetNodeAudio{scene, node, audio}` (`libs/ldoc/include/ldoc/command.hpp:143`) is the
+  command, and it already refuses anything that is not a source node.
+- `ldoc::visit(scene.roots, fn)` is the recursive walk, already used twice in
+  `apps/libertas-ui/document.cpp:502,529` to count source uses and bus feeds.
+
+### What has to be built
+
+- A `MixerStripModel` (or an extension of the node model) listing source nodes in the active
+  scene that have audio, rebuilt in the same place `BusRow` is rebuilt
+  (`apps/libertas-ui/document.cpp:513`).
+- **Node-keyed audio invokables.** Everything today operates on the *selection* —
+  `routeSelectedNode`, `setSelectedNodeGain`, `setSelectedNodeMute`, all going through
+  `edit_selected_audio` (`document.cpp:1643`). A mixer has many strips and none of them is the
+  selection, so these need `byId` siblings over a shared `edit_node_audio(scene, node, change)`.
+- The drag-collapsing idiom carries over as-is: `setBusGain(..., dragging)` + `endGesture()`.
+- A divider, and section captions, so the two halves cannot be mistaken for one list.
+
+### The open question, which the operator has not answered
+
+"A source that has audio" is not currently knowable. `apps/libertas-ui/document.cpp:330` sets
+`hasAudio = true` for **every** source node whatever it is bound to, so a Colour card and a Text
+source both offer to be routed to a bus. The type vocabulary already distinguishes them —
+`source.color`, `source.image`, `source.text` against `source.audio-input`, `source.v4l2`,
+`source.browser` (`document.cpp:1258`) — but nothing consults it, and some types are genuinely
+conditional: a media file may or may not have an audio track, and a screen capture may or may
+not carry audio depending on the portal.
+
+Until that is settled the strip list has no defensible membership rule. It is also the first
+thing that could need an ADR here, since "which source types have audio" is a statement about
+the model, not about a panel.
+
+### Also noticed
+
+There is **no ADR for the audio model at all**. ADRs run 0001–0029 and none of them is about
+buses. The console model — strips as destinations, with a VOD track seeded into every new
+project (`libs/ldoc/src/document.cpp:225`) — went in without a record saying why it beat OBS's
+per-source mixer. Worth writing retroactively while the panel is being reworked.
+
 ## Per-canvas scenes and sources, with scene linking
 
 **Answered by the operator on 2026-10-13 and written up as
