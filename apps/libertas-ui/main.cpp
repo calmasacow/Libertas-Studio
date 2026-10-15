@@ -21,6 +21,7 @@
 #include <QEventLoop>
 #include <QImage>
 #include <QQuickItem>
+#include <QSize>
 #include <QSet>
 #include <QVariantMap>
 #include <QQuickWindow>
@@ -1574,6 +1575,35 @@ int main(int argc, char** argv) {
             const QString vertical_id = document.currentCanvas();
             const QString v_scenes = QStringLiteral("scenes:") + vertical_id;
             const QString v_sources = QStringLiteral("sources:") + vertical_id;
+            // And a picture of its own. The operator asked for the canvas itself as a tab
+            // beside Main's, not only its two lists -- a second canvas you cannot see is one
+            // you cannot frame anything on.
+            const QString v_program = QStringLiteral("program:") + vertical_id;
+            report(workspace.layoutHasPanel(v_program),
+                   "a second canvas gets a Program panel of its own");
+            report(workspace.title(v_program) == QLatin1String("Program: Vertical") &&
+                       workspace.title(QStringLiteral("program")) ==
+                           QLatin1String("Program: Main"),
+                   "titled with the canvas it shows, Main's included");
+            document.setCanvasSize(vertical_id, 1080, 1920);
+            settle();
+            report(document.canvasSizeOf(vertical_id) == QSize(1080, 1920),
+                   "the panel can ask its canvas's size");
+            workspace.activate(v_program);
+            settle();
+            {
+                bool portrait = false;
+                for (QQuickItem* f : collect(window->contentItem(),
+                                             QStringLiteral("programFrame"))) {
+                    if (f->isVisible() && f->height() > f->width() * 1.5)
+                        portrait = true;
+                }
+                report(portrait, "and a 9:16 canvas is drawn portrait, not as a second 16:9");
+            }
+            // The dialogs below live in the Canvas panel; bring it back in front in case the
+            // new tab shares its group (the self-check moved Program around earlier).
+            workspace.activate(QStringLiteral("canvas"));
+            settle();
             report(workspace.layoutHasPanel(v_scenes) && workspace.layoutHasPanel(v_sources),
                    "and gets a scenes and a sources panel of its own");
             report(workspace.title(v_scenes) == QLatin1String("Scenes: Vertical") &&
@@ -1703,6 +1733,8 @@ int main(int argc, char** argv) {
             // And its panels go with it. A tab called "Scenes: Vertical" for a canvas that
             // no longer exists can never show anything, and the operator did not close it so
             // would not think to.
+            report(!workspace.layoutHasPanel(v_program),
+                   "its Program panel goes too");
             report(!workspace.layoutHasPanel(v_scenes) && !workspace.layoutHasPanel(v_sources),
                    "taking its two panels with it");
             report(document.currentCanvasIsMain(),

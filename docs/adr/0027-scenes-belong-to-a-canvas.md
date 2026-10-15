@@ -302,3 +302,25 @@ only because of how the selection is stored. And `setCanvasEmergencyScene` takes
 the *scene* rather than from whichever canvas is current: a scene belongs to exactly one canvas,
 so "which canvas is this the safety net for" has one answer, and it must not be possible to get
 it wrong by having the wrong panel focused.
+
+### And its own Program panel, 2026-10-15
+
+The amendment above read "Separate Source and Scene panels for that canvase must be created" as
+two panels. It is three. Looking at the built shell the operator said:
+
+> so question I see that there are sources and scenes panels for main and verical. But there is
+> not vertical canvase itself
+
+The *canvas itself* — the picture — had been missed, because the original "Canvas Panel" in that
+sentence was read as the canvas *list* that now sits beside Outputs. A second canvas you cannot
+see is one you cannot frame anything on, so `program` joins `scenes` and `sources` as a
+per-canvas panel kind, on exactly the same rules: `program:<canvasId>`, Main keeps the bare
+`program`, created with the canvas and removed with it, tabbed beside Main's.
+
+One thing is different from the two lists, and it is why this is not purely a workspace change.
+A scene list looks the same whatever canvas it is of; a canvas does not. The panel drew a fixed
+16:9 frame, so a 1080x1920 vertical canvas would have been letterboxed into landscape and read
+as a second horizontal output — the exact confusion the separate panels exist to prevent. The
+frame now takes its aspect from the canvas's own `width`/`height` through
+`Document::canvasSizeOf`, and says the resolution under the name, so the panel is wrong in a way
+that is visible rather than wrong in a way that looks plausible.

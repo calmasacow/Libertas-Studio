@@ -8,6 +8,21 @@ Design decisions the operator has asked for that are **not built yet**, kept her
 lost between sessions. Anything here that changes the document model needs an ADR before it is
 written, because the model is what every other decision hangs off.
 
+## A canvas you can see, per canvas, built on 2026-10-15
+
+Every canvas now has a Program panel of its own — `program:<canvasId>`, Main keeping the bare
+`program` — created and removed with the canvas, tabbed beside Main's. The frame takes its
+shape from the canvas's own size rather than a fixed 16:9, so a vertical canvas draws portrait
+and says its resolution. ADR-0027 has the reasoning.
+
+### Still open here
+
+- **Nothing renders in it.** It is a framing guide with thirds and a caption, as before; the
+  render path is not product code yet.
+- **The three panels dock as a group of one each.** A canvas's three panels each go beside
+  Main's matching one. There is no way to say "give me all of Vertical's panels in one place",
+  which is what someone building a second show might actually want.
+
 ## The mixer shows sources, not just buses
 
 Asked for on 2026-10-14, after the operator looked at the running shell and said the faders

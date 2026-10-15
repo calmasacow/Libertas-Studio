@@ -462,6 +462,17 @@ QVariantMap Workspace::dividerAt(int index) const {
     return m;
 }
 
+namespace {
+
+/// The panels every canvas has one of: its picture, its scene list and its source tree.
+/// Main's three keep the bare ids; the rest are "<kind>:<canvasId>".
+bool is_per_canvas(const QString& kind) {
+    return kind == QLatin1String("program") || kind == QLatin1String("scenes") ||
+           kind == QLatin1String("sources");
+}
+
+} // namespace
+
 QStringList Workspace::closedPanels() const {
     // The answer to "losing the main canvas, or having it pop out and go off screen completely":
     // every panel the shell knows about, including the program canvas, can always be brought
@@ -471,10 +482,10 @@ QStringList Workspace::closedPanels() const {
         if (!layout().has_panel(p.id))
             out << QString::fromLatin1(p.id);
     }
-    // And the per-canvas pairs. The first canvas's two are already in the table above under
+    // And the per-canvas panels. The first canvas's three are already in the table above under
     // their plain ids, so this starts at the second.
     for (int i = 1; i < canvas_ids_.size(); ++i) {
-        for (const char* kind : {"scenes", "sources"}) {
+        for (const char* kind : {"program", "scenes", "sources"}) {
             const QString id = QString::fromLatin1(kind) + QLatin1Char(':') + canvas_ids_[i];
             if (!layout().has_panel(to_std(id)))
                 out << id;
@@ -489,14 +500,15 @@ QString Workspace::title(const QString& panel) const {
     // -- a panel can be the only one in its group, with no neighbour to contrast against.
     const qsizetype colon = panel.indexOf(QLatin1Char(':'));
     const QString kind = colon < 0 ? panel : panel.left(colon);
-    if (kind == QLatin1String("scenes") || kind == QLatin1String("sources")) {
+    if (is_per_canvas(kind)) {
         const QString canvas = colon < 0
                                    ? (canvas_ids_.isEmpty() ? QString{} : canvas_ids_.front())
                                    : panel.mid(colon + 1);
         const qsizetype at = canvas_ids_.indexOf(canvas);
         const QString name = at >= 0 && at < canvas_names_.size() ? canvas_names_[at] : QString{};
-        const QString base = kind == QLatin1String("scenes") ? QStringLiteral("Scenes")
-                                                             : QStringLiteral("Sources");
+        const QString base = kind == QLatin1String("program") ? QStringLiteral("Program")
+                             : kind == QLatin1String("scenes") ? QStringLiteral("Scenes")
+                                                               : QStringLiteral("Sources");
         // No canvases yet, or one this workspace has not been told about: the bare word is
         // still right, and is better than "Scenes: ".
         return name.isEmpty() ? base : base + QStringLiteral(": ") + name;
@@ -539,13 +551,13 @@ void Workspace::syncCanvases(const QStringList& ids, const QStringList& names) {
         if (colon < 0)
             continue;
         const QString kind = q.left(colon);
-        if (kind != QLatin1String("scenes") && kind != QLatin1String("sources"))
+        if (!is_per_canvas(kind))
             continue;
         if (!alive.contains(q.mid(colon + 1)))
             touched = next.close_panel(panel) || touched;
     }
 
-    // A canvas's pair is created once, the first time it is seen. After that the operator
+    // A canvas's panels are created once, the first time it is seen. After that the operator
     // owns whether they are on screen: re-adding one they closed would be the shell arguing
     // with them every time the document changed.
     //
@@ -557,8 +569,8 @@ void Workspace::syncCanvases(const QStringList& ids, const QStringList& names) {
         for (int i = 1; i < ids.size(); ++i) {
             if (canvases_seen_.contains(ids[i]))
                 continue;
-            bool made_both = true;
-            for (const char* kind : {"scenes", "sources"}) {
+            bool made_all = true;
+            for (const char* kind : {"program", "scenes", "sources"}) {
                 const std::string want =
                     (QString::fromLatin1(kind) + QLatin1Char(':') + ids[i]).toStdString();
                 if (next.has_panel(want))
@@ -569,7 +581,7 @@ void Workspace::syncCanvases(const QStringList& ids, const QStringList& names) {
                 if (beside == llayout::kInvalidNode) {
                     // Main's own panel is closed, so there is nothing to sit beside. Not an
                     // error and not a reason to give up on this canvas for good.
-                    made_both = false;
+                    made_all = false;
                     continue;
                 }
                 const llayout::DockResult r =
@@ -582,12 +594,12 @@ void Workspace::syncCanvases(const QStringList& ids, const QStringList& names) {
                     if (!canvas_panels_built_)
                         static_cast<void>(next.activate(kind));
                 } else {
-                    made_both = false;
+                    made_all = false;
                 }
             }
             // Seen only if it actually got its panels. A refused dock is a thing to try again
             // next time, not a canvas to write off.
-            if (made_both)
+            if (made_all)
                 canvases_seen_.insert(ids[i]);
         }
         if (!ids.isEmpty())

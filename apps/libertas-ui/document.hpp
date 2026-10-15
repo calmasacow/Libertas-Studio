@@ -8,6 +8,7 @@
 
 #include <QAbstractItemModel>
 #include <QObject>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -121,6 +122,9 @@ public:
     Q_INVOKABLE void selectSceneOn(const QString& canvasId, const QString& sceneId);
     /// The name a panel title puts after "Scenes: ". Empty `canvasId` means the first canvas.
     Q_INVOKABLE [[nodiscard]] QString canvasNameOf(const QString& canvasId) const;
+    /// That canvas's pixel size, so its Program panel can be drawn the shape it really is.
+    /// Empty `canvasId` means the first canvas; an unknown one gives an invalid size.
+    Q_INVOKABLE [[nodiscard]] QSize canvasSizeOf(const QString& canvasId) const;
     /// Every canvas id, first one first. Drives the per-canvas panels the workspace keeps.
     Q_INVOKABLE [[nodiscard]] QStringList canvasIds() const;
     /// The same list, by name, in the same order.

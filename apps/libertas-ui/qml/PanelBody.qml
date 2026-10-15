@@ -155,7 +155,25 @@ Item {
     // The program canvas. ADR-0015 rule 2: it is a region of this surface, never a separate OS
     // window, so it cannot be lost, moved off-screen or closed by accident.
     Item {
-        visible: body.panelId === "program"
+        id: programView
+
+        visible: body.panelKind === "program"
+        /// The canvas this picture is of. Read again on every document change, because a
+        /// canvas can be resized or renamed while its panel is open.
+        readonly property size canvasSize: {
+            void Document.revision;
+            return Document.canvasSizeOf(body.panelCanvas);
+        }
+        readonly property string canvasName: {
+            void Document.revision;
+            return Document.canvasNameOf(body.panelCanvas);
+        }
+        /// Width over height. A 9:16 vertical canvas has to look like one: drawn into the old
+        /// fixed 16:9 frame it would read as a second landscape output.
+        readonly property real aspect: programView.canvasSize.width > 0 &&
+                                       programView.canvasSize.height > 0
+                                       ? programView.canvasSize.width / programView.canvasSize.height
+                                       : 16 / 9
         anchors.fill: parent
         anchors.margins: 10
 
@@ -163,10 +181,11 @@ Item {
             id: canvasFrame
 
             anchors.centerIn: parent
-            // 16:9, letterboxed into whatever space the layout gave us.
-            readonly property real fit: Math.min(parent.width / 16, parent.height / 9)
-            width: Math.max(fit * 16, 1)
-            height: Math.max(fit * 9, 1)
+            objectName: "programFrame"
+            // The canvas's own shape, letterboxed into whatever space the layout gave us.
+            readonly property real fit: Math.min(parent.width / programView.aspect, parent.height)
+            width: Math.max(fit * programView.aspect, 1)
+            height: Math.max(fit, 1)
             color: Theme.c.window
             border.width: 1
             border.color: Theme.c.border
@@ -204,7 +223,7 @@ Item {
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: qsTr("Program")
+                    text: programView.canvasName === "" ? qsTr("Program") : programView.canvasName
                     font.pixelSize: 15
                     font.weight: Font.DemiBold
                     color: Theme.c.textMuted
@@ -212,7 +231,10 @@ Item {
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: qsTr("no pipeline attached")
+                    text: programView.canvasSize.width > 0
+                          ? qsTr("%1x%2 · no pipeline attached")
+                                .arg(programView.canvasSize.width).arg(programView.canvasSize.height)
+                          : qsTr("no pipeline attached")
                     font.pixelSize: 11
                     color: Theme.c.textMuted
                     opacity: 0.7
@@ -228,7 +250,7 @@ Item {
     // that went stale.
     Column {
         visible: panelLoader.sourceComponent === null && body.panelId !== "" &&
-                 body.panelId !== "program"
+                 body.panelKind !== "program"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top

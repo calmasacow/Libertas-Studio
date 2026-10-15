@@ -189,6 +189,12 @@ QString Document::canvasNameOf(const QString& canvasId) const {
     return c ? qstr(c->name) : QString{};
 }
 
+QSize Document::canvasSizeOf(const QString& canvasId) const {
+    const auto parsed = parse_id(canvas_key(canvasId));
+    const ldoc::Canvas* c = parsed ? session_->project().canvas(*parsed) : nullptr;
+    return c ? QSize(c->width, c->height) : QSize{};
+}
+
 QStringList Document::canvasIds() const {
     QStringList out;
     for (const ldoc::Canvas& c : session_->project().canvases)
