@@ -213,6 +213,15 @@ public:
     /// The source types this build can hold in a document. None of them render yet; the list is
     /// here because a document that cannot name what it is waiting for is harder to build a
     /// pipeline against than one that can.
+    /// What the add dialog lists down its left side: every source type, plus "Scene".
+    ///
+    /// Separate from `sourceTypes` deliberately. A scene is not a source -- it has no settings
+    /// schema, cannot be created from the "+ Add new" row and is not stored in
+    /// `Project::sources` -- so putting it in that list would make every consumer of it treat
+    /// a precomp as a kind of source. The dialog is a dialog; this is the dialog's list.
+    Q_PROPERTY(QVariantList addableKinds READ addableKinds CONSTANT)
+    [[nodiscard]] QVariantList addableKinds() const;
+
     Q_PROPERTY(QVariantList sourceTypes READ sourceTypes CONSTANT)
     [[nodiscard]] QVariantList sourceTypes() const;
 
@@ -224,6 +233,16 @@ public:
     /// Put a source the project already has into the current scene. Also one step, and
     /// deliberately does not create a second source: one camera, opened once, in six scenes.
     Q_INVOKABLE void addExistingSourceToScene(const QString& sourceId, bool visible = true);
+
+    /// Put a whole scene into the current scene as one node -- a precomp (ADR-0034).
+    ///
+    /// A live reference, not a copy: editing the referenced scene changes every scene showing
+    /// it. The node carries its own size, where (0,0) means "the canvas I am composited into",
+    /// which is how a 2560x1440 overlay scene sits correctly inside a vertical one.
+    Q_INVOKABLE void addSceneToScene(const QString& sceneId, bool visible = true);
+    /// The scenes that can be put into the current one: every scene except the current scene
+    /// itself and any that would make a loop. Each entry is {id, name, canvasName}.
+    Q_INVOKABLE [[nodiscard]] QVariantList scenesForPrecomp() const;
 
     /// Every source of one type, for the add dialog's right-hand grid. Each entry carries what
     /// the tile needs to draw itself: `id`, `name`, `typeTitle`, `useCount`, `selfContained`,

@@ -1246,6 +1246,73 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- a scene inside a scene ------------------------------------------------------
+        //
+        // NodeKind::Precomp existed from the start and nothing could make one, so the model's
+        // own cycle check had never been reachable from the UI (ADR-0034). A precomp is a live
+        // reference: editing the shown scene changes every scene showing it.
+        {
+            const QStringList canvases = document.canvasIds();
+            report(!canvases.isEmpty(), "there is a canvas to work on");
+            // The scene the shell is on now, which the overlay will be shown inside.
+            const QString first_scene = document.selectedScene();
+            document.addSceneOn(canvases.front(), QStringLiteral("Overlay Pack"));
+            settle();
+            const QString overlay = document.selectedScene();
+            document.addSourceNode(QStringLiteral("Lower Third"));
+            settle();
+
+            // Back to a different scene, and show the overlay inside it.
+            document.selectScene(first_scene);
+            settle();
+            const int pre_nodes_before = document.nodesModel()->rowCount();
+
+            bool offered = false;
+            for (const QVariant& v : document.scenesForPrecomp())
+                offered = offered || v.toMap().value("id").toString() == overlay;
+            report(offered, "another scene is offered as something to add");
+
+            bool offers_itself = false;
+            for (const QVariant& v : document.scenesForPrecomp())
+                offers_itself = offers_itself ||
+                                v.toMap().value("id").toString() == first_scene;
+            report(!offers_itself, "and a scene is never offered to itself");
+
+            document.addSceneToScene(overlay, true);
+            settle();
+            report(document.nodesModel()->rowCount() == pre_nodes_before + 1,
+                   "adding it puts one node in the scene, not a copy of its contents");
+
+            // The loop. Showing the first scene inside the overlay would close the ring, and
+            // the renderer would recurse until it died -- so the command refuses it and the
+            // picker never offers it.
+            document.selectScene(overlay);
+            settle();
+            bool loop_offered = false;
+            for (const QVariant& v : document.scenesForPrecomp())
+                loop_offered = loop_offered ||
+                               v.toMap().value("id").toString() == first_scene;
+            report(!loop_offered, "a scene that would close a loop is not offered");
+
+            const int overlay_nodes = document.nodesModel()->rowCount();
+            document.addSceneToScene(first_scene, true);
+            settle();
+            report(document.nodesModel()->rowCount() == overlay_nodes,
+                   "and the command refuses it even when asked directly");
+            bool says_loop = false;
+            for (const QString& p : document.problems())
+                says_loop = says_loop || p.contains(QLatin1String("precomposes itself"));
+            report(!says_loop,
+                   "so the project never reaches the state validate() calls an error");
+
+            document.selectScene(first_scene);
+            settle();
+            document.undo();
+            document.undo();
+            document.undo();
+            settle();
+        }
+
         document.selectNode(browser_node);
         settle();
 

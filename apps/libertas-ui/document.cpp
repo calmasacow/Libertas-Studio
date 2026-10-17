@@ -1292,6 +1292,20 @@ ldoc::ParamMap default_settings(std::string_view type) {
 } // namespace
 
 
+QVariantList Document::addableKinds() const {
+    QVariantList out = sourceTypes();
+    // Last, after the source types, because it is the odd one: picking it adds a Precomp node
+    // rather than a source (ADR-0034). Listed here at all because this dialog answers "what
+    // goes in a scene", and another scene is one of the answers -- where OBS puts it too.
+    QVariantMap scene;
+    scene["id"] = QStringLiteral("scene");
+    scene["title"] = QStringLiteral("Scene");
+    scene["icon"] = QString::fromUtf8("\u25F0");
+    scene["selfContained"] = false;
+    out.append(scene);
+    return out;
+}
+
 QVariantList Document::sourceTypes() const {
     struct Entry {
         const char* id;
@@ -1600,6 +1614,101 @@ void Document::removeSourceAndUses(const QString& id) {
     steps.push_back(ldoc::RemoveSource{*parsed});
     run(ldoc::make_batch(std::move(steps),
                          std::format("Delete source {}", src->name)));
+}
+
+QVariantList Document::scenesForPrecomp() const {
+    const ldoc::Scene* into = current_scene();
+    if (!into)
+        return {};
+    const ldoc::Project& p = session_->project();
+
+    // Would showing `candidate` here eventually come back to the scene being added to? The
+    // command refuses a loop; this asks the same question early, so a scene that cannot be
+    // added is never offered and then rejected.
+    std::unordered_set<ldoc::Id> seen;
+    const std::function<bool(const ldoc::Id&)> reaches_into = [&](const ldoc::Id& at) {
+        if (at == into->id)
+            return true;
+        if (!seen.insert(at).second)
+            return false;
+        const ldoc::Scene* s = p.scene(at);
+        if (!s)
+            return false;
+        bool found = false;
+        ldoc::visit(s->roots, [&](const ldoc::Node& n) {
+            if (found)
+                return;
+            if (const auto* pre = std::get_if<ldoc::PrecompData>(&n.data))
+                found = reaches_into(pre->scene);
+        });
+        return found;
+    };
+
+    QVariantList out;
+    for (const ldoc::Scene& s : p.scenes) {
+        if (s.id == into->id)
+            continue;
+        seen.clear();
+        if (reaches_into(s.id))
+            continue;
+        // Shaped like a source tile, because it is drawn by the same delegate. The fields it
+        // would otherwise lack are filled rather than left absent: an undeclared field renders
+        // as the literal word "undefined", which the shell has shipped once already.
+        QVariantMap m;
+        m["id"] = id_str(s.id);
+        m["name"] = qstr(s.name);
+        const ldoc::Canvas* c = p.canvas(s.canvas);
+        m["canvasName"] = c ? qstr(c->name) : QString{};
+        m["type"] = QStringLiteral("scene");
+        m["typeTitle"] = c ? qstr(c->name) : QStringLiteral("Scene");
+        m["icon"] = QString::fromUtf8("\u25F0");
+        m["swatch"] = QString{};
+        m["selfContained"] = false;
+        // How many *other* scenes already show this one, so an overlay in use reads as one.
+        int shown_by = 0;
+        for (const ldoc::Scene& other : p.scenes) {
+            bool uses = false;
+            ldoc::visit(other.roots, [&](const ldoc::Node& n) {
+                if (const auto* pre = std::get_if<ldoc::PrecompData>(&n.data))
+                    uses = uses || pre->scene == s.id;
+            });
+            if (uses)
+                ++shown_by;
+        }
+        m["useCount"] = shown_by;
+        out.append(m);
+    }
+    return out;
+}
+
+void Document::addSceneToScene(const QString& sceneId, bool visible) {
+    const ldoc::Scene* into = current_scene();
+    const auto parsed = parse_id(sceneId);
+    if (!into || !parsed)
+        return;
+    const ldoc::Scene* shown = session_->project().scene(*parsed);
+    if (!shown) {
+        emit notice(QStringLiteral("That scene is no longer in the project."));
+        return;
+    }
+
+    ldoc::Node node = ldoc::make_node(ldoc::NodeKind::Precomp, shown->name);
+    node.visible = visible;
+    ldoc::PrecompData data;
+    data.scene = shown->id;
+    // size stays (0,0): "the size of the canvas this is composited into", which is what lets
+    // an overlay scene authored at one size sit correctly on a canvas of another.
+    if (const ldoc::Canvas* c = session_->project().canvas(shown->canvas))
+        data.color_space = c->color_space;
+    node.data = std::move(data);
+    const ldoc::Id node_id = node.id;
+
+    Placement where;
+    if (const ldoc::Node* sel = current_node(); sel && sel->is_group())
+        where.parent = sel->id;
+
+    run(ldoc::AddNode{into->id, where.parent, where.index, std::move(node)});
+    selectNode(id_str(node_id));
 }
 
 void Document::renameSource(const QString& id, const QString& name) {

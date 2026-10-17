@@ -5,10 +5,60 @@
 
 #include <algorithm>
 #include <format>
+#include <functional>
+#include <optional>
 #include <unordered_set>
 
 namespace ldoc {
 namespace {
+
+/// Why adding `node` to `scene` would make a precomposition loop, or nothing when it would not.
+///
+/// Walks the scenes a precomp would reach, following precomps already in the project, and
+/// reports the first path that arrives back at `scene`. Returned as a message rather than a
+/// bool so the refusal can name the scene the operator has to break the loop at.
+std::optional<std::string> precomp_cycle_reason(const Project& p, const Id& scene,
+                                                const Node& node) {
+    std::vector<Id> reaches;
+    visit(node, [&](const Node& n) {
+        if (const auto* pre = std::get_if<PrecompData>(&n.data))
+            reaches.push_back(pre->scene);
+    });
+    if (reaches.empty())
+        return std::nullopt;
+
+    std::unordered_set<Id> seen;
+    const std::function<bool(const Id&)> hits_scene = [&](const Id& at) {
+        if (at == scene)
+            return true;
+        if (!seen.insert(at).second)
+            return false;
+        const Scene* s = p.scene(at);
+        if (!s)
+            return false;
+        bool found = false;
+        visit(s->roots, [&](const Node& n) {
+            if (found)
+                return;
+            if (const auto* pre = std::get_if<PrecompData>(&n.data))
+                found = hits_scene(pre->scene);
+        });
+        return found;
+    };
+
+    const Scene* into = p.scene(scene);
+    for (const Id& target : reaches) {
+        if (!hits_scene(target))
+            continue;
+        const Scene* t = p.scene(target);
+        return std::format(
+            "'{}' already shows '{}', directly or through another scene, so adding it here "
+            "would make a loop",
+            t ? t->name : target.to_string(), into ? into->name : scene.to_string());
+    }
+    return std::nullopt;
+}
+
 
 /// A node together with the list it lives in, so it can be removed, reinserted or moved.
 struct Located {
@@ -448,6 +498,13 @@ struct Apply {
         }
         if (c.index > target->size())
             return std::unexpected(std::format("position {} is past the end", c.index));
+
+        // A precomp that reaches its own scene again is a scene that cannot be rendered at
+        // all, so it is refused here rather than only reported by validate(). Every other
+        // reference in this model degrades -- a node bound to a deleted source draws nothing
+        // -- but this one has no bottom: the renderer would recurse until it died.
+        if (const auto loop = precomp_cycle_reason(p, c.scene, c.node))
+            return std::unexpected(*loop);
 
         Applied out{RemoveNode{c.scene, c.node.id}, describe(c)};
         target->insert(target->begin() + static_cast<std::ptrdiff_t>(c.index), c.node);

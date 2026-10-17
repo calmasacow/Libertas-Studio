@@ -23,6 +23,22 @@ and says its resolution. ADR-0027 has the reasoning.
   Main's matching one. There is no way to say "give me all of Vertical's panels in one place",
   which is what someone building a second show might actually want.
 
+## A scene inside a scene, built on 2026-10-17
+
+The add dialog's kind list gained "Scene": picking one adds a `Precomp` node, a whole scene
+shown live inside another, on any canvas
+([ADR-0034](adr/0034-a-scene-inside-a-scene.md)). The model already had the kind and the cycle
+check; only the gesture was missing.
+
+### Still open here
+
+- **Nothing draws it.** The node is in the document and in the Sources panel; the picture waits
+  on the render path, like everything else.
+- **Deleting a scene that another scene shows says nothing.** `RemoveScene` predates this
+  gesture. It should probably warn, the way removing a canvas with scenes refuses.
+- **No way to change which scene a precomp shows** after it is added, and no size control on
+  the node. Both are Properties-panel work.
+
 ## The source manager, built on 2026-10-17
 
 The Add Source dialog is the manager ([ADR-0033](adr/0033-deleting-a-source-takes-its-placements.md)).

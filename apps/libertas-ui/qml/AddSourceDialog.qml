@@ -67,7 +67,7 @@ Item {
     }
 
     function titleOf(typeId) {
-        for (const t of Document.sourceTypes) {
+        for (const t of Document.addableKinds) {
             if (t.id === typeId)
                 return t.title;
         }
@@ -76,9 +76,14 @@ Item {
 
     /// What the right-hand side is showing: every source of the chosen type, or the most
     /// recently created ones when no type is chosen.
+    /// "scene" is not a source type -- it offers the project's other scenes, and picking one
+    /// adds a precomp rather than a source (ADR-0034).
+    readonly property bool pickingScene: dialog.selectedType === "scene"
+
     readonly property var shownSources: dialog.selectedType === ""
         ? Document.recentSources(24)
-        : Document.sourcesOfType(dialog.selectedType)
+        : dialog.pickingScene ? Document.scenesForPrecomp()
+                              : Document.sourcesOfType(dialog.selectedType)
 
     Keys.onEscapePressed: {
         if (dialog.deleteStage > 0)
@@ -139,7 +144,7 @@ Item {
                 clip: true
                 // The list grows with every source type this build learns, so it scrolls.
                 boundsBehavior: Flickable.StopAtBounds
-                model: Document.sourceTypes
+                model: Document.addableKinds
                 header: recentHeader
 
                 delegate: Rectangle {
@@ -318,7 +323,7 @@ Item {
                         objectName: "addNewSourceTile"
                         width: gridFlow.width
                         height: 52
-                        visible: dialog.selectedType !== ""
+                        visible: dialog.selectedType !== "" && !dialog.pickingScene
                         radius: 2
                         color: newMouse.containsMouse ? Theme.c.panelHeaderActive : "transparent"
                         border.width: 1
@@ -440,7 +445,8 @@ Item {
                                     acceptedButtons: Qt.LeftButton | Qt.RightButton
                                     onClicked: (ev) => {
                                         dialog.selectedSource = tile.modelData.id;
-                                        if (ev.button === Qt.RightButton)
+                                        if (ev.button === Qt.RightButton &&
+                                            !dialog.pickingScene)
                                             sourceMenu.popup(
                                                 tile.mapToItem(dialog, ev.x, ev.y).x,
                                                 tile.mapToItem(dialog, ev.x, ev.y).y,
@@ -452,8 +458,12 @@ Item {
                                                 }]);
                                     }
                                     onDoubleClicked: {
-                                        Document.addExistingSourceToScene(tile.modelData.id,
-                                                                          dialog.makeVisible);
+                                        if (dialog.pickingScene)
+                                            Document.addSceneToScene(tile.modelData.id,
+                                                                     dialog.makeVisible);
+                                        else
+                                            Document.addExistingSourceToScene(
+                                                tile.modelData.id, dialog.makeVisible);
                                         dialog.close();
                                     }
                                 }
@@ -515,13 +525,17 @@ Item {
 
                 DialogButton {
                     objectName: "addExistingButton"
-                    text: qsTr("Add existing")
+                    text: dialog.pickingScene ? qsTr("Add scene") : qsTr("Add existing")
                     primary: true
                     minimumWidth: 110
                     enabled: dialog.selectedSource !== "" && Document.selectedScene !== ""
                     onClicked: {
-                        Document.addExistingSourceToScene(dialog.selectedSource,
-                                                          dialog.makeVisible);
+                        if (dialog.pickingScene)
+                            Document.addSceneToScene(dialog.selectedSource,
+                                                     dialog.makeVisible);
+                        else
+                            Document.addExistingSourceToScene(dialog.selectedSource,
+                                                              dialog.makeVisible);
                         dialog.close();
                     }
                 }
