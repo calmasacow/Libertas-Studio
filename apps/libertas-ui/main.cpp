@@ -1313,6 +1313,31 @@ int main(int argc, char** argv) {
             report(document.parentOfNode(a).isEmpty(),
                    "and one undo takes them all back out");
 
+            // Ungroup, the companion gesture. The children land where the group was rather
+            // than at the top of the scene, so draw order survives the round trip.
+            document.selectNode(a);
+            document.selectNodeExtended(canvas, b, true, false);
+            settle();
+            document.groupSelectedNodes();
+            settle();
+            const QString made = document.selectedNode();
+            const int with_group = document.nodesModel()->rowCount();
+            document.ungroupNode(made);
+            settle();
+            report(document.parentOfNode(a).isEmpty() && document.parentOfNode(b).isEmpty(),
+                   "ungrouping puts the children back where the group was");
+            report(document.nodesModel()->rowCount() == with_group - 1,
+                   "and the group itself is gone");
+            report(document.selectedNodes().size() == 2,
+                   "leaving the freed children selected");
+
+            document.undo();
+            settle();
+            report(document.parentOfNode(a) == made,
+                   "one undo puts the group back together");
+            document.undo();
+            settle();
+
             // And through the pointer, with the modifier actually held. Calling
             // selectNodeExtended proves the arithmetic; it says nothing about whether a
             // ctrl-click in the panel reaches it.

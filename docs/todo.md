@@ -34,8 +34,9 @@ scene order.
 
 - **Delete and Copy still act on the leader alone**, not the selection. They are one-node
   gestures now sitting beside a multi-node one, which is the loose end to close first.
-- **No ungroup.** The obvious companion to Ctrl+G.
 - **No rubber-band selection and no Ctrl+A.**
+- **Ungroup has no shortcut.** It is on the right-click menu only; `Ctrl+Shift+G` is the
+  conventional one and is unclaimed.
 - **Properties blanks above one selection** by the operator's choice. Editing all of them is
   the bigger feature: every field needs a mixed-value state and every setter becomes a batch.
 

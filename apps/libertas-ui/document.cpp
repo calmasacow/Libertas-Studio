@@ -396,6 +396,18 @@ void Document::rebuild() {
     }
     if (!selected_node_.isEmpty() && !current_node())
         selected_node_.clear();
+    // The rest of the selection has to be pruned the same way, or a node removed by an undo
+    // -- or by the command that just ran -- stays named by something that still acts on it.
+    if (!also_selected_.isEmpty()) {
+        const ldoc::Scene* sel = current_scene();
+        QStringList alive;
+        for (const QString& id : also_selected_) {
+            const auto parsed = parse_id(id);
+            if (sel && parsed && ldoc::find_node(sel->roots, *parsed))
+                alive << id;
+        }
+        also_selected_ = alive;
+    }
 
     // Scenes belong to a canvas (ADR-0027), and each canvas has its own pair of panels --
     // "Scenes: Main", "Scenes: Vertical" -- so each gets its own model rather than one model
@@ -2698,6 +2710,70 @@ QString Document::parentOfNode(const QString& nodeId) const {
         };
     walk(s->roots, QString{});
     return found;
+}
+
+void Document::ungroupNode(const QString& nodeId) {
+    const ldoc::Scene* s = current_scene();
+    const auto parsed = parse_id(nodeId);
+    const ldoc::Node* group = (s && parsed) ? ldoc::find_node(s->roots, *parsed) : nullptr;
+    if (!group)
+        return;
+    const auto* data = std::get_if<ldoc::GroupData>(&group->data);
+    if (!data) {
+        emit notice(QStringLiteral("Only a group can be taken apart."));
+        return;
+    }
+
+    // Where the group sits now, so its children land in its place rather than at the top.
+    std::optional<ldoc::Id> parent;
+    std::size_t index = 0;
+    {
+        const std::function<bool(const std::vector<ldoc::Node>&, std::optional<ldoc::Id>)> walk =
+            [&](const std::vector<ldoc::Node>& nodes, std::optional<ldoc::Id> within) {
+                for (std::size_t i = 0; i < nodes.size(); ++i) {
+                    if (nodes[i].id == *parsed) {
+                        parent = within;
+                        index = i;
+                        return true;
+                    }
+                    if (const auto* g = std::get_if<ldoc::GroupData>(&nodes[i].data)) {
+                        if (walk(g->children, nodes[i].id))
+                            return true;
+                    }
+                }
+                return false;
+            };
+        walk(s->roots, std::nullopt);
+    }
+
+    // An empty group is just removed. Moving nothing and then deleting it is the same
+    // outcome with an extra step in the undo description.
+    std::vector<ldoc::Command> steps;
+    std::size_t at = index;
+    for (const ldoc::Node& child : data->children) {
+        steps.push_back(ldoc::MoveNode{s->id, child.id, parent, at});
+        ++at;
+    }
+    steps.push_back(ldoc::RemoveNode{s->id, *parsed});
+    // The children's ids, read before the command runs -- `group` points into the project and
+    // the batch rewrites it.
+    QStringList freed;
+    for (const ldoc::Node& child : data->children)
+        freed << id_str(child.id);
+
+    run(ldoc::make_batch(std::move(steps),
+                         std::format("Ungroup {}", group->name)));
+
+    // Selected after, not before: the rebuild the session triggers prunes anything that is not
+    // in the scene, and before the move the children were still inside the group.
+    selected_node_.clear();
+    also_selected_.clear();
+    if (!freed.isEmpty()) {
+        selected_node_ = freed.takeLast();
+        also_selected_ = freed;
+        selection_anchor_ = selected_node_;
+    }
+    emit selectionChanged();
 }
 
 void Document::removeNode(const QString& id) {

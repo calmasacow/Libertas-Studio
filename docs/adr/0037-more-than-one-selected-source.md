@@ -79,8 +79,13 @@ manager does.
   right-click menu carries "Group N sources" so it is reachable without the shortcut.
 - A non-leading selected row is drawn a shade down from the leader. A range has to read as a
   range while it stays obvious which node Properties *would* be showing.
-- Not built: no rubber-band selection, no Ctrl+A, and no ungroup. Ungroup is the obvious next
-  one and is filed in `docs/todo.md`.
+- Ungroup followed the same day, on the row's right-click beside Rename. Its children land at
+  the group's own place rather than at the top of the scene, so a group/ungroup round trip
+  leaves draw order where it was, and the freed children end up selected -- which is what the
+  operator is looking at. They keep their own transforms, so whatever the group's transform
+  was doing to them is lost; a group here is a real container (ADR's node model), not OBS's
+  presentation-only folder.
+- Not built: no rubber-band selection and no Ctrl+A.
 - The deletion and copy gestures still act on the leader alone, not the selection. They are
   one-node operations that now sit next to a multi-node one, which is a loose end worth
   closing before this is called finished.

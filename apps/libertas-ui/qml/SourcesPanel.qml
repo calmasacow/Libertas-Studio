@@ -143,6 +143,23 @@ Item {
                         checked: false,
                         action: () => Document.copySelectedNode()
                     }];
+                    // Rename, which was double-click and F2 only. A right-click is where
+                    // people look for it.
+                    rows.push({
+                        text: qsTr("Rename"),
+                        checked: false,
+                        action: () => {
+                            panel.renaming = row.nodeId;
+                        }
+                    });
+                    // Taking a group apart, beside the gesture that makes one.
+                    if (row.isGroup) {
+                        rows.push({
+                            text: qsTr("Ungroup"),
+                            checked: false,
+                            action: () => Document.ungroupNode(row.nodeId)
+                        });
+                    }
                     // Only with something to group. One node in a group of its own is a
                     // legitimate thing to want, so this appears for one as well as for six.
                     if (Document.selectedNodes.length > 0) {

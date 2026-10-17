@@ -164,6 +164,10 @@ public:
     Q_INVOKABLE void groupSelectedNodes();
     /// The group a node sits in, or "" when it sits at the top of the scene.
     Q_INVOKABLE [[nodiscard]] QString parentOfNode(const QString& nodeId) const;
+    /// Take a group apart: its children move to where it was, in order, and the group goes.
+    /// The children keep their own transforms, so what the group's transform was doing to
+    /// them is lost -- see ADR-0037.
+    Q_INVOKABLE void ungroupNode(const QString& nodeId);
     [[nodiscard]] QVariantMap nodeProperties() const;
     [[nodiscard]] QStringList problems() const;
     [[nodiscard]] QStringList blendModes() const;
