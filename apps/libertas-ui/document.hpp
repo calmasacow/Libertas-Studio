@@ -168,6 +168,12 @@ public:
     /// The children keep their own transforms, so what the group's transform was doing to
     /// them is lost -- see ADR-0037.
     Q_INVOKABLE void ungroupNode(const QString& nodeId);
+
+    /// Remove every selected source, as one undoable step. A node inside another selected node
+    /// is left to its parent rather than removed twice (ADR-0037).
+    Q_INVOKABLE void removeSelectedNodes();
+    /// Copy every selected source. Pasting puts them all back, in scene order.
+    Q_INVOKABLE void copySelectedNodes();
     [[nodiscard]] QVariantMap nodeProperties() const;
     [[nodiscard]] QStringList problems() const;
     [[nodiscard]] QStringList blendModes() const;
@@ -541,7 +547,9 @@ private:
     SceneModel favourites_;
     SourceModel sources_;
     /// What was copied, if anything: exactly one of these holds a value.
-    std::optional<ldoc::Node> copied_node_;
+    /// What was copied. A list because the selection is one: copying three and pasting gives
+    /// three. One copied node is a list of one rather than a separate case.
+    std::vector<ldoc::Node> copied_nodes_;
     std::optional<ldoc::Scene> copied_scene_;
 
     BusModel buses_;

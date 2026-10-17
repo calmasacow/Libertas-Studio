@@ -212,6 +212,16 @@ void Shortcuts::perform(const QString& ref) {
         document_->groupSelectedNodes();
         return;
     }
+    if (parsed->action == "edit.ungroup") {
+        document_->ungroupNode(document_->selectedNode());
+        return;
+    }
+    // Acts on the whole selection, not on one node, which is why it is here rather than
+    // resolving to a RemoveNode in the session (ADR-0037).
+    if (parsed->action == "layer.delete") {
+        document_->removeSelectedNodes();
+        return;
+    }
 
     const auto resolved = lsession::resolve(*parsed, document_->projectForBindings());
     switch (resolved.outcome) {

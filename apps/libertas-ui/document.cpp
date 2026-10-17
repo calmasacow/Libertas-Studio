@@ -1808,17 +1808,62 @@ void Document::addSceneToScene(const QString& sceneId, bool visible) {
     selectNode(id_str(node_id));
 }
 
+namespace {
+
+/// Whether `id` sits inside one of `chosen` other than itself.
+///
+/// Group, copy and delete all need it: a node already travelling inside a selected parent must
+/// not be acted on twice. Dropping it is right rather than refusing the gesture -- selecting a
+/// group and something in it plainly means "all of this" (ADR-0037).
+bool inside_any(const ldoc::Scene& scene, const QStringList& chosen, const ldoc::Id& id) {
+    for (const QString& other : chosen) {
+        const auto other_id = ldoc::Id::parse(other.toStdString());
+        if (!other_id || *other_id == id)
+            continue;
+        const ldoc::Node* o = ldoc::find_node(scene.roots, *other_id);
+        if (!o)
+            continue;
+        bool found = false;
+        ldoc::visit(*o, [&](const ldoc::Node& n) {
+            if (n.id == id && o->id != id)
+                found = true;
+        });
+        if (found)
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
 // ---- the clipboard ---------------------------------------------------------------------------
 
-void Document::copySelectedNode() {
-    const ldoc::Node* n = current_node();
-    if (!n) {
+void Document::copySelectedNode() { copySelectedNodes(); }
+
+void Document::copySelectedNodes() {
+    const ldoc::Scene* s = current_scene();
+    const QStringList chosen = selectedNodes();
+    if (!s || chosen.isEmpty()) {
         emit notice(QStringLiteral("Select a source to copy."));
         return;
     }
+    // Descendants of another selected node come along inside their parent, so taking them
+    // again would paste them twice -- the same rule grouping uses.
+    std::vector<ldoc::Node> taken;
+    for (const QString& id : chosen) {
+        const auto parsed = parse_id(id);
+        const ldoc::Node* n = parsed ? ldoc::find_node(s->roots, *parsed) : nullptr;
+        if (!n || inside_any(*s, chosen, *parsed))
+            continue;
+        taken.push_back(*n);
+    }
+    if (taken.empty())
+        return;
     copied_scene_.reset();
-    copied_node_ = *n;
-    emit notice(QStringLiteral("Copied %1.").arg(qstr(n->name)));
+    copied_nodes_ = std::move(taken);
+    emit notice(copied_nodes_.size() == 1
+                    ? QStringLiteral("Copied %1.").arg(qstr(copied_nodes_.front().name))
+                    : QStringLiteral("Copied %1 sources.").arg(copied_nodes_.size()));
 }
 
 void Document::copyScene(const QString& sceneId) {
@@ -1828,14 +1873,16 @@ void Document::copyScene(const QString& sceneId) {
         emit notice(QStringLiteral("Select a scene to copy."));
         return;
     }
-    copied_node_.reset();
+    copied_nodes_.clear();
     copied_scene_ = *s;
     emit notice(QStringLiteral("Copied scene %1.").arg(qstr(s->name)));
 }
 
 QString Document::pasteDescription() const {
-    if (copied_node_)
-        return QStringLiteral("Paste %1").arg(qstr(copied_node_->name));
+    if (copied_nodes_.size() == 1)
+        return QStringLiteral("Paste %1").arg(qstr(copied_nodes_.front().name));
+    if (!copied_nodes_.empty())
+        return QStringLiteral("Paste %1 sources").arg(copied_nodes_.size());
     if (copied_scene_)
         return QStringLiteral("Paste scene %1").arg(qstr(copied_scene_->name));
     return {};
@@ -1856,11 +1903,13 @@ int Document::pasteWouldMissCanvas() const {
                n.transform.position.x + w <= 0.0 || n.transform.position.y + h <= 0.0;
     };
     int off = 0;
-    if (copied_node_) {
-        ldoc::visit(*copied_node_, [&](const ldoc::Node& n) {
-            if (misses(n))
-                ++off;
-        });
+    if (!copied_nodes_.empty()) {
+        for (const ldoc::Node& root : copied_nodes_) {
+            ldoc::visit(root, [&](const ldoc::Node& n) {
+                if (misses(n))
+                    ++off;
+            });
+        }
     } else if (copied_scene_) {
         ldoc::visit(copied_scene_->roots, [&](const ldoc::Node& n) {
             if (misses(n))
@@ -1871,22 +1920,36 @@ int Document::pasteWouldMissCanvas() const {
 }
 
 void Document::paste() {
-    if (copied_node_) {
+    if (!copied_nodes_.empty()) {
         const ldoc::Scene* into = current_scene();
         if (!into) {
             emit notice(QStringLiteral("There is no scene to paste into."));
             return;
         }
-        // Fresh ids, or the paste would collide with the node it was copied from -- which
-        // AddNode refuses, and rightly.
-        ldoc::Node node = ldoc::duplicate(*copied_node_);
-        const ldoc::Id node_id = node.id;
-
         Placement where;
         if (const ldoc::Node* sel = current_node(); sel && sel->is_group())
             where.parent = sel->id;
-        run(ldoc::AddNode{into->id, where.parent, where.index, std::move(node)});
-        selectNode(id_str(node_id));
+
+        // One batch, so pasting six is one undo. Fresh ids on each, or the paste would
+        // collide with what it was copied from -- which AddNode refuses, and rightly.
+        std::vector<ldoc::Command> steps;
+        QStringList pasted;
+        std::size_t at = where.index;
+        for (const ldoc::Node& original : copied_nodes_) {
+            ldoc::Node node = ldoc::duplicate(original);
+            pasted << id_str(node.id);
+            steps.push_back(ldoc::AddNode{into->id, where.parent, at, std::move(node)});
+            ++at;
+        }
+        run(steps.size() == 1
+                ? steps.front()
+                : ldoc::make_batch(std::move(steps),
+                                   std::format("Paste {} sources", pasted.size())));
+        // Everything pasted is selected, which is what makes "paste then drag" work.
+        selected_node_ = pasted.takeLast();
+        also_selected_ = pasted;
+        selection_anchor_ = selected_node_;
+        emit selectionChanged();
         return;
     }
 
@@ -2652,22 +2715,7 @@ void Document::groupSelectedNodes() {
     QStringList moving;
     for (const QString& id : chosen) {
         const auto parsed = parse_id(id);
-        if (!parsed)
-            continue;
-        bool inside_another = false;
-        for (const QString& other : chosen) {
-            if (other == id)
-                continue;
-            const auto other_id = parse_id(other);
-            const ldoc::Node* o = other_id ? ldoc::find_node(s->roots, *other_id) : nullptr;
-            if (!o)
-                continue;
-            ldoc::visit(*o, [&](const ldoc::Node& n) {
-                if (n.id == *parsed && o->id != *parsed)
-                    inside_another = true;
-            });
-        }
-        if (!inside_another)
+        if (parsed && !inside_any(*s, chosen, *parsed))
             moving << id;
     }
     if (moving.isEmpty())
@@ -2774,6 +2822,26 @@ void Document::ungroupNode(const QString& nodeId) {
         selection_anchor_ = selected_node_;
     }
     emit selectionChanged();
+}
+
+void Document::removeSelectedNodes() {
+    const ldoc::Scene* s = current_scene();
+    const QStringList chosen = selectedNodes();
+    if (!s || chosen.isEmpty())
+        return;
+    std::vector<ldoc::Command> steps;
+    for (const QString& id : chosen) {
+        const auto parsed = parse_id(id);
+        if (!parsed || inside_any(*s, chosen, *parsed))
+            continue;
+        steps.push_back(ldoc::RemoveNode{s->id, *parsed});
+    }
+    if (steps.empty())
+        return;
+    run(steps.size() == 1
+            ? steps.front()
+            : ldoc::make_batch(std::move(steps),
+                               std::format("Remove {} sources", steps.size())));
 }
 
 void Document::removeNode(const QString& id) {

@@ -139,19 +139,32 @@ Item {
                         return;
                     const at = mapToItem(nodeMenu, ev.x, ev.y);
                     const rows = [{
-                        text: qsTr("Copy"),
+                        text: Document.selectedNodes.length > 1
+                              ? qsTr("Copy %1 sources").arg(Document.selectedNodes.length)
+                              : qsTr("Copy"),
                         checked: false,
-                        action: () => Document.copySelectedNode()
+                        action: () => Document.copySelectedNodes()
                     }];
                     // Rename, which was double-click and F2 only. A right-click is where
                     // people look for it.
+                    // Delete, where a right-click menu is expected to have it, and acting
+                    // on the whole selection like the footer's button.
                     rows.push({
-                        text: qsTr("Rename"),
+                        text: Document.selectedNodes.length > 1
+                              ? qsTr("Remove %1 sources").arg(Document.selectedNodes.length)
+                              : qsTr("Remove from scene"),
                         checked: false,
-                        action: () => {
-                            panel.renaming = row.nodeId;
-                        }
+                        action: () => Document.removeSelectedNodes()
                     });
+                    if (Document.selectedNodes.length <= 1) {
+                        rows.push({
+                            text: qsTr("Rename"),
+                            checked: false,
+                            action: () => {
+                                panel.renaming = row.nodeId;
+                            }
+                        });
+                    }
                     // Taking a group apart, beside the gesture that makes one.
                     if (row.isGroup) {
                         rows.push({
@@ -409,11 +422,13 @@ Item {
             // create something are not what you want either side of the one that destroys.
             ToolButton {
                 label: "−"
-                tip: qsTr("Remove")
+                tip: Document.selectedNodes.length > 1
+                     ? qsTr("Remove %1 sources").arg(Document.selectedNodes.length)
+                     : qsTr("Remove")
                 enabled: Document.selectedNode !== ""
                 onClicked: {
                         panel.use();
-                        Document.removeNode(Document.selectedNode);
+                        Document.removeSelectedNodes();
                     }
             }
 

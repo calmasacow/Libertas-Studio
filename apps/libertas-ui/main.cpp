@@ -1338,6 +1338,60 @@ int main(int argc, char** argv) {
             document.undo();
             settle();
 
+            // Delete and copy act on the whole selection, not on the leader alone. They sat
+            // next to a multi-node gesture doing a one-node thing until now (ADR-0037).
+            document.selectNode(a);
+            document.selectNodeExtended(canvas, b, true, false);
+            settle();
+            const int nodes_then = document.nodesModel()->rowCount();
+            document.copySelectedNodes();
+            report(document.pasteDescription().contains(QLatin1String("2")),
+                   "copy takes every selected source");
+            document.paste();
+            settle();
+            report(document.nodesModel()->rowCount() == nodes_then + 2,
+                   "and pasting puts both back");
+            report(document.selectedNodes().size() == 2,
+                   "with both of them selected, so they can be dragged as one");
+            document.undo();
+            settle();
+            report(document.nodesModel()->rowCount() == nodes_then,
+                   "one undo removes the whole paste");
+
+            document.selectNode(a);
+            document.selectNodeExtended(canvas, b, true, false);
+            settle();
+            document.removeSelectedNodes();
+            settle();
+            report(document.nodesModel()->rowCount() == nodes_then - 2,
+                   "delete takes every selected source too");
+            document.undo();
+            settle();
+            report(document.nodesModel()->rowCount() == nodes_then,
+                   "and one undo brings them all back");
+
+            // A group and something inside it: the child travels in its parent, so acting on
+            // it again would delete it twice and paste it twice.
+            document.selectNode(a);
+            document.selectNodeExtended(canvas, b, true, false);
+            settle();
+            document.groupSelectedNodes();
+            settle();
+            const QString outer = document.selectedNode();
+            document.selectNodeExtended(canvas, a, true, false);
+            settle();
+            report(document.selectedNodes().size() == 2,
+                   "a group and a child can both be selected");
+            const int before_both = document.nodesModel()->rowCount();
+            document.removeSelectedNodes();
+            settle();
+            report(document.nodesModel()->rowCount() == before_both - 3,
+                   "and removing them takes the group with its children, once");
+            document.undo();
+            document.undo();
+            settle();
+            static_cast<void>(outer);
+
             // And through the pointer, with the modifier actually held. Calling
             // selectNodeExtended proves the arithmetic; it says nothing about whether a
             // ctrl-click in the panel reaches it.
@@ -1390,7 +1444,14 @@ int main(int argc, char** argv) {
         // id, and rightly -- and that a scene pasted onto another canvas belongs to that
         // canvas while keeping its name.
         {
-            report(document.pasteDescription().isEmpty(), "nothing is on the clipboard yet");
+            // An earlier block has copied into this document already, so the empty case is
+            // reached by copying something that cannot be copied. It is worth keeping:
+            // pasteDescription is what decides whether the menu offers Paste at all.
+            document.selectNode(QString{});
+            settle();
+            document.copySelectedNodes();
+            report(!document.pasteDescription().isEmpty(),
+                   "copying nothing leaves the clipboard as it was");
 
             const QString src_scene = document.selectedScene();
             document.addSourceNode(QStringLiteral("Copy Me"));

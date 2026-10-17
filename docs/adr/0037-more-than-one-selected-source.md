@@ -86,6 +86,13 @@ manager does.
   was doing to them is lost; a group here is a real container (ADR's node model), not OBS's
   presentation-only folder.
 - Not built: no rubber-band selection and no Ctrl+A.
-- The deletion and copy gestures still act on the leader alone, not the selection. They are
-  one-node operations that now sit next to a multi-node one, which is a loose end worth
-  closing before this is called finished.
+- Delete and copy act on the whole selection, each as one `Batch`, so removing or pasting six
+  is one undo. `removeSelectedNodes` and `copySelectedNodes` sit beside `groupSelectedNodes`
+  and all three share `inside_any`: a node already travelling inside a selected parent is
+  dropped, or it would be removed twice and pasted twice.
+- The clipboard holds a list rather than one node, so a paste restores the whole selection and
+  selects it -- which is what makes "copy, paste, drag the copies" work.
+- `Ctrl+Shift+G` ungroups, matching the convention beside `Ctrl+G`. `layer.delete` is handled
+  in the shell rather than resolving to a `RemoveNode` in the session, because it acts on a
+  selection and the session does not have one; it had never been wired to anything before
+  this, so `Delete` did nothing at all.

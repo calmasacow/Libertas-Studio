@@ -32,11 +32,9 @@ scene order.
 
 ### Still open here
 
-- **Delete and Copy still act on the leader alone**, not the selection. They are one-node
-  gestures now sitting beside a multi-node one, which is the loose end to close first.
 - **No rubber-band selection and no Ctrl+A.**
-- **Ungroup has no shortcut.** It is on the right-click menu only; `Ctrl+Shift+G` is the
-  conventional one and is unclaimed.
+- **No way to move a source into an existing group** except by making a new one. Drag within
+  the Sources panel would be the gesture; nothing drags there yet.
 - **Properties blanks above one selection** by the operator's choice. Editing all of them is
   the bigger feature: every field needs a mixed-value state and every setter becomes a batch.
 
