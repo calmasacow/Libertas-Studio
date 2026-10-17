@@ -250,6 +250,15 @@ int main(int argc, char** argv) {
             }
             return found;
         };
+        const auto role_of = [](const QAbstractItemModel* m, const char* name) {
+            const QHash<int, QByteArray> names = m->roleNames();
+            for (auto it = names.cbegin(); it != names.cend(); ++it) {
+                if (it.value() == name)
+                    return it.key();
+            }
+            return -1;
+        };
+
         const QList<QQuickItem*> frames =
             collect(window->contentItem(), QStringLiteral("panelFrame"));
         report(frames.size() == 6, "six panel items exist in the scene graph");
@@ -1121,16 +1130,102 @@ int main(int argc, char** argv) {
         report(bus_strips().size() == buses_before, "and a strip on screen for each one");
         report(!document.busKinds().isEmpty(), "the bus kinds are listed");
 
+        // The source half. These are the strips an operator from OBS is looking for: one per
+        // thing in this scene making sound, left of the divider, with the destinations right
+        // of it. The model is asked first, then the scene graph, because a row that exists and
+        // is not drawn is the failure this panel had before.
+        {
+            const int strips_now = document.mixerStripsModel()->rowCount();
+            report(collect(window->contentItem(), QStringLiteral("sourceStrip")).size() ==
+                       strips_now,
+                   "the mixer draws a strip for each source with audio");
+
+            // A colour card is silent, and used to be offered a fader anyway.
+            document.addSource(QStringLiteral("Card"), QStringLiteral("source.color"));
+            settle();
+            const QString colour_src =
+                document.sourcesModel()
+                    ->index(document.sourcesModel()->rowCount() - 1, 0)
+                    .data(role_of(document.sourcesModel(), "sourceId"))
+                    .toString();
+            document.addSourceNode(QStringLiteral("Card"));
+            document.bindSelectedNode(colour_src);
+            settle();
+            report(document.mixerStripsModel()->rowCount() == strips_now,
+                   "and gives a colour card none, because its type has no audio");
+
+            document.addSource(QStringLiteral("Mic"), QStringLiteral("source.audio-input"));
+            settle();
+            const QString mic_src =
+                document.sourcesModel()
+                    ->index(document.sourcesModel()->rowCount() - 1, 0)
+                    .data(role_of(document.sourcesModel(), "sourceId"))
+                    .toString();
+            document.addSourceNode(QStringLiteral("Mic"));
+            const QString mic_node = document.selectedNode();
+            document.bindSelectedNode(mic_src);
+            settle();
+            report(document.mixerStripsModel()->rowCount() == strips_now + 1,
+                   "while an audio input gets one");
+
+            // Node-keyed, not selection-keyed: a mixer draws many strips and none of them is
+            // the selection, so this must work without selecting the strip first.
+            const QString scene_now = document.selectedScene();
+            document.selectNode(QString{});
+            document.setNodeGain(scene_now, mic_node, -7.5);
+            document.setNodeMute(scene_now, mic_node, true);
+            settle();
+            const QAbstractItemModel* sm = document.mixerStripsModel();
+            bool found = false;
+            for (int i = 0; i < sm->rowCount(); ++i) {
+                if (sm->index(i, 0).data(role_of(sm, "nodeId")).toString() != mic_node)
+                    continue;
+                found = qFuzzyCompare(sm->index(i, 0).data(role_of(sm, "gainDb")).toDouble(),
+                                      -7.5) &&
+                        sm->index(i, 0).data(role_of(sm, "mute")).toBool();
+            }
+            report(found, "a strip can be faded and muted without being the selection");
+
+            document.undo();
+            document.undo();
+            settle();
+
+            // The divider sits left of the leftmost destination, which is what makes the two
+            // halves read as two halves rather than one list with a gap in it.
+            const QList<QQuickItem*> dividers =
+                collect(window->contentItem(), QStringLiteral("mixerDivider"));
+            bool divider_placed = false;
+            for (const QQuickItem* line : dividers) {
+                if (!line->isVisible())
+                    continue;
+                for (const QQuickItem* strip :
+                     collect(window->contentItem(), QStringLiteral("busStrip"))) {
+                    const QPointF at = strip->mapToItem(line->parentItem(), QPointF{0, 0});
+                    if (at.x() >= line->x())
+                        divider_placed = true;
+                }
+            }
+            report(divider_placed, "with the divider left of the destination strips");
+        }
+
         // A strip squeezed into the panel's minimum height still has to be a fader rather than a
         // sliver. The default layout's mixer row is the smallest this gets without a drag.
         {
             int usable_faders = 0;
             for (const QQuickItem* f : collect(window->contentItem(),
-                                               QStringLiteral("busFader"))) {
+                                               QStringLiteral("mixerFader"))) {
                 if (f->height() >= 24.0 && f->width() > 1.0)
                     ++usable_faders;
             }
-            report(usable_faders == bus_strips().size(),
+            // Both halves: the source strips carry the same fader as the bus strips, and a
+            // narrow panel squeezes the left half first.
+            const int faders_drawn =
+                static_cast<int>(collect(window->contentItem(),
+                                         QStringLiteral("mixerFader")).size());
+            report(faders_drawn ==
+                       static_cast<int>(bus_strips().size()) +
+                           document.mixerStripsModel()->rowCount() &&
+                       usable_faders == faders_drawn,
                    "every fader has room to be dragged at the panel's docked size");
         }
 
@@ -1157,7 +1252,7 @@ int main(int argc, char** argv) {
         // this project exists because of how a UI behaves, is the half worth checking.
         {
             const QList<QQuickItem*> faders =
-                collect(window->contentItem(), QStringLiteral("busFader"));
+                collect(window->contentItem(), QStringLiteral("mixerFader"));
             report(!faders.isEmpty(), "the mixer has a fader to grab");
             if (!faders.isEmpty()) {
                 QQuickItem* fader = faders.front();
@@ -1264,6 +1359,20 @@ int main(int argc, char** argv) {
         document.addSourceNode(QStringLiteral("Mic"));
         settle();
         if (!document.selectedNode().isEmpty()) {
+            // Unbound first: there is no type to ask, so there is no audio to claim. This is
+            // the case that used to answer yes for everything.
+            report(!document.nodeProperties().value("hasAudio").toBool(),
+                   "a node bound to nothing claims no audio");
+
+            document.addSource(QStringLiteral("Mic input"),
+                               QStringLiteral("source.audio-input"));
+            settle();
+            const QString mic_source =
+                document.sourcesModel()->index(document.sourcesModel()->rowCount() - 1, 0)
+                    .data(role_of(document.sourcesModel(), "sourceId"))
+                    .toString();
+            document.bindSelectedNode(mic_source);
+            settle();
             report(document.nodeProperties().value("hasAudio").toBool(),
                    "a source node has audio of its own");
             report(document.nodeProperties().value("audioBus").toString().isEmpty(),
@@ -1391,14 +1500,6 @@ int main(int argc, char** argv) {
         // and inserting a role into the middle of an enum silently re-pointed every check
         // after it at the wrong column -- a green suite reading the wrong fields is worse
         // than a red one.
-        const auto role_of = [](const QAbstractItemModel* m, const char* name) {
-            const QHash<int, QByteArray> names = m->roleNames();
-            for (auto it = names.cbegin(); it != names.cend(); ++it) {
-                if (it.value() == name)
-                    return it.key();
-            }
-            return -1;
-        };
         const auto deck_at = [&](int row, const char* role) {
             const QAbstractItemModel* m = document.decksModel();
             return m->data(m->index(row, 0), role_of(m, role));

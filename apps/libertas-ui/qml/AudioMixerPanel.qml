@@ -50,13 +50,184 @@ Item {
         return (db > 0 ? "+" : "") + db.toFixed(1);
     }
 
+    /// The sources in the scene on screen, packed from the left.
+    ///
+    /// This is the half an operator arriving from OBS is looking for: one strip per thing
+    /// making sound, appearing because it is in this scene and going away when it leaves. The
+    /// destinations below are ours and may not survive; these are the mixer.
+    ListView {
+        id: sourceStrips
+
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: routing.top
+        // Never past the divider: the destinations keep their room even in a narrow panel, and
+        // the sources scroll instead.
+        width: Math.min(contentWidth, divider.x - x)
+        orientation: ListView.Horizontal
+        clip: true
+        model: Document.mixerStrips
+        boundsBehavior: Flickable.StopAtBounds
+
+        delegate: Item {
+            id: src
+
+            required property string nodeId
+            required property string sceneId
+            required property string name
+            required property string busId
+            required property string busName
+            required property real gainDb
+            required property bool mute
+            required property bool selected
+
+            objectName: "sourceStrip"
+            width: 84
+            height: ListView.view.height
+
+            property real shownGain: src.gainDb
+            property bool dragging: false
+
+            readonly property bool compact: src.height < 150
+            readonly property real fixedHeight:
+                16 + 14 + 20 + (src.compact ? 0 : 12) + 3 * ((src.compact ? 4 : 5) - 1)
+
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: 2
+                radius: 2
+                color: src.selected ? Theme.c.panelHeaderActive : Theme.c.panelHeader
+                border.width: 1
+                border.color: src.selected ? Theme.c.accent : Theme.c.border
+            }
+
+            Column {
+                id: srcColumn
+
+                anchors.fill: parent
+                anchors.margins: 6
+                spacing: 3
+
+                Text {
+                    width: parent.width
+                    height: 16
+                    text: src.name
+                    font.pixelSize: 10
+                    font.bold: true
+                    color: Theme.c.text
+                    elide: Text.ElideRight
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                // Where it goes. Unrouted is not muted -- one is silent by omission and the
+                // other on purpose -- so an unrouted strip says so in the warning colour
+                // rather than looking like every other strip at rest.
+                Text {
+                    width: parent.width
+                    height: 12
+                    visible: !src.compact
+                    text: src.busId === "" ? qsTr("not routed") : src.busName
+                    font.pixelSize: 9
+                    color: src.busId === "" ? Theme.c.warning : Theme.c.textMuted
+                    opacity: src.busId === "" ? 0.9 : 0.7
+                    elide: Text.ElideRight
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                MixerFader {
+                    width: parent.width
+                    height: Math.max(srcColumn.height - src.fixedHeight, 24)
+                    gainDb: src.gainDb
+                    muted: src.mute
+                    gainMin: panel.gainMin
+                    gainMax: panel.gainMax
+                    onMoved: (db) => Document.setNodeGain(src.sceneId, src.nodeId, db, true)
+                    onReleased: Document.endGesture()
+                    onReset: Document.setNodeGain(src.sceneId, src.nodeId, 0)
+                    onShownGainChanged: src.shownGain = shownGain
+                    onDraggingChanged: src.dragging = dragging
+                }
+
+                Text {
+                    width: parent.width
+                    height: 14
+                    text: panel.dbLabel(src.shownGain) + " dB"
+                    font.pixelSize: 10
+                    font.family: "monospace"
+                    color: src.dragging ? Theme.c.accent : Theme.c.text
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                Item {
+                    width: parent.width
+                    height: 20
+
+                    ToolButton {
+                        anchors.centerIn: parent
+                        label: "M"
+                        tip: src.mute ? qsTr("Unmute source") : qsTr("Mute source")
+                        active: src.mute
+                        activeColor: Theme.c.error
+                        onClicked: Document.setNodeMute(src.sceneId, src.nodeId, !src.mute)
+                    }
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton
+                // Behind the controls, so clicking the strip selects the node without
+                // swallowing a fader drag or the mute button.
+                z: -1
+                onClicked: Document.selectNode(src.nodeId)
+            }
+        }
+
+        // An empty left half is the honest answer to "what has audio in this scene", and
+        // better than nothing at all, which reads as a panel that failed to load.
+        Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 10
+            anchors.top: parent.top
+            anchors.topMargin: 10
+            visible: sourceStrips.count === 0
+            text: qsTr("No source in this scene has audio.")
+            font.pixelSize: 10
+            color: Theme.c.textMuted
+            opacity: 0.7
+        }
+    }
+
+    /// Just left of the leftmost destination. The gap between the two groups does most of the
+    /// separating; this says the gap is a boundary rather than empty space.
+    Rectangle {
+        id: divider
+
+        objectName: "mixerDivider"
+        anchors.top: parent.top
+        anchors.bottom: routing.top
+        anchors.topMargin: 6
+        anchors.bottomMargin: 6
+        // Right-justified with the buses, so it moves as they do and the sources never reach
+        // past it.
+        x: Math.max(strips.x - 5, 60)
+        width: 1
+        color: Theme.c.border
+    }
+
+    /// The destinations, packed to the right.
+    ///
+    /// OBS does not show these at all. They stay because the operator asked for them to stay
+    /// for now, knowing they may go -- so this is a decision to leave alone, not an oversight
+    /// to tidy up later.
     ListView {
         id: strips
 
-        anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: routing.top
+        width: Math.min(contentWidth, parent.width * 0.6)
         orientation: ListView.Horizontal
         clip: true
         model: Document.buses
@@ -199,112 +370,20 @@ Item {
 
                 // The fader takes whatever the rows above and below did not, which is why they
                 // all declare a height: a Column cannot be asked for "the rest".
-                Item {
-                    id: faderArea
-
+                MixerFader {
                     width: parent.width
                     height: Math.max(column.height - strip.fixedHeight, 24)
-
-                    Rectangle {
-                        id: track
-
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        anchors.top: parent.top
-                        anchors.bottom: parent.bottom
-                        width: 6
-                        radius: 3
-                        color: Theme.c.window
-                        border.width: 1
-                        border.color: Theme.c.border
-                    }
-
-                    // Unity, so the fader has somewhere to be read against.
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: (faderArea.height - knob.height) * (1 - panel.faderFraction(0)) +
-                           knob.height / 2
-                        width: 16
-                        height: 1
-                        color: Theme.c.border
-                    }
-
-                    // Filled from the bottom up to where the fader sits.
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        anchors.bottom: parent.bottom
-                        width: 6
-                        radius: 3
-                        height: faderArea.height * panel.faderFraction(strip.shownGain)
-                        color: strip.mute ? Theme.c.textMuted : Theme.c.accent
-                        opacity: strip.mute ? 0.4 : 0.75
-                    }
-
-                    Rectangle {
-                        id: knob
-
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: (faderArea.height - height) *
-                           (1 - panel.faderFraction(strip.shownGain))
-                        width: 24
-                        height: 10
-                        radius: 2
-                        color: faderMouse.pressed ? Theme.c.accent : Theme.c.panelHeaderActive
-                        border.width: 1
-                        border.color: faderMouse.containsMouse || faderMouse.pressed
-                            ? Theme.c.accent : Theme.c.border
-                    }
-
-                    MouseArea {
-                        id: faderMouse
-
-                        objectName: "busFader"
-                        anchors.fill: parent
-                        hoverEnabled: true
-
-                        function dbAt(y) {
-                            const usable = faderArea.height - knob.height;
-                            if (usable <= 0)
-                                return strip.shownGain;
-                            return panel.faderDb(1 - (y - knob.height / 2) / usable);
-                        }
-
-                        onPressed: (mouse) => {
-                            strip.dragging = true;
-                            strip.shownGain = dbAt(mouse.y);
-                            Document.setBusGain(strip.busId, strip.shownGain, true);
-                        }
-                        onPositionChanged: (mouse) => {
-                            if (!strip.dragging)
-                                return;
-                            strip.shownGain = dbAt(mouse.y);
-                            Document.setBusGain(strip.busId, strip.shownGain, true);
-                        }
-                        onReleased: {
-                            strip.dragging = false;
-                            Document.setBusGain(strip.busId, strip.shownGain, true);
-                            // Letting go is what separates one drag from the next.
-                            Document.endGesture();
-                        }
-                        onCanceled: {
-                            // Grab stolen mid-drag: close the gesture and go back to following
-                            // the document, which already holds wherever the drag got to.
-                            strip.dragging = false;
-                            Document.endGesture();
-                            strip.shownGain = strip.gainDb;
-                        }
-                        // A wheel is the keyboard-adjacent way to trim a fader, and one notch is
-                        // one command, so it does not need the drag treatment.
-                        onWheel: (wheel) => {
-                            const step = wheel.modifiers & Qt.ShiftModifier ? 0.25 : 1.0;
-                            Document.setBusGain(
-                                strip.busId,
-                                Math.max(panel.gainMin,
-                                         Math.min(panel.gainMax,
-                                                  strip.gainDb +
-                                                  (wheel.angleDelta.y > 0 ? step : -step))));
-                        }
-                        onDoubleClicked: Document.setBusGain(strip.busId, 0)
-                    }
+                    gainDb: strip.gainDb
+                    muted: strip.mute
+                    gainMin: panel.gainMin
+                    gainMax: panel.gainMax
+                    onMoved: (db) => Document.setBusGain(strip.busId, db, true)
+                    onReleased: Document.endGesture()
+                    onReset: Document.setBusGain(strip.busId, 0)
+                    // The dB readout below follows the knob, not the document, so it is right
+                    // mid-drag.
+                    onShownGainChanged: strip.shownGain = shownGain
+                    onDraggingChanged: strip.dragging = dragging
                 }
 
                 Text {

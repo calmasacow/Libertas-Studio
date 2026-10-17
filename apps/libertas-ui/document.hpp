@@ -53,6 +53,10 @@ class Document : public QObject {
     Q_PROPERTY(QAbstractItemModel* decks READ decksModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* outputs READ outputsModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* canvases READ canvasesModel CONSTANT)
+    /// The source strips: one per source node with audio in the scene on screen. Separate from
+    /// `buses` because they are different things, not two views of one -- a strip is a place
+    /// audio comes from and a bus is where it goes.
+    Q_PROPERTY(QAbstractItemModel* mixerStrips READ mixerStripsModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* encodes READ encodesModel CONSTANT)
 
     Q_PROPERTY(QString projectName READ projectName NOTIFY changed)
@@ -105,6 +109,7 @@ public:
     [[nodiscard]] QAbstractItemModel* decksModel() { return &decks_; }
     [[nodiscard]] QAbstractItemModel* outputsModel() { return &outputs_; }
     [[nodiscard]] QAbstractItemModel* canvasesModel() { return &canvases_; }
+    [[nodiscard]] QAbstractItemModel* mixerStripsModel() { return &mixer_strips_; }
 
     /// The scene list of one canvas, and the node tree of that canvas's selected scene.
     ///
@@ -294,6 +299,14 @@ public:
     Q_INVOKABLE void setSelectedNodeGain(double gainDb);
     Q_INVOKABLE void setSelectedNodeMute(bool mute);
 
+    /// The same two edits, keyed by node, for the mixer: it draws many strips and none of them
+    /// is the selection, so routing a strip must not require selecting it first.
+    Q_INVOKABLE void setNodeGain(const QString& sceneId, const QString& nodeId, double gainDb,
+                                 bool dragging = false);
+    Q_INVOKABLE void setNodeMute(const QString& sceneId, const QString& nodeId, bool mute);
+    Q_INVOKABLE void routeNode(const QString& sceneId, const QString& nodeId,
+                               const QString& busId);
+
     // ---- decks and outputs (the controls panel) ---------------------------------------------
     //
     // Nothing here starts a broadcast: there is no render process yet, and the panel says so.
@@ -418,6 +431,11 @@ private:
     void edit_bus(const QString& id, const std::function<void(ldoc::Bus&)>& change,
                   std::string_view gesture = {});
     void edit_selected_audio(const std::function<void(ldoc::AudioRouting&)>& change);
+    /// The node-keyed form the selection one is written in terms of. `gesture` collapses a
+    /// fader drag into one undo step, exactly as the bus faders do.
+    void edit_node_audio(const QString& sceneId, const QString& nodeId,
+                         const std::function<void(ldoc::AudioRouting&)>& change,
+                         std::string_view gesture = {});
     /// One entry for the add dialog's grid, built the same way wherever it is listed from.
     [[nodiscard]] QVariantMap source_tile(const ldoc::Source& src) const;
 
@@ -438,6 +456,7 @@ private:
     SceneModel favourites_;
     SourceModel sources_;
     BusModel buses_;
+    MixerStripModel mixer_strips_;
     DeckModel decks_;
     OutputModel outputs_;
     CanvasModel canvases_;

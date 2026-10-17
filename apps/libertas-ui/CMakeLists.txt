@@ -52,6 +52,7 @@ qt_add_qml_module(libertas-ui
         qml/CanvasManagerDialog.qml
         qml/CanvasPanel.qml
         qml/ChainIcon.qml
+        qml/MixerFader.qml
         qml/CheckLabel.qml
         qml/ChoiceField.qml
         qml/ColourField.qml

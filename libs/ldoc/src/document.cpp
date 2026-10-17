@@ -56,6 +56,29 @@ constexpr std::array<std::string_view, 4> kSelfContainedSources = {
     "source.text",
 };
 
+/// Source types with no audio of their own.
+///
+/// Stated as the silent list rather than the audible one so that an **unknown** type -- a newer
+/// project file, or a source manifest this build has never seen (ADR-0004) -- answers "has
+/// audio". That is the opposite default to is_self_contained above, and the asymmetry is
+/// deliberate: there, inventing trust puts a source that can wedge onto the holding card, so
+/// the safe guess is "no". Here the two mistakes are not equal either, but they point the other
+/// way -- a fader for something silent does nothing, while a missing fader for something
+/// audible is audio going to air with no way to mute it.
+///
+/// The membership comes from what OBS does type by type, because an operator arriving from OBS
+/// knows this table already and a mixer that disagrees with it reads as a bug. The pair that
+/// looks inconsistent -- window capture audible, whole-display capture not -- is inconsistent
+/// in OBS too, and for a real reason: a window grab can carry that application's audio, while
+/// a display grab is a video capture with no audio stream behind it. Desktop audio is a
+/// separate source there, as it is here.
+constexpr std::array<std::string_view, 4> kSilentSources = {
+    "source.image",
+    "source.text",
+    "source.color",
+    "source.screen",
+};
+
 std::string_view ref_kind_name(RefKind k) {
     switch (k) {
     case RefKind::Node:   return "node";
@@ -127,6 +150,11 @@ const Source* Project::source(const Id& wanted) const {
 bool is_self_contained(std::string_view source_type) {
     return std::find(kSelfContainedSources.begin(), kSelfContainedSources.end(), source_type) !=
            kSelfContainedSources.end();
+}
+
+bool has_audio(std::string_view source_type) {
+    return std::find(kSilentSources.begin(), kSilentSources.end(), source_type) ==
+           kSilentSources.end();
 }
 
 std::vector<Problem> check_emergency_scene(const Project& project, const Id& scene_id) {

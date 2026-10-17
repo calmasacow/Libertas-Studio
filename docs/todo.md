@@ -23,70 +23,24 @@ and says its resolution. ADR-0027 has the reasoning.
   Main's matching one. There is no way to say "give me all of Vertical's panels in one place",
   which is what someone building a second show might actually want.
 
-## The mixer shows sources, not just buses
+## The mixer shows sources, built on 2026-10-16
 
-Asked for on 2026-10-14, after the operator looked at the running shell and said the faders
-"make no sense". They do not, and the reason is that every strip in the panel is a **bus** — a
-destination — while the thing an operator reaches for is a **source**. Both strips in the golden
-project read "nothing feeding", so the panel is two faders on silence.
+One row, two groups: source strips justified left, bus strips right, a divider immediately left
+of the leftmost bus strip. A source strip appears because its node is in the scene on screen
+and its *type* has audio — `ldoc::has_audio`, a table beside `is_self_contained`, taken from
+OBS type by type. [ADR-0030](adr/0030-the-mixer-shows-sources.md) has the reasoning, including
+why an unknown type answers "has audio" when `is_self_contained` answers "no".
 
-What was asked for, in the operator's words:
+### Still open here
 
-> Yes there should be channels for each source that has audio in the active scene. There should
-> prolly be a divider as well that seperates sources and the outputs. Typically in OBS the
-> outputs are not shown. That said I want them left in for now.
-
-So the panel becomes two sections with a divider between them:
-
-- **Sources** — one strip per source node *in the active scene* that has audio. This is the OBS
-  layout and the one people arrive expecting.
-- **Outputs** — the existing bus strips, below the divider. Kept deliberately, though OBS hides
-  them; the operator wants to see them for now, so this is not a thing to quietly drop later
-  without asking.
-
-### What the model already has
-
-No model change, and therefore no ADR, as far as this goes:
-
-- `ldoc::SourceData::audio` is an `AudioRouting{bus, sends, gain_db, mute}`
-  (`libs/ldoc/include/ldoc/node.hpp:41`), so a source node already owns everything a strip needs.
-- `ldoc::SetNodeAudio{scene, node, audio}` (`libs/ldoc/include/ldoc/command.hpp:143`) is the
-  command, and it already refuses anything that is not a source node.
-- `ldoc::visit(scene.roots, fn)` is the recursive walk, already used twice in
-  `apps/libertas-ui/document.cpp:502,529` to count source uses and bus feeds.
-
-### What has to be built
-
-- A `MixerStripModel` (or an extension of the node model) listing source nodes in the active
-  scene that have audio, rebuilt in the same place `BusRow` is rebuilt
-  (`apps/libertas-ui/document.cpp:513`).
-- **Node-keyed audio invokables.** Everything today operates on the *selection* —
-  `routeSelectedNode`, `setSelectedNodeGain`, `setSelectedNodeMute`, all going through
-  `edit_selected_audio` (`document.cpp:1643`). A mixer has many strips and none of them is the
-  selection, so these need `byId` siblings over a shared `edit_node_audio(scene, node, change)`.
-- The drag-collapsing idiom carries over as-is: `setBusGain(..., dragging)` + `endGesture()`.
-- A divider, and section captions, so the two halves cannot be mistaken for one list.
-
-### The open question, which the operator has not answered
-
-"A source that has audio" is not currently knowable. `apps/libertas-ui/document.cpp:330` sets
-`hasAudio = true` for **every** source node whatever it is bound to, so a Colour card and a Text
-source both offer to be routed to a bus. The type vocabulary already distinguishes them —
-`source.color`, `source.image`, `source.text` against `source.audio-input`, `source.v4l2`,
-`source.browser` (`document.cpp:1258`) — but nothing consults it, and some types are genuinely
-conditional: a media file may or may not have an audio track, and a screen capture may or may
-not carry audio depending on the portal.
-
-Until that is settled the strip list has no defensible membership rule. It is also the first
-thing that could need an ADR here, since "which source types have audio" is a statement about
-the model, not about a panel.
-
-### Also noticed
-
-There is **no ADR for the audio model at all**. ADRs run 0001–0029 and none of them is about
-buses. The console model — strips as destinations, with a VOD track seeded into every new
-project (`libs/ldoc/src/document.cpp:225`) — went in without a record saying why it beat OBS's
-per-source mixer. Worth writing retroactively while the panel is being reworked.
+- **No meters.** Nothing makes a sound yet, so a moving meter would be an animation on a timer.
+- **No solo on a source strip.** Solo is a bus property in the model. Adding it to a node is a
+  model change and would need its own ADR.
+- **No way to change a strip's bus from the strip.** `routeNode` exists and is covered, but the
+  only route control on screen is still the selected-node line along the bottom.
+- **One mixer, not one per canvas.** Scenes and Sources are per canvas now; buses are
+  project-level, so a per-canvas mixer would repeat the same destinations. Revisit if a canvas
+  ever gets buses of its own.
 
 ## Per-canvas scenes and sources, with scene linking
 

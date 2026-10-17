@@ -132,6 +132,38 @@ QHash<int, QByteArray> BusModel::roleNames() const {
     };
 }
 
+int MixerStripModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+}
+
+QVariant MixerStripModel::data(const QModelIndex& index, int role) const {
+    const MixerStripRow* r = at(rows_, index);
+    if (!r)
+        return {};
+    switch (role) {
+    case IdRole:       return r->id;
+    case NodeIdRole:   return r->nodeId;
+    case SceneIdRole:  return r->sceneId;
+    case NameRole:     return r->name;
+    case BusIdRole:    return r->busId;
+    case BusNameRole:  return r->busName;
+    case GainDbRole:   return r->gainDb;
+    case MuteRole:     return r->mute;
+    case SelectedRole: return r->selected;
+    default:           return {};
+    }
+}
+
+QHash<int, QByteArray> MixerStripModel::roleNames() const {
+    return {
+        {IdRole, "stripId"},      {NodeIdRole, "nodeId"},
+        {SceneIdRole, "sceneId"}, {NameRole, "name"},
+        {BusIdRole, "busId"},     {BusNameRole, "busName"},
+        {GainDbRole, "gainDb"},   {MuteRole, "mute"},
+        {SelectedRole, "selected"},
+    };
+}
+
 int DeckModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : static_cast<int>(rows_.size());
 }

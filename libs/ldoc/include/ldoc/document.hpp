@@ -350,6 +350,14 @@ struct Problem {
 /// of a source type's declaration.
 [[nodiscard]] bool is_self_contained(std::string_view source_type);
 
+/// Whether a source of this type carries audio of its own, and so gets a fader in the mixer.
+///
+/// Unknown types answer **true** -- the opposite default to `is_self_contained`, because the
+/// mistakes are not symmetric: a fader for something silent does nothing, while a missing fader
+/// is audio on air that cannot be muted. Says nothing about whether a *particular* source is
+/// making sound: a media file with no audio track is still a type that can have one.
+[[nodiscard]] bool has_audio(std::string_view source_type);
+
 /// Why `scene` is unsuitable as an emergency scene, or empty if it is suitable.
 ///
 /// Reported as warnings by `validate`, and used by the designation flow to refuse and to offer

@@ -333,7 +333,11 @@ QVariantMap Document::nodeProperties() const {
     // Audio, for the mixer's selected-node strip. A source node with no bus is unrouted, which is a
     // different thing from muted -- so both are reported rather than collapsed into one flag.
     if (const auto* placed = std::get_if<ldoc::SourceData>(&n->data)) {
-        m["hasAudio"] = true;
+        // Asked of the source's *type*, not assumed. Said true for everything until now, which
+        // is why a colour card offered to be routed to a bus.
+        const ldoc::Source* src =
+            placed->source ? session_->project().source(*placed->source) : nullptr;
+        m["hasAudio"] = src && ldoc::has_audio(src->type);
         // What the settings dialog is opened against. Empty when the node is bound to nothing,
         // which is what disables the gear rather than opening an empty panel.
         m["sourceId"] = placed->source ? id_str(*placed->source) : QString{};
@@ -545,6 +549,39 @@ void Document::rebuild() {
         buses.push_back(std::move(row));
     }
     buses_.set_rows(std::move(buses));
+
+    // The source strips, from the scene on screen. Rebuilt from the selected scene rather than
+    // the program one: this panel is mostly read while building a scene, and faders that
+    // belonged to whatever is on air would be the wrong set at exactly the moment they matter.
+    std::vector<MixerStripRow> strips;
+    if (const ldoc::Scene* shown = current_scene()) {
+        ldoc::visit(shown->roots, [&](const ldoc::Node& n) {
+            const auto* placed = std::get_if<ldoc::SourceData>(&n.data);
+            if (!placed)
+                return;
+            const ldoc::Source* src = placed->source ? p.source(*placed->source) : nullptr;
+            // A node bound to nothing has no type to ask, so it gets no strip. Unbound is a
+            // state the Sources panel already reports; a silent fader would say it twice and
+            // less clearly.
+            if (!src || !ldoc::has_audio(src->type))
+                return;
+            MixerStripRow row;
+            row.id = id_str(n.id);
+            row.nodeId = row.id;
+            row.sceneId = id_str(shown->id);
+            row.name = qstr(n.name);
+            if (placed->audio.bus) {
+                row.busId = id_str(*placed->audio.bus);
+                const ldoc::Bus* b = p.bus(*placed->audio.bus);
+                row.busName = b ? qstr(b->name) : QStringLiteral("(missing bus)");
+            }
+            row.gainDb = placed->audio.gain_db;
+            row.mute = placed->audio.mute;
+            row.selected = row.nodeId == selected_node_;
+            strips.push_back(std::move(row));
+        });
+    }
+    mixer_strips_.set_rows(std::move(strips));
 
     // Scene and canvas names, so the deck and output rows can show what is on air rather than
     // an id. Built once rather than searched per row.
@@ -1646,10 +1683,18 @@ void Document::setBusSolo(const QString& id, bool solo) {
 }
 
 /// Same shape for the selected source node's own routing, for the same reason.
-void Document::edit_selected_audio(const std::function<void(ldoc::AudioRouting&)>& change) {
-    const ldoc::Scene* s = current_scene();
-    const ldoc::Node* n = current_node();
-    if (!s || !n)
+void Document::edit_node_audio(const QString& sceneId, const QString& nodeId,
+                               const std::function<void(ldoc::AudioRouting&)>& change,
+                               std::string_view gesture) {
+    const auto scene_parsed = parse_id(sceneId);
+    const auto node_parsed = parse_id(nodeId);
+    if (!scene_parsed || !node_parsed)
+        return;
+    const ldoc::Scene* s = session_->project().scene(*scene_parsed);
+    if (!s)
+        return;
+    const ldoc::Node* n = ldoc::find_node(s->roots, *node_parsed);
+    if (!n)
         return;
     const auto* placed = std::get_if<ldoc::SourceData>(&n->data);
     if (!placed) {
@@ -1660,7 +1705,41 @@ void Document::edit_selected_audio(const std::function<void(ldoc::AudioRouting&)
     change(next);
     if (next == placed->audio)
         return;
-    run(ldoc::SetNodeAudio{s->id, n->id, std::move(next)});
+    if (gesture.empty()) {
+        run(ldoc::SetNodeAudio{s->id, n->id, std::move(next)});
+        return;
+    }
+    const auto r = session_->run(ldoc::SetNodeAudio{s->id, n->id, std::move(next)}, gesture);
+    if (!r)
+        emit notice(qstr(r.error()));
+}
+
+void Document::edit_selected_audio(const std::function<void(ldoc::AudioRouting&)>& change) {
+    const ldoc::Scene* s = current_scene();
+    const ldoc::Node* n = current_node();
+    if (!s || !n)
+        return;
+    edit_node_audio(id_str(s->id), id_str(n->id), change);
+}
+
+void Document::setNodeGain(const QString& sceneId, const QString& nodeId, double gainDb,
+                           bool dragging) {
+    // One gesture per strip, as the bus faders do, so dragging two in turn is two undo steps
+    // even if the operator never lets go in between. Closed by endGesture().
+    const std::string gesture =
+        dragging ? std::format("node.gain:{}", to_std(nodeId)) : std::string{};
+    edit_node_audio(
+        sceneId, nodeId, [gainDb](ldoc::AudioRouting& a) { a.gain_db = gainDb; }, gesture);
+}
+
+void Document::setNodeMute(const QString& sceneId, const QString& nodeId, bool mute) {
+    edit_node_audio(sceneId, nodeId, [mute](ldoc::AudioRouting& a) { a.mute = mute; });
+}
+
+void Document::routeNode(const QString& sceneId, const QString& nodeId, const QString& busId) {
+    edit_node_audio(sceneId, nodeId, [&](ldoc::AudioRouting& a) {
+        a.bus = busId.isEmpty() ? std::nullopt : parse_id(busId);
+    });
 }
 
 void Document::routeSelectedNode(const QString& busId) {

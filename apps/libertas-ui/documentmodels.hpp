@@ -201,6 +201,57 @@ private:
     std::vector<BusRow> rows_;
 };
 
+/// One source node in the scene on screen, with audio of its own.
+///
+/// Not a bus: this is the strip an operator from OBS is looking for, the one per microphone.
+/// Keyed by node rather than by source, because the same Source placed twice in a scene is two
+/// placements with two faders -- the routing lives on the node (ADR-0027).
+struct MixerStripRow {
+    QString id;
+    QString nodeId;
+    QString sceneId;
+    QString name;
+    /// Where it goes, and the empty string when it goes nowhere. Unrouted is not muted: one is
+    /// silent by omission and the other on purpose, and a strip that showed them alike would
+    /// hide the commoner mistake.
+    QString busId;
+    QString busName;
+    double gainDb = 0.0;
+    bool mute = false;
+    bool selected = false;
+
+    friend bool operator==(const MixerStripRow&, const MixerStripRow&) = default;
+};
+
+class MixerStripModel : public RowModelBase {
+    Q_OBJECT
+
+public:
+    enum Role {
+        IdRole = Qt::UserRole + 1,
+        NodeIdRole,
+        SceneIdRole,
+        NameRole,
+        BusIdRole,
+        BusNameRole,
+        GainDbRole,
+        MuteRole,
+        SelectedRole,
+    };
+
+    using RowModelBase::RowModelBase;
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+
+    void set_rows(std::vector<MixerStripRow> rows) { sync(rows_, std::move(rows)); }
+    [[nodiscard]] const std::vector<MixerStripRow>& rows() const { return rows_; }
+
+private:
+    std::vector<MixerStripRow> rows_;
+};
+
 struct DeckRow {
     QString id;
     QString name;
