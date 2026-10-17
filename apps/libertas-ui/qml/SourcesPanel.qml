@@ -114,7 +114,29 @@ Item {
 
                 anchors.fill: parent
                 hoverEnabled: true
-                onClicked: Document.selectNodeOn(panel.canvasId, row.nodeId)
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: (ev) => {
+                    Document.selectNodeOn(panel.canvasId, row.nodeId);
+                    if (ev.button !== Qt.RightButton)
+                        return;
+                    const at = mapToItem(nodeMenu, ev.x, ev.y);
+                    const rows = [{
+                        text: qsTr("Copy"),
+                        checked: false,
+                        action: () => Document.copySelectedNode()
+                    }];
+                    // Pasting a source into a scene cannot miss the canvas in a way worth
+                    // warning about the way a whole scene can -- it is one thing and the
+                    // operator can see where it landed -- so this goes straight through.
+                    if (Document.pasteDescription() !== "") {
+                        rows.push({
+                            text: Document.pasteDescription(),
+                            checked: false,
+                            action: () => Document.paste()
+                        });
+                    }
+                    nodeMenu.popup(at.x, at.y, rows);
+                }
                 // Double-click opens the settings for what the row is bound to, which is what
                 // OBS does and what the operator asked for. A group, or a source node bound to
                 // nothing, has no settings to open -- so there it still starts a rename, which
@@ -284,6 +306,14 @@ Item {
         objectName: "addSourceDialog"
         parent: panel.Window.contentItem
         onClosed: panel.adding = false
+    }
+
+    StripMenu {
+        id: nodeMenu
+
+        objectName: "nodeMenu"
+        parent: panel.Window.contentItem
+        z: 40
     }
 
     // The gear's panel, parented the same way and for the same reasons.

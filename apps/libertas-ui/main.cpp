@@ -1246,6 +1246,79 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- copy and paste --------------------------------------------------------------
+        //
+        // The clipboard is the shell's, not the session's (ADR-0036). What matters is that a
+        // pasted node is a new node rather than the one copied -- AddNode refuses a duplicate
+        // id, and rightly -- and that a scene pasted onto another canvas belongs to that
+        // canvas while keeping its name.
+        {
+            report(document.pasteDescription().isEmpty(), "nothing is on the clipboard yet");
+
+            const QString src_scene = document.selectedScene();
+            document.addSourceNode(QStringLiteral("Copy Me"));
+            settle();
+            const QString copied = document.selectedNode();
+            document.copySelectedNode();
+            report(!document.pasteDescription().isEmpty(), "copying a source fills it");
+
+            const int clip_before = document.nodesModel()->rowCount();
+            document.paste();
+            settle();
+            report(document.nodesModel()->rowCount() == clip_before + 1,
+                   "pasting puts a second one in the scene");
+            report(document.selectedNode() != copied,
+                   "and it is a new node, not the one copied");
+
+            // Pasting twice has to work: a clipboard that empties itself is a clipboard that
+            // cannot fill a scene with six of something.
+            document.paste();
+            settle();
+            report(document.nodesModel()->rowCount() == clip_before + 2,
+                   "and the clipboard survives being used");
+
+            document.undo();
+            document.undo();
+            document.undo();
+            settle();
+
+            // A whole scene, onto another canvas.
+            document.copyScene(src_scene);
+            report(document.pasteDescription().contains(QLatin1String("scene")),
+                   "a scene can be copied too");
+            document.addCanvas(QStringLiteral("Paste Target"));
+            settle();
+            const QString target = document.currentCanvas();
+            const int clip_scenes_before = document.scenesFor(target)->rowCount();
+            document.paste();
+            settle();
+            report(document.scenesFor(target)->rowCount() == clip_scenes_before + 1,
+                   "and pasted onto a different canvas");
+            report(document.canvasNameOf(target) != QLatin1String(""),
+                   "which is the canvas that was current");
+            // The name travels: matching names across canvases are what make a link readable.
+            const QAbstractItemModel* home = document.scenesFor(QString{});
+            QString original;
+            for (int i = 0; i < home->rowCount(); ++i) {
+                if (home->index(i, 0).data(role_of(home, "sceneId")).toString() == src_scene)
+                    original = home->index(i, 0).data(role_of(home, "name")).toString();
+            }
+            bool kept_name = false;
+            const QAbstractItemModel* sm2 = document.scenesFor(target);
+            for (int i = 0; i < sm2->rowCount(); ++i) {
+                if (sm2->index(i, 0).data(role_of(sm2, "name")).toString() == original)
+                    kept_name = true;
+            }
+            report(!original.isEmpty() && kept_name, "keeping the name it had");
+
+            document.undo();
+            settle();
+            document.removeCanvas(target);
+            settle();
+            document.selectScene(src_scene);
+            settle();
+        }
+
         // ---- a scene inside a scene ------------------------------------------------------
         //
         // NodeKind::Precomp existed from the start and nothing could make one, so the model's

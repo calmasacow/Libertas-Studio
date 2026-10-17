@@ -1712,6 +1712,108 @@ void Document::addSceneToScene(const QString& sceneId, bool visible) {
     selectNode(id_str(node_id));
 }
 
+// ---- the clipboard ---------------------------------------------------------------------------
+
+void Document::copySelectedNode() {
+    const ldoc::Node* n = current_node();
+    if (!n) {
+        emit notice(QStringLiteral("Select a source to copy."));
+        return;
+    }
+    copied_scene_.reset();
+    copied_node_ = *n;
+    emit notice(QStringLiteral("Copied %1.").arg(qstr(n->name)));
+}
+
+void Document::copyScene(const QString& sceneId) {
+    const auto parsed = parse_id(sceneId);
+    const ldoc::Scene* s = parsed ? session_->project().scene(*parsed) : nullptr;
+    if (!s) {
+        emit notice(QStringLiteral("Select a scene to copy."));
+        return;
+    }
+    copied_node_.reset();
+    copied_scene_ = *s;
+    emit notice(QStringLiteral("Copied scene %1.").arg(qstr(s->name)));
+}
+
+QString Document::pasteDescription() const {
+    if (copied_node_)
+        return QStringLiteral("Paste %1").arg(qstr(copied_node_->name));
+    if (copied_scene_)
+        return QStringLiteral("Paste scene %1").arg(qstr(copied_scene_->name));
+    return {};
+}
+
+int Document::pasteWouldMissCanvas() const {
+    const ldoc::Canvas* c = current_canvas();
+    if (!c)
+        return 0;
+    // A node sitting entirely past the right or bottom edge, or before the left or top one.
+    // Counted rather than listed: the operator asked to be told that something is off, not
+    // which things (ADR-0036).
+    const auto misses = [c](const ldoc::Node& n) {
+        const double w = n.layout.size.x > 0 ? n.layout.size.x : 0.0;
+        const double h = n.layout.size.y > 0 ? n.layout.size.y : 0.0;
+        return n.transform.position.x >= static_cast<double>(c->width) ||
+               n.transform.position.y >= static_cast<double>(c->height) ||
+               n.transform.position.x + w <= 0.0 || n.transform.position.y + h <= 0.0;
+    };
+    int off = 0;
+    if (copied_node_) {
+        ldoc::visit(*copied_node_, [&](const ldoc::Node& n) {
+            if (misses(n))
+                ++off;
+        });
+    } else if (copied_scene_) {
+        ldoc::visit(copied_scene_->roots, [&](const ldoc::Node& n) {
+            if (misses(n))
+                ++off;
+        });
+    }
+    return off;
+}
+
+void Document::paste() {
+    if (copied_node_) {
+        const ldoc::Scene* into = current_scene();
+        if (!into) {
+            emit notice(QStringLiteral("There is no scene to paste into."));
+            return;
+        }
+        // Fresh ids, or the paste would collide with the node it was copied from -- which
+        // AddNode refuses, and rightly.
+        ldoc::Node node = ldoc::duplicate(*copied_node_);
+        const ldoc::Id node_id = node.id;
+
+        Placement where;
+        if (const ldoc::Node* sel = current_node(); sel && sel->is_group())
+            where.parent = sel->id;
+        run(ldoc::AddNode{into->id, where.parent, where.index, std::move(node)});
+        selectNode(id_str(node_id));
+        return;
+    }
+
+    if (!copied_scene_) {
+        emit notice(QStringLiteral("There is nothing to paste."));
+        return;
+    }
+
+    const ldoc::Canvas* c = current_canvas();
+    if (!c) {
+        emit notice(QStringLiteral("There is no canvas to paste onto."));
+        return;
+    }
+    // The name travels. Scene names only have to be unique within a canvas, and matching names
+    // across canvases are what make a scene link readable: Main's "Live" cues Vertical's
+    // "Live" (ADR-0036).
+    ldoc::Scene copy = ldoc::duplicate_scene(*copied_scene_, copied_scene_->name);
+    copy.canvas = c->id;
+    const ldoc::Id scene_id = copy.id;
+    run(ldoc::AddScene{std::move(copy), session_->project().scenes.size()});
+    selectScene(id_str(scene_id));
+}
+
 void Document::renameSource(const QString& id, const QString& name) {
     const auto parsed = parse_id(id);
     const ldoc::Source* src = parsed ? session_->project().source(*parsed) : nullptr;

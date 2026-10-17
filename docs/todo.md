@@ -23,6 +23,23 @@ and says its resolution. ADR-0027 has the reasoning.
   Main's matching one. There is no way to say "give me all of Vertical's panels in one place",
   which is what someone building a second show might actually want.
 
+## Copy and paste, built on 2026-10-17
+
+`Ctrl+C` / `Ctrl+V`, and right-click menus on source rows and scene rows. A node pastes into
+the current scene, a scene onto the current canvas keeping its name. Coordinates are preserved
+rather than scaled, with a count-only warning when something would land off the canvas
+([ADR-0036](adr/0036-the-clipboard-is-the-shells.md)).
+
+### Still open here
+
+- **No multi-select**, so copy takes one node at a time. The Sources panel has single
+  selection; this would follow from that rather than lead it.
+- **`pasteWouldMissCanvas` over-warns.** A node with no explicit box size counts as a point, so
+  a source the renderer would scale to fill the frame may be reported as off-canvas. Over-
+  warning is the right way round, and it gets honest when the renderer can answer the question.
+- **A pasted scene's precomps still point at the same scenes**, which is usually right and can
+  produce a cross-canvas precomp. Allowed by the model; worth watching once things render.
+
 ## A scene inside a scene, built on 2026-10-17
 
 The add dialog's kind list gained "Scene": picking one adds a `Precomp` node, a whole scene

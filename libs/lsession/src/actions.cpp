@@ -35,6 +35,12 @@ const std::vector<ActionDef>& catalogue() {
          "Ctrl+Down"},
         {"layer.toggle-visible", "Toggle Source Visibility", "Editing", Scope::Application,
          ArgumentKind::None, ""},
+        //
+        // Copy and paste hold a node or a scene out of *this* project, so they are shell state
+        // rather than commands and are performed by the frontend (ADR-0036). They are in the
+        // catalogue so they are rebindable like everything else.
+        {"edit.copy", "Copy", "Editing", Scope::Application, ArgumentKind::None, "Ctrl+C"},
+        {"edit.paste", "Paste", "Editing", Scope::Application, ArgumentKind::None, "Ctrl+V"},
 
         // --- the workspace, application scope ---------------------------------------------
         //

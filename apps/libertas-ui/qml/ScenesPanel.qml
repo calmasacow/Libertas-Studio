@@ -50,6 +50,25 @@ Item {
         parent: panel.Window.contentItem
     }
 
+    // Copy and paste live on the scene row's right-click, parented the same way. A scene
+    // pasted onto another canvas keeps its name, because matching names across canvases are
+    // what make a scene link readable (ADR-0036).
+    StripMenu {
+        id: sceneMenu
+
+        objectName: "sceneMenu"
+        parent: panel.Window.contentItem
+        z: 40
+    }
+
+    PasteWarning {
+        id: pasteWarning
+
+        objectName: "pasteWarning"
+        parent: panel.Window.contentItem
+        z: 45
+    }
+
     ListView {
         id: list
 
@@ -94,8 +113,32 @@ Item {
 
                 anchors.fill: parent
                 hoverEnabled: true
-                acceptedButtons: Qt.LeftButton
-                onClicked: Document.selectSceneOn(panel.canvasId, row.sceneId)
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: (ev) => {
+                    Document.selectSceneOn(panel.canvasId, row.sceneId);
+                    if (ev.button !== Qt.RightButton)
+                        return;
+                    const at = mapToItem(sceneMenu, ev.x, ev.y);
+                    const rows = [{
+                        text: qsTr("Copy scene"),
+                        checked: false,
+                        action: () => Document.copyScene(row.sceneId)
+                    }];
+                    if (Document.pasteDescription() !== "") {
+                        rows.push({
+                            text: Document.pasteDescription(),
+                            checked: false,
+                            action: () => {
+                                const off = Document.pasteWouldMissCanvas();
+                                if (off > 0)
+                                    pasteWarning.ask(off);
+                                else
+                                    Document.paste();
+                            }
+                        });
+                    }
+                    sceneMenu.popup(at.x, at.y, rows);
+                }
                 onDoubleClicked: {
                     rename.text = row.name;
                     rename.visible = true;

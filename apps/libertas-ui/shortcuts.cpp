@@ -197,6 +197,18 @@ void Shortcuts::perform(const QString& ref) {
         return;
     }
 
+    // The clipboard is the shell's, not the session's: what it holds is a node or a scene out
+    // of this project, and there is no command that carries "remember this for later"
+    // (ADR-0036). Handled here for the same reason the workspace family is.
+    if (parsed->action == "edit.copy") {
+        document_->copySelectedNode();
+        return;
+    }
+    if (parsed->action == "edit.paste") {
+        document_->paste();
+        return;
+    }
+
     const auto resolved = lsession::resolve(*parsed, document_->projectForBindings());
     switch (resolved.outcome) {
     case lsession::Outcome::Undo:

@@ -20,6 +20,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 class QJSEngine;
@@ -240,6 +241,27 @@ public:
     /// it. The node carries its own size, where (0,0) means "the canvas I am composited into",
     /// which is how a 2560x1440 overlay scene sits correctly inside a vertical one.
     Q_INVOKABLE void addSceneToScene(const QString& sceneId, bool visible = true);
+
+    // ---- the clipboard ------------------------------------------------------------------
+    //
+    // Shell state, not document state, and not the system clipboard: what is held is a node or
+    // a scene out of *this* project, and pasting it into another process would mean a
+    // serialisation format nothing else can read. It is deliberately not in the layout either
+    // -- a copied source is not worth restoring on the next launch (ADR-0036).
+
+    /// Copy the selected source node. Empty when nothing is selected.
+    Q_INVOKABLE void copySelectedNode();
+    /// Copy a whole scene, to be pasted onto any canvas.
+    Q_INVOKABLE void copyScene(const QString& sceneId);
+    /// Paste what was copied. A node goes into the current scene, a scene onto the current
+    /// canvas as a new scene.
+    Q_INVOKABLE void paste();
+    /// What `paste()` would do, for the menu item: "" when there is nothing to paste.
+    Q_INVOKABLE [[nodiscard]] QString pasteDescription() const;
+    /// How many sources would land outside the canvas being pasted onto. The paste asks before
+    /// it goes ahead when this is not zero -- a landscape layout dropped onto a vertical canvas
+    /// mostly misses.
+    Q_INVOKABLE [[nodiscard]] int pasteWouldMissCanvas() const;
     /// The scenes that can be put into the current one: every scene except the current scene
     /// itself and any that would make a loop. Each entry is {id, name, canvasName}.
     Q_INVOKABLE [[nodiscard]] QVariantList scenesForPrecomp() const;
@@ -500,6 +522,10 @@ private:
     std::map<QString, NodeModel*> nodes_by_canvas_;
     SceneModel favourites_;
     SourceModel sources_;
+    /// What was copied, if anything: exactly one of these holds a value.
+    std::optional<ldoc::Node> copied_node_;
+    std::optional<ldoc::Scene> copied_scene_;
+
     BusModel buses_;
     MixerStripModel mixer_strips_;
     DeckModel decks_;
