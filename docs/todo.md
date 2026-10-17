@@ -23,6 +23,22 @@ and says its resolution. ADR-0027 has the reasoning.
   Main's matching one. There is no way to say "give me all of Vertical's panels in one place",
   which is what someone building a second show might actually want.
 
+## Selecting more than one source, built on 2026-10-17
+
+Ctrl and Shift click in the Sources panel, `Ctrl+G` to group the selection
+([ADR-0037](adr/0037-more-than-one-selected-source.md)). `selectedNode` still means the node
+last clicked, so every panel that read it keeps working; `selectedNodes` is the whole list, in
+scene order.
+
+### Still open here
+
+- **Delete and Copy still act on the leader alone**, not the selection. They are one-node
+  gestures now sitting beside a multi-node one, which is the loose end to close first.
+- **No ungroup.** The obvious companion to Ctrl+G.
+- **No rubber-band selection and no Ctrl+A.**
+- **Properties blanks above one selection** by the operator's choice. Editing all of them is
+  the bigger feature: every field needs a mixed-value state and every setter becomes a batch.
+
 ## Copy and paste, built on 2026-10-17
 
 `Ctrl+C` / `Ctrl+V`, and right-click menus on source rows and scene rows. A node pastes into

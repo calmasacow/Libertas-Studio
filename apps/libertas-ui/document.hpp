@@ -72,6 +72,9 @@ class Document : public QObject {
 
     Q_PROPERTY(QString selectedScene READ selectedScene NOTIFY selectionChanged)
     Q_PROPERTY(QString selectedNode READ selectedNode NOTIFY selectionChanged)
+    /// Every selected node, in the order the scene holds them. `selectedNode` is the last one
+    /// clicked and stays the one panels follow; this is what operations act on (ADR-0037).
+    Q_PROPERTY(QStringList selectedNodes READ selectedNodes NOTIFY selectionChanged)
     /// Everything the properties panel shows about the selected node, or empty when nothing is
     /// selected.
     Q_PROPERTY(QVariantMap nodeProperties READ nodeProperties NOTIFY selectionChanged)
@@ -150,6 +153,17 @@ public:
     /// selectedSceneOn instead.
     [[nodiscard]] QString selectedScene() const { return selectedSceneOn(current_canvas_); }
     [[nodiscard]] QString selectedNode() const { return selected_node_; }
+    [[nodiscard]] QStringList selectedNodes() const;
+
+    /// Extend or narrow the selection, the way every list in every other application does.
+    /// `ctrl` toggles one node, `shift` takes everything between the anchor and this one.
+    /// Neither means a plain click, which selects just this one.
+    Q_INVOKABLE void selectNodeExtended(const QString& canvasId, const QString& nodeId,
+                                        bool ctrl, bool shift);
+    /// Put the selected nodes in a new group, at the topmost one's place (Ctrl+G).
+    Q_INVOKABLE void groupSelectedNodes();
+    /// The group a node sits in, or "" when it sits at the top of the scene.
+    Q_INVOKABLE [[nodiscard]] QString parentOfNode(const QString& nodeId) const;
     [[nodiscard]] QVariantMap nodeProperties() const;
     [[nodiscard]] QStringList problems() const;
     [[nodiscard]] QStringList blendModes() const;
@@ -536,6 +550,12 @@ private:
     /// Per canvas: each canvas's panels keep their own place in their own scene list.
     std::map<QString, QString> selected_scene_;
     QString selected_node_;
+    /// The rest of the selection, never including `selected_node_`. Kept apart so that every
+    /// existing reader of `selectedNode` keeps working unchanged: one click is still one node
+    /// (ADR-0037).
+    QStringList also_selected_;
+    /// Where a shift-click measures from: the last node picked without shift.
+    QString selection_anchor_;
     /// Empty means "the first canvas". Resolved on every read rather than stored as an id, so
     /// that removing the current canvas cannot leave the shell pointing at nothing.
     QString current_canvas_;

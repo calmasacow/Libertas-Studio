@@ -41,6 +41,8 @@ const std::vector<ActionDef>& catalogue() {
         // catalogue so they are rebindable like everything else.
         {"edit.copy", "Copy", "Editing", Scope::Application, ArgumentKind::None, "Ctrl+C"},
         {"edit.paste", "Paste", "Editing", Scope::Application, ArgumentKind::None, "Ctrl+V"},
+        {"edit.group", "Group Selected Sources", "Editing", Scope::Application,
+         ArgumentKind::None, "Ctrl+G"},
 
         // --- the workspace, application scope ---------------------------------------------
         //

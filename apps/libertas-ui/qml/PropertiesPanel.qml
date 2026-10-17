@@ -10,14 +10,34 @@ Item {
     id: panel
 
     readonly property var props: Document.nodeProperties
-    readonly property bool hasNode: Object.keys(panel.props).length > 0
+    /// With several selected this panel shows nothing (ADR-0037). Every field here edits one
+    /// node, and showing the leader's values while three are selected invites an edit that
+    /// looks like it applies to all of them and does not.
+    readonly property int selectedCount: Document.selectedNodes.length
+    readonly property bool hasNode: Object.keys(panel.props).length > 0 &&
+                                    panel.selectedCount <= 1
 
     Text {
         anchors.centerIn: parent
         visible: !panel.hasNode
-        text: qsTr("No source selected")
+        text: panel.selectedCount > 1
+              ? qsTr("%n sources selected").arg(panel.selectedCount)
+              : qsTr("No source selected")
         font.pixelSize: 11
         color: Theme.c.textMuted
+    }
+
+    // Said under the count, because "why has my inspector gone" is the question this panel
+    // would otherwise leave unanswered.
+    Text {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.verticalCenter
+        anchors.topMargin: 16
+        visible: panel.selectedCount > 1
+        text: qsTr("Pick one to edit its properties.")
+        font.pixelSize: 10
+        color: Theme.c.textMuted
+        opacity: 0.7
     }
 
     Flickable {

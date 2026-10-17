@@ -752,9 +752,93 @@ void Document::selectScene(const QString& id) {
 }
 
 void Document::selectNode(const QString& id) {
-    if (selected_node_ == id)
+    // A plain select collapses the selection to one. Every caller that was written before
+    // multi-select means "this node and nothing else", and that is still what it does.
+    if (selected_node_ == id && also_selected_.isEmpty())
         return;
     selected_node_ = id;
+    also_selected_.clear();
+    selection_anchor_ = id;
+    emit selectionChanged();
+}
+
+QStringList Document::selectedNodes() const {
+    QStringList out;
+    if (selected_node_.isEmpty() && also_selected_.isEmpty())
+        return out;
+    // In scene order rather than click order: what acts on this -- grouping especially --
+    // cares which is topmost, and the operator reads the list top to bottom.
+    const ldoc::Scene* s = current_scene();
+    if (!s) {
+        if (!selected_node_.isEmpty())
+            out << selected_node_;
+        return out << also_selected_;
+    }
+    ldoc::visit(s->roots, [&](const ldoc::Node& n) {
+        const QString id = id_str(n.id);
+        if (id == selected_node_ || also_selected_.contains(id))
+            out << id;
+    });
+    return out;
+}
+
+void Document::selectNodeExtended(const QString& canvasId, const QString& nodeId, bool ctrl,
+                                  bool shift) {
+    const QString key = canvas_key(canvasId);
+    if (current_canvas_ != key) {
+        current_canvas_ = key;
+        emit canvasChanged();
+        // A selection does not survive moving to another canvas's panel: the nodes it names
+        // are not in the scene being shown.
+        selected_node_.clear();
+        also_selected_.clear();
+        selection_anchor_.clear();
+    }
+
+    if (!ctrl && !shift) {
+        selectNode(nodeId);
+        return;
+    }
+
+    if (ctrl) {
+        // Toggle. Taking away the node panels are following moves them to whatever is left,
+        // rather than leaving them pointed at something no longer selected.
+        if (nodeId == selected_node_) {
+            selected_node_ = also_selected_.isEmpty() ? QString{} : also_selected_.takeLast();
+        } else if (also_selected_.removeAll(nodeId) == 0) {
+            if (!selected_node_.isEmpty())
+                also_selected_ << selected_node_;
+            selected_node_ = nodeId;
+        }
+        selection_anchor_ = selected_node_;
+        emit selectionChanged();
+        return;
+    }
+
+    // Shift: everything between the anchor and here, in scene order. A flat run through the
+    // tree, so a range that starts outside a group and ends inside one takes the nodes in
+    // between -- which is what the list on screen shows and therefore what was meant.
+    const ldoc::Scene* s = current_scene();
+    if (!s || selection_anchor_.isEmpty()) {
+        selectNode(nodeId);
+        return;
+    }
+    QStringList order;
+    ldoc::visit(s->roots, [&](const ldoc::Node& n) { order << id_str(n.id); });
+    const qsizetype from = order.indexOf(selection_anchor_);
+    const qsizetype to = order.indexOf(nodeId);
+    if (from < 0 || to < 0) {
+        selectNode(nodeId);
+        return;
+    }
+    also_selected_.clear();
+    for (qsizetype i = std::min(from, to); i <= std::max(from, to); ++i) {
+        if (order[i] != nodeId)
+            also_selected_ << order[i];
+    }
+    // The clicked node leads, so the panels follow where the pointer last was. The anchor
+    // stays put, so dragging the range back and forth keeps measuring from the same end.
+    selected_node_ = nodeId;
     emit selectionChanged();
 }
 
@@ -2507,6 +2591,113 @@ void Document::addGroup(const QString& name) {
     const QString id = id_str(n.id);
     run(ldoc::AddNode{s->id, std::nullopt, 0, std::move(n)});
     selectNode(id);
+}
+
+void Document::groupSelectedNodes() {
+    const ldoc::Scene* s = current_scene();
+    const QStringList chosen = selectedNodes();
+    if (!s || chosen.isEmpty()) {
+        emit notice(QStringLiteral("Select the sources to group first."));
+        return;
+    }
+
+    // Where the group goes: the place of the topmost selected node, so the grouped items keep
+    // their draw order relative to everything else (ADR-0037). selectedNodes() is already in
+    // scene order, so the first entry is that node.
+    struct At {
+        std::optional<ldoc::Id> parent;
+        std::size_t index = 0;
+        bool found = false;
+    };
+    const auto place_of = [&](const ldoc::Id& wanted) {
+        At at;
+        const std::function<void(const std::vector<ldoc::Node>&, std::optional<ldoc::Id>)> walk =
+            [&](const std::vector<ldoc::Node>& nodes, std::optional<ldoc::Id> parent) {
+                for (std::size_t i = 0; i < nodes.size(); ++i) {
+                    if (nodes[i].id == wanted) {
+                        at = At{parent, i, true};
+                        return;
+                    }
+                    if (const auto* g = std::get_if<ldoc::GroupData>(&nodes[i].data))
+                        walk(g->children, nodes[i].id);
+                }
+            };
+        walk(s->roots, std::nullopt);
+        return at;
+    };
+
+    const auto first = parse_id(chosen.front());
+    if (!first)
+        return;
+    const At top = place_of(*first);
+    if (!top.found)
+        return;
+
+    // A node cannot be moved inside a group that is itself being moved inside the new one, and
+    // a group that contains another selected node would take it along twice. Dropping the
+    // descendants is right rather than refusing: selecting a group and something inside it
+    // plainly means "group these", and the inner one is already coming.
+    QStringList moving;
+    for (const QString& id : chosen) {
+        const auto parsed = parse_id(id);
+        if (!parsed)
+            continue;
+        bool inside_another = false;
+        for (const QString& other : chosen) {
+            if (other == id)
+                continue;
+            const auto other_id = parse_id(other);
+            const ldoc::Node* o = other_id ? ldoc::find_node(s->roots, *other_id) : nullptr;
+            if (!o)
+                continue;
+            ldoc::visit(*o, [&](const ldoc::Node& n) {
+                if (n.id == *parsed && o->id != *parsed)
+                    inside_another = true;
+            });
+        }
+        if (!inside_another)
+            moving << id;
+    }
+    if (moving.isEmpty())
+        return;
+
+    ldoc::Node group = ldoc::make_node(ldoc::NodeKind::Group, "Group");
+    const ldoc::Id group_id = group.id;
+
+    std::vector<ldoc::Command> steps;
+    steps.push_back(ldoc::AddNode{s->id, top.parent, top.index, std::move(group)});
+    // In order, each to the end of the group, so the list inside reads the way it read outside.
+    std::size_t at = 0;
+    for (const QString& id : moving) {
+        const auto parsed = parse_id(id);
+        if (!parsed)
+            continue;
+        steps.push_back(ldoc::MoveNode{s->id, *parsed, group_id, at});
+        ++at;
+    }
+    run(ldoc::make_batch(std::move(steps), "Group sources"));
+    selectNode(id_str(group_id));
+}
+
+QString Document::parentOfNode(const QString& nodeId) const {
+    const ldoc::Scene* s = current_scene();
+    const auto wanted = parse_id(nodeId);
+    if (!s || !wanted)
+        return {};
+    QString found;
+    const std::function<void(const std::vector<ldoc::Node>&, const QString&)> walk =
+        [&](const std::vector<ldoc::Node>& nodes, const QString& parent) {
+            for (const ldoc::Node& n : nodes) {
+                if (n.id == *wanted) {
+                    found = parent;
+                    return;
+                }
+                if (const auto* g = std::get_if<ldoc::GroupData>(&n.data))
+                    walk(g->children, id_str(n.id));
+            }
+        };
+    walk(s->roots, QString{});
+    return found;
 }
 
 void Document::removeNode(const QString& id) {

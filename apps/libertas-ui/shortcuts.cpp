@@ -208,6 +208,10 @@ void Shortcuts::perform(const QString& ref) {
         document_->paste();
         return;
     }
+    if (parsed->action == "edit.group") {
+        document_->groupSelectedNodes();
+        return;
+    }
 
     const auto resolved = lsession::resolve(*parsed, document_->projectForBindings());
     switch (resolved.outcome) {

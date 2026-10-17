@@ -1246,6 +1246,118 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- selecting more than one -----------------------------------------------------
+        //
+        // Ctrl toggles, Shift takes a run, and `selectedNode` stays the last one clicked so
+        // every panel written before this keeps working (ADR-0037).
+        {
+            const QString canvas = document.currentCanvas();
+            document.addSourceNode(QStringLiteral("Pick A"));
+            settle();
+            const QString a = document.selectedNode();
+            document.addSourceNode(QStringLiteral("Pick B"));
+            settle();
+            const QString b = document.selectedNode();
+            document.addSourceNode(QStringLiteral("Pick C"));
+            settle();
+            const QString pick_c = document.selectedNode();
+
+            report(document.selectedNodes().size() == 1,
+                   "a plain click selects exactly one");
+
+            document.selectNodeExtended(canvas, a, true, false);
+            settle();
+            report(document.selectedNodes().size() == 2 &&
+                       document.selectedNodes().contains(a) &&
+                       document.selectedNodes().contains(pick_c),
+                   "ctrl-click adds a second");
+            report(document.selectedNode() == a,
+                   "and the one just clicked is the one panels follow");
+
+            document.selectNodeExtended(canvas, a, true, false);
+            settle();
+            report(document.selectedNodes().size() == 1 &&
+                       !document.selectedNodes().contains(a),
+                   "ctrl-clicking it again takes it away");
+            report(!document.selectedNode().isEmpty(),
+                   "leaving the panels pointed at what is left, not at nothing");
+
+            // Shift, from the anchor. Three nodes were added in a row, so a run from the
+            // first to the last takes all three however the tree is shaped.
+            document.selectNode(a);
+            settle();
+            document.selectNodeExtended(canvas, pick_c, false, true);
+            settle();
+            report(document.selectedNodes().size() >= 3,
+                   "shift-click takes the run between");
+
+            // Group them. The group lands where the topmost selected node was.
+            const QStringList before_group = document.selectedNodes();
+            document.groupSelectedNodes();
+            settle();
+            const QString group = document.selectedNode();
+            report(group != a && group != b && group != pick_c,
+                   "grouping selects the new group");
+            report(document.nodeProperties().value("kind").toString() ==
+                       QLatin1String("group"),
+                   "which is a group");
+            bool all_inside = true;
+            for (const QString& id : before_group) {
+                if (document.parentOfNode(id) != group)
+                    all_inside = false;
+            }
+            report(all_inside, "with every selected source inside it");
+
+            document.undo();
+            settle();
+            report(document.parentOfNode(a).isEmpty(),
+                   "and one undo takes them all back out");
+
+            // And through the pointer, with the modifier actually held. Calling
+            // selectNodeExtended proves the arithmetic; it says nothing about whether a
+            // ctrl-click in the panel reaches it.
+            {
+                const auto row_of = [&](const QString& node_id) -> QQuickItem* {
+                    for (QQuickItem* r :
+                         collect(window->contentItem(), QStringLiteral("sourceRow")))
+                        if (r->property("nodeId").toString() == node_id)
+                            return r;
+                    return nullptr;
+                };
+                const auto click_with = [&](QQuickItem* item, Qt::KeyboardModifiers mods) {
+                    const QPointF at = item->mapToScene(
+                        QPointF(item->width() / 2.0, item->height() / 2.0));
+                    QMouseEvent down{QEvent::MouseButtonPress, at, window->mapToGlobal(at),
+                                     Qt::LeftButton, Qt::LeftButton, mods};
+                    QMouseEvent up{QEvent::MouseButtonRelease, at, window->mapToGlobal(at),
+                                   Qt::LeftButton, Qt::NoButton, mods};
+                    QCoreApplication::sendEvent(window, &down);
+                    QCoreApplication::sendEvent(window, &up);
+                    settle();
+                };
+
+                document.selectNode(a);
+                settle();
+                QQuickItem* row_b = row_of(b);
+                report(row_b != nullptr, "a second source has a row to ctrl-click");
+                if (row_b != nullptr) {
+                    click_with(row_b, Qt::ControlModifier);
+                    report(document.selectedNodes().size() == 2 &&
+                               document.selectedNodes().contains(a) &&
+                               document.selectedNodes().contains(b),
+                           "a real ctrl-click adds to the selection");
+                    click_with(row_b, Qt::NoModifier);
+                    report(document.selectedNodes().size() == 1,
+                           "and a plain one collapses it again");
+                }
+            }
+
+            document.undo();
+            document.undo();
+            document.undo();
+            settle();
+        }
+
         // ---- copy and paste --------------------------------------------------------------
         //
         // The clipboard is the shell's, not the session's (ADR-0036). What matters is that a

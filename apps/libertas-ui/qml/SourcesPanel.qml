@@ -101,13 +101,20 @@ Item {
             required property int effectCount
 
             readonly property bool selected: Document.selectedNode === row.nodeId
+            /// Selected, but not the one panels are following. Drawn a shade down from the
+            /// leader so a range reads as a range and it is still obvious which node the
+            /// Properties panel would be showing if one were (ADR-0037).
+            readonly property bool alsoSelected: !row.selected &&
+                                                 Document.selectedNodes.indexOf(row.nodeId) >= 0
             readonly property bool editing: panel.renaming === row.nodeId
 
             width: ListView.view.width
             height: 26
             color: row.selected ? Theme.c.accent
+                 : row.alsoSelected ? Theme.c.panelHeaderActive
                  : mouse.containsMouse ? Theme.c.panelHeaderActive
                  : "transparent"
+            opacity: row.alsoSelected ? 0.85 : 1.0
 
             MouseArea {
                 id: mouse
@@ -116,7 +123,18 @@ Item {
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
                 onClicked: (ev) => {
-                    Document.selectNodeOn(panel.canvasId, row.nodeId);
+                    // Ctrl toggles one, Shift takes the run between the anchor and here --
+                    // what every other list does. A right-click never changes the selection
+                    // when it lands on something already in it, so the menu can act on all
+                    // of them (ADR-0037).
+                    if (ev.button === Qt.RightButton) {
+                        if (Document.selectedNodes.indexOf(row.nodeId) < 0)
+                            Document.selectNodeOn(panel.canvasId, row.nodeId);
+                    } else {
+                        Document.selectNodeExtended(panel.canvasId, row.nodeId,
+                                                    (ev.modifiers & Qt.ControlModifier) !== 0,
+                                                    (ev.modifiers & Qt.ShiftModifier) !== 0);
+                    }
                     if (ev.button !== Qt.RightButton)
                         return;
                     const at = mapToItem(nodeMenu, ev.x, ev.y);
@@ -125,6 +143,18 @@ Item {
                         checked: false,
                         action: () => Document.copySelectedNode()
                     }];
+                    // Only with something to group. One node in a group of its own is a
+                    // legitimate thing to want, so this appears for one as well as for six.
+                    if (Document.selectedNodes.length > 0) {
+                        rows.push({
+                            text: Document.selectedNodes.length > 1
+                                  ? qsTr("Group %1 sources").arg(
+                                        Document.selectedNodes.length)
+                                  : qsTr("Group"),
+                            checked: false,
+                            action: () => Document.groupSelectedNodes()
+                        });
+                    }
                     // Pasting a source into a scene cannot miss the canvas in a way worth
                     // warning about the way a whole scene can -- it is one thing and the
                     // operator can see where it landed -- so this goes straight through.
