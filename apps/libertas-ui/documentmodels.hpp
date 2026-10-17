@@ -158,7 +158,7 @@ struct BusRow {
     double gainDb = 0.0;
     double pan = 0.0;
     bool mute = false;
-    bool solo = false;
+    bool monitor = false;
     int channels = 2;
     /// How many source nodes, across every scene, route here. The mixer shows it because a bus with
     /// nothing feeding it looks identical to a working one until the show starts.
@@ -181,7 +181,7 @@ public:
         GainDbRole,
         PanRole,
         MuteRole,
-        SoloRole,
+        MonitorRole,
         ChannelsRole,
         FeedCountRole,
         SendCountRole,
@@ -218,6 +218,8 @@ struct MixerStripRow {
     QString busName;
     double gainDb = 0.0;
     bool mute = false;
+    /// Heard locally; never changes the program mix (ADR-0031).
+    bool monitor = false;
     bool selected = false;
 
     friend bool operator==(const MixerStripRow&, const MixerStripRow&) = default;
@@ -236,6 +238,7 @@ public:
         BusNameRole,
         GainDbRole,
         MuteRole,
+        MonitorRole,
         SelectedRole,
     };
 

@@ -16,7 +16,7 @@ Rectangle {
     // `enabled` is Item's own: it already stops children receiving input and it
     // propagates, so declaring another one here would shadow the working one.
 
-    /// A latched button -- a mute, a solo -- that is currently on. This exists rather than
+    /// A latched button -- a mute, a monitor -- that is currently on. This exists rather than
     /// letting a caller assign `color` directly: an assignment from outside *replaces* the
     /// binding below, so a latched button would keep its colour and stop reacting to hover and
     /// press altogether. `activeColor` is what it latches to.

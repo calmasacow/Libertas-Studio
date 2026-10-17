@@ -34,8 +34,12 @@ why an unknown type answers "has audio" when `is_self_contained` answers "no".
 ### Still open here
 
 - **No meters.** Nothing makes a sound yet, so a moving meter would be an animation on a timer.
-- **No solo on a source strip.** Solo is a bus property in the model. Adding it to a node is a
-  model change and would need its own ADR.
+- **No solo anywhere, deliberately** — removed from the document on 2026-10-16
+  ([ADR-0031](adr/0031-no-solo-and-a-monitor-toggle.md)). Every strip carries mute and monitor
+  and nothing else. If solo is ever asked for again, the reason it went is that it was document
+  state: it would silence other buses *on air*, not just in the operator's headphones.
+- **Nothing monitors anything yet.** `monitor` is document state the audio host will read, the
+  same as the faders are. The rule it has to keep: monitoring never changes the program mix.
 - **No way to change a strip's bus from the strip.** `routeNode` exists and is covered, but the
   only route control on screen is still the selected-node line along the bottom.
 - **One mixer, not one per canvas.** Scenes and Sources are per canvas now; buses are

@@ -530,7 +530,7 @@ void Document::rebuild() {
         row.gainDb = b.gain_db;
         row.pan = b.pan;
         row.mute = b.mute;
-        row.solo = b.solo;
+        row.monitor = b.monitor;
         row.channels = b.channels;
         row.sendCount = static_cast<int>(b.sends.size());
         // Every scene, not just the selected one: a bus is project-level, and the question the
@@ -577,6 +577,7 @@ void Document::rebuild() {
             }
             row.gainDb = placed->audio.gain_db;
             row.mute = placed->audio.mute;
+            row.monitor = placed->audio.monitor;
             row.selected = row.nodeId == selected_node_;
             strips.push_back(std::move(row));
         });
@@ -1678,8 +1679,8 @@ void Document::setBusMute(const QString& id, bool mute) {
     edit_bus(id, [mute](ldoc::Bus& b) { b.mute = mute; });
 }
 
-void Document::setBusSolo(const QString& id, bool solo) {
-    edit_bus(id, [solo](ldoc::Bus& b) { b.solo = solo; });
+void Document::setBusMonitor(const QString& id, bool monitor) {
+    edit_bus(id, [monitor](ldoc::Bus& b) { b.monitor = monitor; });
 }
 
 /// Same shape for the selected source node's own routing, for the same reason.
@@ -1734,6 +1735,10 @@ void Document::setNodeGain(const QString& sceneId, const QString& nodeId, double
 
 void Document::setNodeMute(const QString& sceneId, const QString& nodeId, bool mute) {
     edit_node_audio(sceneId, nodeId, [mute](ldoc::AudioRouting& a) { a.mute = mute; });
+}
+
+void Document::setNodeMonitor(const QString& sceneId, const QString& nodeId, bool monitor) {
+    edit_node_audio(sceneId, nodeId, [monitor](ldoc::AudioRouting& a) { a.monitor = monitor; });
 }
 
 void Document::routeNode(const QString& sceneId, const QString& nodeId, const QString& busId) {

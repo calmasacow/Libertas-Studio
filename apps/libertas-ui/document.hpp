@@ -291,7 +291,9 @@ public:
     Q_INVOKABLE void endGesture();
     Q_INVOKABLE void setBusPan(const QString& id, double pan);
     Q_INVOKABLE void setBusMute(const QString& id, bool mute);
-    Q_INVOKABLE void setBusSolo(const QString& id, bool solo);
+    /// Heard locally. Never changes the program mix, and there is deliberately no solo
+    /// (ADR-0031): solo here would be document state, so it would silence other buses on air.
+    Q_INVOKABLE void setBusMonitor(const QString& id, bool monitor);
 
     /// Send the selected source node's audio to this bus, or to nothing when the id is empty.
     /// Unrouted is not the same as muted, and the mixer says which it is.
@@ -304,6 +306,8 @@ public:
     Q_INVOKABLE void setNodeGain(const QString& sceneId, const QString& nodeId, double gainDb,
                                  bool dragging = false);
     Q_INVOKABLE void setNodeMute(const QString& sceneId, const QString& nodeId, bool mute);
+    Q_INVOKABLE void setNodeMonitor(const QString& sceneId, const QString& nodeId,
+                                    bool monitor);
     Q_INVOKABLE void routeNode(const QString& sceneId, const QString& nodeId,
                                const QString& busId);
 

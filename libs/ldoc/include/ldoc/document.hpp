@@ -71,7 +71,10 @@ struct Bus {
     double gain_db = 0.0;
     double pan = 0.0;
     bool mute = false;
-    bool solo = false;
+    /// Heard locally, which never changes what goes out (ADR-0031). There is no solo: on a
+    /// console solo is a monitoring aid, but this is document state the program mix is built
+    /// from, so it would silence every other bus on air.
+    bool monitor = false;
     double delay_ms = 0.0;
 
     friend bool operator==(const Bus&, const Bus&) = default;

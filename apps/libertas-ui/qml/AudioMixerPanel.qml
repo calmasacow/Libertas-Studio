@@ -11,7 +11,7 @@ import Libertas
 /// There are no meters, and the panel says so rather than drawing some. Nothing in this build
 /// makes a sound -- there is no audio host yet -- so a moving meter here would be an animation on
 /// a timer, and the panel would look finished while being incapable. What *is* real is everything
-/// the document holds: the buses, their kinds, faders, pans, mutes and solos, which bus each
+/// the document holds: the buses, their kinds, faders, pans, mutes and monitor flags, which bus each
 /// source node feeds, and the count of them feeding each bus. All of it is commands, so all of it
 /// undoes.
 ///
@@ -79,6 +79,7 @@ Item {
             required property string busName
             required property real gainDb
             required property bool mute
+            required property bool monitor
             required property bool selected
 
             objectName: "sourceStrip"
@@ -163,13 +164,29 @@ Item {
                     width: parent.width
                     height: 20
 
-                    ToolButton {
+                    // The two buttons every strip has, and the only two (ADR-0031).
+                    Row {
                         anchors.centerIn: parent
-                        label: "M"
-                        tip: src.mute ? qsTr("Unmute source") : qsTr("Mute source")
-                        active: src.mute
-                        activeColor: Theme.c.error
-                        onClicked: Document.setNodeMute(src.sceneId, src.nodeId, !src.mute)
+                        spacing: 3
+
+                        ToolButton {
+                            label: "M"
+                            tip: src.mute ? qsTr("Unmute source") : qsTr("Mute source")
+                            active: src.mute
+                            activeColor: Theme.c.error
+                            onClicked: Document.setNodeMute(src.sceneId, src.nodeId, !src.mute)
+                        }
+
+                        ToolButton {
+                            objectName: "monitorButton"
+                            label: "H"
+                            tip: src.monitor ? qsTr("Stop monitoring this source")
+                                             : qsTr("Monitor this source (local only)")
+                            active: src.monitor
+                            activeColor: Theme.c.accent
+                            onClicked: Document.setNodeMonitor(src.sceneId, src.nodeId,
+                                                               !src.monitor)
+                        }
                     }
                 }
             }
@@ -242,7 +259,7 @@ Item {
             required property real gainDb
             required property real pan
             required property bool mute
-            required property bool solo
+            required property bool monitor
             required property int channels
             required property int feedCount
             required property int sendCount
@@ -413,12 +430,17 @@ Item {
                             onClicked: Document.setBusMute(strip.busId, !strip.mute)
                         }
 
+                        // Heard locally, never removed from the mix. There is no solo:
+                        // ADR-0031. "H" rather than a headphone glyph, which resolves to
+                        // colour emoji here and so cannot be tinted to show it is latched.
                         ToolButton {
-                            label: "S"
-                            tip: strip.solo ? qsTr("Clear solo") : qsTr("Solo this bus")
-                            active: strip.solo
-                            activeColor: Theme.c.warning
-                            onClicked: Document.setBusSolo(strip.busId, !strip.solo)
+                            objectName: "monitorButton"
+                            label: "H"
+                            tip: strip.monitor ? qsTr("Stop monitoring this bus")
+                                               : qsTr("Monitor this bus (local only)")
+                            active: strip.monitor
+                            activeColor: Theme.c.accent
+                            onClicked: Document.setBusMonitor(strip.busId, !strip.monitor)
                         }
 
                         ToolButton {

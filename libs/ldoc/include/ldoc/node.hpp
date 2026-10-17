@@ -45,6 +45,8 @@ struct AudioRouting {
     std::vector<Send> sends;
     double gain_db = 0.0;
     bool mute = false;
+    /// Heard locally without touching the program mix (ADR-0031).
+    bool monitor = false;
 
     friend bool operator==(const AudioRouting&, const AudioRouting&) = default;
 };

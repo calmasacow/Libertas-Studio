@@ -1206,6 +1206,47 @@ int main(int argc, char** argv) {
                 }
             }
             report(divider_placed, "with the divider left of the destination strips");
+
+            // Two buttons per strip and no third: solo is gone from the document, and the
+            // reason is that it was document state, so it would have silenced other buses on
+            // air rather than only in the operator's headphones (ADR-0031).
+            report(collect(window->contentItem(), QStringLiteral("monitorButton")).size() ==
+                       static_cast<qsizetype>(bus_strips().size()) +
+                           document.mixerStripsModel()->rowCount(),
+                   "every strip, source and bus alike, has a monitor button");
+
+            document.setNodeMonitor(scene_now, mic_node, true);
+            document.setBusMonitor(document.busesModel()
+                                       ->index(0, 0)
+                                       .data(role_of(document.busesModel(), "busId"))
+                                       .toString(),
+                                   true);
+            settle();
+            bool node_monitored = false;
+            for (int i = 0; i < sm->rowCount(); ++i) {
+                if (sm->index(i, 0).data(role_of(sm, "nodeId")).toString() == mic_node)
+                    node_monitored = sm->index(i, 0).data(role_of(sm, "monitor")).toBool();
+            }
+            report(node_monitored &&
+                       document.busesModel()
+                           ->index(0, 0)
+                           .data(role_of(document.busesModel(), "monitor"))
+                           .toBool(),
+                   "which latches on a source and on a bus");
+
+            // Monitoring is local: it must not touch what goes out. Nothing renders yet, so
+            // what can be checked now is that it changed no other audio state -- the moment a
+            // monitor flag starts muting or rerouting, this fails.
+            bool mix_untouched = true;
+            for (int i = 0; i < sm->rowCount(); ++i) {
+                if (sm->index(i, 0).data(role_of(sm, "mute")).toBool())
+                    mix_untouched = false;
+            }
+            report(mix_untouched, "and changes nothing about the mix going out");
+
+            document.undo();
+            document.undo();
+            settle();
         }
 
         // A strip squeezed into the panel's minimum height still has to be a fader rather than a

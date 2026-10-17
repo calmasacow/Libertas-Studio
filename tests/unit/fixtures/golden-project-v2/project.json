@@ -8,11 +8,11 @@
       "id" : "01JD55PV3X40G2081040G20810",
       "inserts" : [],
       "kind" : "program",
+      "monitor" : false,
       "mute" : false,
       "name" : "Program",
       "pan" : 0.0,
-      "sends" : [],
-      "solo" : false
+      "sends" : []
     },
     {
       "channels" : 2,
@@ -21,6 +21,7 @@
       "id" : "01JD55PV3X44GJ289144GJ2891",
       "inserts" : [],
       "kind" : "vod",
+      "monitor" : false,
       "mute" : false,
       "name" : "VOD",
       "pan" : 0.0,
@@ -31,8 +32,7 @@
           "pre_fader" : true,
           "to" : "01JD55PV3X40G2081040G20810"
         }
-      ],
-      "solo" : false
+      ]
     }
   ],
   "canvases" : 
