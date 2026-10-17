@@ -28,6 +28,26 @@ Item {
     property string selectedSource: ""
     property bool makeVisible: true
 
+    /// The delete flow, which is deliberately two steps when the source is in use (ADR-0033).
+    /// `deleting` holds the source under the knife; `deleteStage` is 1 for "are you sure" and
+    /// 2 for the confirmation that names the scenes it will be pulled out of.
+    property string deleting: ""
+    property string deletingName: ""
+    property var deletingScenes: []
+    property int deleteStage: 0
+
+    function askDelete(id, name) {
+        dialog.deleting = id;
+        dialog.deletingName = name;
+        dialog.deletingScenes = Document.scenesUsing(id);
+        dialog.deleteStage = 1;
+    }
+
+    function cancelDelete() {
+        dialog.deleting = "";
+        dialog.deleteStage = 0;
+    }
+
     signal closed
 
     anchors.fill: parent
@@ -60,7 +80,12 @@ Item {
         ? Document.recentSources(24)
         : Document.sourcesOfType(dialog.selectedType)
 
-    Keys.onEscapePressed: dialog.close()
+    Keys.onEscapePressed: {
+        if (dialog.deleteStage > 0)
+            dialog.cancelDelete();
+        else
+            dialog.close();
+    }
 
     // Catches every click that is not on the dialog, so the workspace behind is inert while this
     // is up -- and clicking away closes it, which is what a scrim is for.
@@ -245,9 +270,11 @@ Item {
             anchors.right: heading.right
             anchors.top: heading.bottom
             anchors.topMargin: 2
+            // The right-click is the only way to reach delete, so the dialog says so. A
+            // gesture with no visible affordance is a gesture nobody finds (ADR-0033).
             text: Document.selectedScene === ""
-                ? qsTr("There is no scene to add to.")
-                : qsTr("Choose what to add to this scene.")
+                ? qsTr("There is no scene to add to. Right-click a source to delete it.")
+                : qsTr("Choose what to add to this scene. Right-click a source to delete it.")
             font.pixelSize: 11
             color: Document.selectedScene === "" ? Theme.c.warning : Theme.c.textMuted
         }
@@ -410,7 +437,20 @@ Item {
 
                                     anchors.fill: parent
                                     hoverEnabled: true
-                                    onClicked: dialog.selectedSource = tile.modelData.id
+                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                    onClicked: (ev) => {
+                                        dialog.selectedSource = tile.modelData.id;
+                                        if (ev.button === Qt.RightButton)
+                                            sourceMenu.popup(
+                                                tile.mapToItem(dialog, ev.x, ev.y).x,
+                                                tile.mapToItem(dialog, ev.x, ev.y).y,
+                                                [{
+                                                    text: qsTr("Delete source"),
+                                                    checked: false,
+                                                    action: () => dialog.askDelete(
+                                                        tile.modelData.id, tile.modelData.name)
+                                                }]);
+                                    }
                                     onDoubleClicked: {
                                         Document.addExistingSourceToScene(tile.modelData.id,
                                                                           dialog.makeVisible);
@@ -490,6 +530,138 @@ Item {
                     objectName: "closeAddSourceButton"
                     text: qsTr("Close")
                     onClicked: dialog.close()
+                }
+            }
+        }
+    }
+
+    StripMenu {
+        id: sourceMenu
+
+        z: 50
+    }
+
+    /// Deleting a source is the one destructive thing this dialog does, so it asks, and asks
+    /// again when the source is in use. The second ask names the scenes rather than counting
+    /// them: "removed from 3 scenes" is a number, "removed from Live, Intro, Outro" is a
+    /// decision (ADR-0033).
+    Item {
+        id: confirmDelete
+
+        objectName: "deleteSourceConfirm"
+        anchors.fill: parent
+        visible: dialog.deleteStage > 0
+        z: 60
+
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: dialog.cancelDelete()
+            onWheel: (wheel) => { wheel.accepted = true; }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            color: Theme.c.window
+            opacity: 0.6
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 80, 420)
+            height: confirmBody.height + confirmBar.height + 28
+            color: Theme.c.panelBackground
+            border.width: 1
+            border.color: Theme.c.error
+            radius: 3
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: {}
+            }
+
+            Column {
+                id: confirmBody
+
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 14
+                spacing: 8
+
+                Text {
+                    width: parent.width
+                    text: dialog.deleteStage === 1
+                          ? qsTr("Delete “%1”?").arg(dialog.deletingName)
+                          : qsTr("“%1” is in use").arg(dialog.deletingName)
+                    font.pixelSize: 12
+                    font.bold: true
+                    color: Theme.c.text
+                    wrapMode: Text.WordWrap
+                }
+
+                Text {
+                    width: parent.width
+                    text: {
+                        if (dialog.deleteStage === 1) {
+                            return dialog.deletingScenes.length === 0
+                                ? qsTr("It is not used in any scene. This cannot be undone "
+                                       + "except with Undo.")
+                                : qsTr("It is used in %n scene(s). The next step lists them.",
+                                       "", dialog.deletingScenes.length);
+                        }
+                        return qsTr("It will be removed from: %1")
+                               .arg(dialog.deletingScenes.join(", "));
+                    }
+                    font.pixelSize: 11
+                    color: Theme.c.textMuted
+                    wrapMode: Text.WordWrap
+                }
+
+                // Said on the last step, where it is the thing being agreed to rather than a
+                // detail passed on the way through.
+                Text {
+                    width: parent.width
+                    visible: dialog.deleteStage === 2
+                    text: qsTr("Those scenes lose this source entirely — not a placeholder "
+                               + "left behind. One Undo puts all of it back.")
+                    font.pixelSize: 10
+                    color: Theme.c.warning
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            Row {
+                id: confirmBar
+
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 14
+                spacing: 8
+
+                DialogButton {
+                    objectName: "cancelDeleteSource"
+                    text: qsTr("Cancel")
+                    onClicked: dialog.cancelDelete()
+                }
+
+                DialogButton {
+                    objectName: "confirmDeleteSource"
+                    text: dialog.deleteStage === 2 || dialog.deletingScenes.length === 0
+                          ? qsTr("Delete")
+                          : qsTr("Continue")
+                    primary: true
+                    onClicked: {
+                        // Unused: one ask is enough. In use: the first press only moves to the
+                        // step that names the scenes, so the destructive press is never the
+                        // one the operator aimed at the menu item.
+                        if (dialog.deleteStage === 1 && dialog.deletingScenes.length > 0) {
+                            dialog.deleteStage = 2;
+                            return;
+                        }
+                        Document.removeSourceAndUses(dialog.deleting);
+                        dialog.cancelDelete();
+                    }
                 }
             }
         }

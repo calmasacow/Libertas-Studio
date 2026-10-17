@@ -250,6 +250,15 @@ int main(int argc, char** argv) {
             }
             return found;
         };
+        // Synthetic pointer events, delivered to the window so the QML handlers run. Shared
+        // by every gesture check: proving a function works proves nothing about the pointer
+        // that is supposed to reach it.
+        const auto post = [&window](QEvent::Type type, QPointF at, Qt::MouseButton b,
+                                    Qt::MouseButtons held) {
+            QMouseEvent e{type, at, window->mapToGlobal(at), b, held, {}};
+            QCoreApplication::sendEvent(window, &e);
+        };
+
         const auto role_of = [](const QAbstractItemModel* m, const char* name) {
             const QHash<int, QByteArray> names = m->roleNames();
             for (auto it = names.cbegin(); it != names.cend(); ++it) {
@@ -1051,11 +1060,6 @@ int main(int argc, char** argv) {
             report(panels.size() == 1 && sources_panels.size() == 1,
                    "the Sources panel and its settings panel are both on screen");
 
-            const auto post = [&window](QEvent::Type type, QPointF at, Qt::MouseButton b,
-                                        Qt::MouseButtons held) {
-                QMouseEvent e{type, at, window->mapToGlobal(at), b, held, {}};
-                QCoreApplication::sendEvent(window, &e);
-            };
             // The full sequence a real double-click delivers. A bare DblClick would arrive with
             // no grabber and tell us nothing about what the operator's pointer does.
             const auto double_click = [&](QQuickItem* item) {
@@ -1108,6 +1112,138 @@ int main(int argc, char** argv) {
             }
             document.undo();
             settle();
+        }
+
+        // ---- the source manager ----------------------------------------------------------
+        //
+        // The Add Source dialog is the manager (ADR-0033). Deleting from it takes the source's
+        // placements with it, which is deliberately not what the bare RemoveSource command
+        // does -- so the thing worth checking is that the scenes really lose the nodes, and
+        // that one Undo puts every one of them back.
+        {
+            const QList<QQuickItem*> dialogs =
+                collect(window->contentItem(), QStringLiteral("addSourceDialog"));
+            report(dialogs.size() == 1, "the source manager is in the scene graph");
+
+            // A source placed twice in one scene, to prove the scene is named once and that
+            // both placements go.
+            document.addSource(QStringLiteral("Doomed"), QStringLiteral("source.image"));
+            settle();
+            const QString doomed = document.sourcesModel()
+                                       ->index(document.sourcesModel()->rowCount() - 1, 0)
+                                       .data(role_of(document.sourcesModel(), "sourceId"))
+                                       .toString();
+            document.addExistingSourceToScene(doomed, true);
+            document.addExistingSourceToScene(doomed, true);
+            settle();
+
+            const QStringList using_it = document.scenesUsing(doomed);
+            report(using_it.size() == 1,
+                   "a source placed twice in one scene names that scene once");
+
+            const int mgr_sources_before = document.sourcesModel()->rowCount();
+            const int mgr_nodes_before = document.nodesModel()->rowCount();
+            document.removeSourceAndUses(doomed);
+            settle();
+            report(document.sourcesModel()->rowCount() == mgr_sources_before - 1 &&
+                       document.nodesModel()->rowCount() == mgr_nodes_before - 2,
+                   "deleting it takes both of its placements with it");
+            report(document.scenesUsing(doomed).isEmpty(), "and no scene still uses it");
+
+            document.undo();
+            settle();
+            report(document.sourcesModel()->rowCount() == mgr_sources_before &&
+                       document.nodesModel()->rowCount() == mgr_nodes_before,
+                   "one undo puts the source and both placements back");
+            document.removeSourceAndUses(doomed);
+            settle();
+
+            // And the gesture, through the pointer. The block above calls the function the
+            // menu item calls, which proves the command and nothing about the right-click or
+            // the two confirmations standing between it and an operator.
+            if (!dialogs.isEmpty()) {
+                QQuickItem* mgr = dialogs.front();
+                document.addSource(QStringLiteral("Clicked"), QStringLiteral("source.image"));
+                settle();
+                const QString clicked =
+                    document.sourcesModel()
+                        ->index(document.sourcesModel()->rowCount() - 1, 0)
+                        .data(role_of(document.sourcesModel(), "sourceId"))
+                        .toString();
+                document.addExistingSourceToScene(clicked, true);
+                settle();
+
+                QMetaObject::invokeMethod(mgr, "open");
+                settle();
+                // The grid only lists one type at a time, and the new source is an image.
+                mgr->setProperty("selectedType", QStringLiteral("source.image"));
+                settle();
+
+                QQuickItem* tile = nullptr;
+                for (QQuickItem* t :
+                     collect(window->contentItem(), QStringLiteral("existingSourceTile"))) {
+                    const QVariant data = t->property("modelData");
+                    if (data.toMap().value("id").toString() == clicked)
+                        tile = t;
+                }
+                report(tile != nullptr, "the new source has a tile to right-click");
+
+                if (tile != nullptr) {
+                    const QPointF at = tile->mapToScene(
+                        QPointF(tile->width() / 2.0, tile->height() / 2.0));
+                    post(QEvent::MouseButtonPress, at, Qt::RightButton, Qt::RightButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::RightButton, Qt::NoButton);
+                    settle();
+                    report(!collect(window->contentItem(),
+                                    QStringLiteral("stripMenuItem")).isEmpty(),
+                           "right-clicking it opens a menu");
+
+                    const QList<QQuickItem*> items =
+                        collect(window->contentItem(), QStringLiteral("stripMenuItem"));
+                    if (!items.isEmpty()) {
+                        const QPointF on = items.front()->mapToScene(
+                            QPointF(items.front()->width() / 2.0,
+                                    items.front()->height() / 2.0));
+                        post(QEvent::MouseButtonPress, on, Qt::LeftButton, Qt::LeftButton);
+                        post(QEvent::MouseButtonRelease, on, Qt::LeftButton, Qt::NoButton);
+                        settle();
+                    }
+
+                    const int before_confirm = document.sourcesModel()->rowCount();
+                    report(mgr->property("deleteStage").toInt() == 1 &&
+                               before_confirm == document.sourcesModel()->rowCount(),
+                           "which asks first and deletes nothing yet");
+
+                    // In use, so the first press only advances to the step that names the
+                    // scenes. The destructive press is never the one aimed at the menu item.
+                    const auto press = [&](const QString& name) {
+                        for (QQuickItem* b : collect(window->contentItem(), name)) {
+                            const QPointF mid = b->mapToScene(
+                                QPointF(b->width() / 2.0, b->height() / 2.0));
+                            post(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::LeftButton);
+                            post(QEvent::MouseButtonRelease, mid, Qt::LeftButton, Qt::NoButton);
+                            settle();
+                            return true;
+                        }
+                        return false;
+                    };
+                    report(press(QStringLiteral("confirmDeleteSource")), "the first confirm is pressable");
+                    report(mgr->property("deleteStage").toInt() == 2 &&
+                               document.sourcesModel()->rowCount() == before_confirm,
+                           "and still deletes nothing, because the source is in use");
+
+                    report(press(QStringLiteral("confirmDeleteSource")), "the second confirm is pressable");
+                    report(document.sourcesModel()->rowCount() == before_confirm - 1 &&
+                               document.scenesUsing(clicked).isEmpty(),
+                           "and only then is it gone, placements and all");
+                    document.undo();
+                    settle();
+                    document.removeSourceAndUses(clicked);
+                    settle();
+                }
+                QMetaObject::invokeMethod(mgr, "close");
+                settle();
+            }
         }
 
         document.selectNode(browser_node);
@@ -1380,11 +1516,6 @@ int main(int argc, char** argv) {
                 const QPointF bottom =
                     fader->mapToScene(QPointF(fader->width() / 2.0, fader->height() - 2.0));
 
-                const auto post = [&window](QEvent::Type type, QPointF at, Qt::MouseButton b,
-                                            Qt::MouseButtons held) {
-                    QMouseEvent e{type, at, window->mapToGlobal(at), b, held, {}};
-                    QCoreApplication::sendEvent(window, &e);
-                };
 
                 const double before_drag = gain_of_dragged();
                 post(QEvent::MouseButtonPress, bottom, Qt::LeftButton, Qt::LeftButton);

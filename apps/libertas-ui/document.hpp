@@ -266,6 +266,13 @@ public:
     /// `addNewSourceToScene`, which is both at once and is what the add dialog uses.
     Q_INVOKABLE void addSource(const QString& name, const QString& type);
     Q_INVOKABLE void removeSource(const QString& id);
+    /// The scenes holding a node bound to this source, by name, each listed once however many
+    /// times it appears there. What the delete confirmation shows before it is agreed to.
+    Q_INVOKABLE [[nodiscard]] QStringList scenesUsing(const QString& sourceId) const;
+    /// Delete the source *and* every node bound to it, as one undoable step (ADR-0033). The
+    /// bare `removeSource` leaves those nodes bound to nothing on purpose; the manager does
+    /// not, because "remove it from those scenes" is what the operator was shown and agreed to.
+    Q_INVOKABLE void removeSourceAndUses(const QString& id);
     Q_INVOKABLE void renameSource(const QString& id, const QString& name);
     /// Bind the selected source node to this source, or to nothing when the id is empty.
     Q_INVOKABLE void bindSelectedNode(const QString& sourceId);

@@ -23,6 +23,22 @@ and says its resolution. ADR-0027 has the reasoning.
   Main's matching one. There is no way to say "give me all of Vertical's panels in one place",
   which is what someone building a second show might actually want.
 
+## The source manager, built on 2026-10-17
+
+The Add Source dialog is the manager ([ADR-0033](adr/0033-deleting-a-source-takes-its-placements.md)).
+Right-click a source tile to delete it; one confirmation when it is unused, two when it is in
+use, the second naming the scenes. Deleting removes the source **and** its placements as one
+`Batch`, which is deliberately not what the bare `RemoveSource` command does.
+
+### Still open here
+
+- **The file is still called `AddSourceDialog.qml`.** Worth renaming when something else
+  touches it; not worth a commit that only moves a file.
+- **No rename from the manager.** `renameSource` exists and nothing in the manager calls it;
+  renaming is still done from the Sources panel row.
+- **Nothing stops a source being deleted while it is on air**, because nothing is on air. When
+  the render path exists that is a question for the session process, not this dialog.
+
 ## The mixer shows sources, built on 2026-10-16
 
 One row, two groups: source strips justified left, bus strips right, a divider immediately left

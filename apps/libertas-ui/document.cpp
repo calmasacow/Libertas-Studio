@@ -1559,6 +1559,49 @@ void Document::removeSource(const QString& id) {
         run(ldoc::RemoveSource{*parsed});
 }
 
+QStringList Document::scenesUsing(const QString& sourceId) const {
+    const auto parsed = parse_id(sourceId);
+    if (!parsed)
+        return {};
+    QStringList out;
+    for (const ldoc::Scene& s : session_->project().scenes) {
+        bool used = false;
+        ldoc::visit(s.roots, [&](const ldoc::Node& n) {
+            const auto* placed = std::get_if<ldoc::SourceData>(&n.data);
+            if (placed && placed->source && *placed->source == *parsed)
+                used = true;
+        });
+        // Once per scene, not once per placement: the question the dialog is asking is which
+        // scenes change, and "Live, Live, Live" answers it worse than "Live".
+        if (used)
+            out << qstr(s.name);
+    }
+    return out;
+}
+
+void Document::removeSourceAndUses(const QString& id) {
+    const auto parsed = parse_id(id);
+    const ldoc::Project& p = session_->project();
+    const ldoc::Source* src = parsed ? p.source(*parsed) : nullptr;
+    if (!src)
+        return;
+
+    std::vector<ldoc::Command> steps;
+    for (const ldoc::Scene& s : p.scenes) {
+        std::vector<ldoc::Id> doomed;
+        ldoc::visit(s.roots, [&](const ldoc::Node& n) {
+            const auto* placed = std::get_if<ldoc::SourceData>(&n.data);
+            if (placed && placed->source && *placed->source == *parsed)
+                doomed.push_back(n.id);
+        });
+        for (const ldoc::Id& node : doomed)
+            steps.push_back(ldoc::RemoveNode{s.id, node});
+    }
+    steps.push_back(ldoc::RemoveSource{*parsed});
+    run(ldoc::make_batch(std::move(steps),
+                         std::format("Delete source {}", src->name)));
+}
+
 void Document::renameSource(const QString& id, const QString& name) {
     const auto parsed = parse_id(id);
     const ldoc::Source* src = parsed ? session_->project().source(*parsed) : nullptr;

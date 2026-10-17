@@ -281,6 +281,7 @@ Item {
     AddSourceDialog {
         id: addDialog
 
+        objectName: "addSourceDialog"
         parent: panel.Window.contentItem
         onClosed: panel.adding = false
     }
