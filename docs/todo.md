@@ -23,6 +23,19 @@ and says its resolution. ADR-0027 has the reasoning.
   Main's matching one. There is no way to say "give me all of Vertical's panels in one place",
   which is what someone building a second show might actually want.
 
+## No drag-scroll, 2026-10-17
+
+Every `Flickable` in the shell is `interactive: false`, with the wheel given back by
+`NoDragScroll.qml` ([ADR-0039](adr/0039-nothing-scrolls-by-being-dragged.md)). A list is a
+list of things to grab, and a surface that slides when pulled will eventually slide while
+someone is pulling on what is in it.
+
+### Still open here
+
+- **No scrollbars anywhere.** Nothing says a list has more below it, which matters more now
+  that it cannot be flicked to find out. A thin indicator that appears while scrolling would
+  do; a Controls `ScrollView` would not (ADR-0015).
+
 ## Selecting more than one source, built on 2026-10-17
 
 Ctrl and Shift click in the Sources panel, `Ctrl+G` to group the selection

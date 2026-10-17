@@ -129,6 +129,11 @@ Item {
         visible: Document.selectedScene !== ""
         model: Document.nodesFor(panel.canvasId)
         boundsBehavior: Flickable.StopAtBounds
+        // Nothing here scrolls by being dragged (ADR-0039). The wheel has to come back,
+        // because Flickable drops it along with the drag.
+        interactive: false
+
+        NoDragScroll {}
 
         delegate: Rectangle {
             id: row

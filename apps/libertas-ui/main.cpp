@@ -21,6 +21,7 @@
 #include <QEventLoop>
 #include <QImage>
 #include <QQuickItem>
+#include <QWheelEvent>
 #include <QSize>
 #include <QSet>
 #include <QVariantMap>
@@ -1243,6 +1244,112 @@ int main(int argc, char** argv) {
                 }
                 QMetaObject::invokeMethod(mgr, "close");
                 settle();
+            }
+        }
+
+        // ---- nothing scrolls by being dragged ---------------------------------------------
+        //
+        // The operator found rows that pulled the list around instead of dragging, and ruled
+        // it out everywhere: "no element should initiate scroll there should be no drag
+        // scroll anywhere in this app" (ADR-0039). interactive:false is what does it, and it
+        // takes the wheel with it -- so the thing worth asserting is that every scrollable
+        // surface refuses a drag and still answers a wheel.
+        {
+            int flickables = 0;
+            int draggable = 0;
+            const std::function<void(QQuickItem*)> walk = [&](QQuickItem* item) {
+                if (item->inherits("QQuickFlickable")) {
+                    ++flickables;
+                    if (item->property("interactive").toBool())
+                        ++draggable;
+                }
+                for (QQuickItem* kid : item->childItems())
+                    walk(kid);
+            };
+            walk(window->contentItem());
+            report(flickables > 0, "the shell has scrollable surfaces");
+            report(draggable == 0, "and not one of them can be dragged to scroll");
+
+            // And the wheel still turns one, which is the half that interactive:false breaks
+            // and that a NoDragScroll per surface puts back. Driven through the window so
+            // the handler runs, on a list made long enough to have somewhere to go.
+            for (int i = 0; i < 40; ++i)
+                document.addSourceNode(QStringLiteral("Filler"));
+            settle();
+            QQuickItem* scroller = nullptr;
+            for (QQuickItem* r : collect(window->contentItem(), QStringLiteral("sourceRow"))) {
+                QQuickItem* up = r->parentItem();
+                while (up != nullptr && !up->inherits("QQuickFlickable"))
+                    up = up->parentItem();
+                if (up != nullptr && up->property("contentHeight").toReal() > up->height())
+                    scroller = up;
+            }
+            report(scroller != nullptr, "the source list is longer than its panel");
+            if (scroller != nullptr) {
+                const qreal before = scroller->property("contentY").toReal();
+                const QPointF at = scroller->mapToScene(
+                    QPointF(scroller->width() / 2.0, scroller->height() / 2.0));
+                QWheelEvent ev{at,          window->mapToGlobal(at), QPoint{0, 0},
+                               QPoint{0, -120}, Qt::NoButton,        Qt::NoModifier,
+                               Qt::NoScrollPhase, false};
+                QCoreApplication::sendEvent(window, &ev);
+                settle();
+                report(scroller->property("contentY").toReal() > before,
+                       "and a wheel notch still scrolls it");
+            }
+            for (int i = 0; i < 40; ++i)
+                document.undo();
+            settle();
+
+            // A wheel over a fader trims the fader, and must not also scroll the strip list
+            // underneath it -- the mixer is a horizontal Flickable and now has a wheel
+            // handler of its own (ADR-0039).
+            {
+                workspace.activate(QStringLiteral("audio-mixer"));
+                settle();
+                // A bus strip's fader specifically: the mixer draws source strips too and
+                // the assertion below reads a bus's gain.
+                QQuickItem* fader = nullptr;
+                QString bus_of_fader;
+                for (QQuickItem* strip : collect(window->contentItem(),
+                                                 QStringLiteral("busStrip"))) {
+                    if (!strip->isVisible())
+                        continue;
+                    for (QQuickItem* f : collect(strip, QStringLiteral("mixerFader"))) {
+                        if (f->isVisible() && f->height() > 24.0) {
+                            fader = f;
+                            bus_of_fader = strip->property("busId").toString();
+                        }
+                    }
+                }
+                report(fader != nullptr && !bus_of_fader.isEmpty(),
+                       "there is a bus fader to put the pointer over");
+                if (fader != nullptr) {
+                    const QAbstractItemModel* bm = document.busesModel();
+                    int at_row = -1;
+                    for (int i = 0; i < bm->rowCount(); ++i) {
+                        if (bm->index(i, 0).data(role_of(bm, "busId")).toString() ==
+                            bus_of_fader)
+                            at_row = i;
+                    }
+                    const double was =
+                        at_row < 0 ? 0.0
+                                   : bm->index(at_row, 0).data(role_of(bm, "gainDb")).toDouble();
+                    const QPointF at = fader->mapToScene(
+                        QPointF(fader->width() / 2.0, fader->height() / 2.0));
+                    QWheelEvent ev{at,         window->mapToGlobal(at), QPoint{0, 0},
+                                   QPoint{0, 120}, Qt::NoButton,        Qt::NoModifier,
+                                   Qt::NoScrollPhase, false};
+                    QCoreApplication::sendEvent(window, &ev);
+                    settle();
+                    const double now =
+                        at_row < 0 ? 0.0
+                                   : bm->index(at_row, 0).data(role_of(bm, "gainDb")).toDouble();
+                    report(at_row >= 0 && !qFuzzyCompare(now, was),
+                           "a wheel over a fader still trims it, not the list behind it");
+                    document.undo();
+                    settle();
+                }
             }
         }
 

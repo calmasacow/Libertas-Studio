@@ -144,6 +144,11 @@ Item {
                 clip: true
                 // The list grows with every source type this build learns, so it scrolls.
                 boundsBehavior: Flickable.StopAtBounds
+                // Nothing here scrolls by being dragged (ADR-0039). The wheel has to come back,
+                // because Flickable drops it along with the drag.
+                interactive: false
+
+                NoDragScroll {}
                 model: Document.addableKinds
                 header: recentHeader
 
@@ -309,6 +314,11 @@ Item {
                 contentHeight: gridFlow.height
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
+                // Nothing here scrolls by being dragged (ADR-0039). The wheel has to come back,
+                // because Flickable drops it along with the drag.
+                interactive: false
+
+                NoDragScroll {}
 
                 Column {
                     id: gridFlow

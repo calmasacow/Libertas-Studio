@@ -141,19 +141,30 @@ Item {
             fader.released();
             fader.shownGain = fader.gainDb;
         }
-        // A wheel is the keyboard-adjacent way to trim a fader, and one notch is one command,
-        // so it does not need the drag treatment.
-        onWheel: (wheel) => {
-            if (fader.locked)
-                return;
-            const step = wheel.modifiers & Qt.ShiftModifier ? 0.25 : 1.0;
-            fader.moved(Math.max(fader.gainMin,
-                                 Math.min(fader.gainMax,
-                                          fader.gainDb + (wheel.angleDelta.y > 0 ? step : -step))));
-        }
         onDoubleClicked: {
             if (!fader.locked)
                 fader.reset();
+        }
+    }
+
+    /// A wheel is the keyboard-adjacent way to trim a fader, and one notch is one command, so
+    /// it does not need the drag treatment.
+    ///
+    /// A handler rather than the MouseArea's `onWheel`, because the mixer's strip list is a
+    /// Flickable with a NoDragScroll on it (ADR-0039) and a WheelHandler outranks any
+    /// MouseArea beneath it. Qt offers the event innermost-first, so this one -- being deeper
+    /// -- takes it and the list does not scroll under the pointer.
+    WheelHandler {
+        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        enabled: !fader.locked
+
+        onWheel: (event) => {
+            const step = (event.modifiers & Qt.ShiftModifier) ? 0.25 : 1.0;
+            const up = event.angleDelta.y !== 0 ? event.angleDelta.y > 0
+                                                : event.pixelDelta.y > 0;
+            fader.moved(Math.max(fader.gainMin,
+                                 Math.min(fader.gainMax,
+                                          fader.gainDb + (up ? step : -step))));
         }
     }
 }

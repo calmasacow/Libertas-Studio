@@ -54,6 +54,7 @@ qt_add_qml_module(libertas-ui
         qml/ChainIcon.qml
         qml/EyeIcon.qml
         qml/MixerFader.qml
+        qml/NoDragScroll.qml
         qml/PasteWarning.qml
         qml/StripMenu.qml
         qml/CheckLabel.qml

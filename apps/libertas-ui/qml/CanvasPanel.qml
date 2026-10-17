@@ -41,6 +41,11 @@ Item {
         contentHeight: content.height
         contentWidth: width
         boundsBehavior: Flickable.StopAtBounds
+        // Nothing here scrolls by being dragged (ADR-0039). The wheel has to come back,
+        // because Flickable drops it along with the drag.
+        interactive: false
+
+        NoDragScroll {}
 
         Column {
             id: content
