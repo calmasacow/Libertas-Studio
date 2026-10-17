@@ -8,3 +8,8 @@ compile_commands.json
 *.mkv
 *.mp4
 *.h264
+
+# Screen captures taken while checking the shell. They belong in build/ or /tmp and are
+# never worth committing; this is here so a stray one in the tree is not staged by accident.
+/*.png
+/*.jpg

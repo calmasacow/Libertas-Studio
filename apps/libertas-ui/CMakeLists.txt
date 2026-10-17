@@ -110,9 +110,14 @@ set_source_files_properties(
 
 # The headless self-check: load the real QML tree, drive the real gestures, touch no screen.
 if(LIBERTAS_BUILD_TESTS)
-    add_test(NAME shell_self_check COMMAND libertas-ui --check
-             --layout "${CMAKE_CURRENT_BINARY_DIR}/self-check-layout.toml"
-             --project "${CMAKE_CURRENT_BINARY_DIR}/self-check-project")
+    # Started from nothing every run. --project opens a directory that already exists, so a
+    # project left by an older build -- a different schema, or a shape the check no longer
+    # expects -- made the suite fail for a reason that had nothing to do with the change
+    # being tested. Deleting it by hand was the standing workaround; this is the fix.
+    add_test(NAME shell_self_check COMMAND "${CMAKE_COMMAND}"
+             -DCHECK_EXE=$<TARGET_FILE:libertas-ui>
+             -DCHECK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+             -P "${CMAKE_CURRENT_SOURCE_DIR}/run-self-check.cmake")
     # Qt initialises GL even on the offscreen platform, and the GPU driver leaks a little
     # one-time state on every run. The suppression file names libraries, never functions of ours,
     # so this cannot hide a leak we introduce.
