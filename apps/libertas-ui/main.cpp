@@ -1409,26 +1409,37 @@ int main(int argc, char** argv) {
             settle();
             const QString target = document.selectedNode();
 
+            // Dropping into a group, which is what a drag does when it lands on the middle
+            // third of a group's row (ADR-0038).
             document.selectNode(pick_c);
             settle();
-            bool offered_target = false;
-            for (const QVariant& v : document.groupsForMove())
-                offered_target = offered_target || v.toMap().value("id").toString() == target;
-            report(offered_target, "an existing group is offered to move into");
-
-            document.moveSelectedIntoGroup(target);
+            report(document.canDropAt(target, QStringLiteral("into")),
+                   "a group will take a drop");
+            document.dropSelectedAt(target, QStringLiteral("into"));
             settle();
             report(document.parentOfNode(pick_c) == target,
                    "and the source lands inside it");
 
-            // A group cannot be moved into itself, which is the one case the command would
-            // have to refuse.
+            // A group cannot be dropped into itself or into its own contents: the tree would
+            // stop being a tree, so the panel never draws the target.
             document.selectNode(target);
             settle();
-            bool offered_itself = false;
-            for (const QVariant& v : document.groupsForMove())
-                offered_itself = offered_itself || v.toMap().value("id").toString() == target;
-            report(!offered_itself, "a group is never offered to move into itself");
+            report(!document.canDropAt(target, QStringLiteral("into")),
+                   "a group refuses a drop into itself");
+            report(!document.canDropAt(pick_c, QStringLiteral("above")),
+                   "and refuses one onto what it contains");
+
+            // Above and below put it beside the target among its own siblings.
+            document.selectNode(pick_c);
+            settle();
+            report(document.canDropAt(target, QStringLiteral("below")),
+                   "dropping below a group is allowed");
+            document.dropSelectedAt(target, QStringLiteral("below"));
+            settle();
+            report(document.parentOfNode(pick_c).isEmpty(),
+                   "and takes it out of the group it was in");
+            report(document.rowOfNode(pick_c) >= 0,
+                   "the panel can still find its row, which is what draws the drop line");
 
             document.selectNode(pick_c);
             settle();
@@ -1436,6 +1447,48 @@ int main(int argc, char** argv) {
             settle();
             report(document.parentOfNode(pick_c).isEmpty(),
                    "and it can be moved back out");
+
+            // And the gesture, through the pointer. canDropAt and dropSelectedAt passing
+            // says nothing about whether pressing a row and moving reaches them.
+            {
+                const auto row_of = [&](const QString& node_id) -> QQuickItem* {
+                    for (QQuickItem* r :
+                         collect(window->contentItem(), QStringLiteral("sourceRow")))
+                        if (r->property("nodeId").toString() == node_id)
+                            return r;
+                    return nullptr;
+                };
+                QQuickItem* from = row_of(pick_c);
+                QQuickItem* onto = row_of(target);
+                report(from != nullptr && onto != nullptr,
+                       "both rows are on screen to drag between");
+                if (from != nullptr && onto != nullptr) {
+                    const QString was = document.parentOfNode(pick_c);
+                    const QPointF start = from->mapToScene(
+                        QPointF(from->width() / 2.0, from->height() / 2.0));
+                    // The middle of the group's row, which is the "into" third.
+                    const QPointF end = onto->mapToScene(
+                        QPointF(onto->width() / 2.0, onto->height() / 2.0));
+
+                    post(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+                    // A short move first: a drag must not begin on the press itself, or
+                    // every click would catch.
+                    post(QEvent::MouseMove, start + QPointF(0, 2), Qt::NoButton,
+                         Qt::LeftButton);
+                    settle();
+                    report(document.parentOfNode(pick_c) == was,
+                           "a two-pixel wobble is still a click, not a drag");
+
+                    post(QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+                    settle();
+                    post(QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    report(document.parentOfNode(pick_c) == target,
+                           "dragging a row onto a group drops it inside");
+                    document.undo();
+                    settle();
+                }
+            }
 
             document.undo();
             document.undo();

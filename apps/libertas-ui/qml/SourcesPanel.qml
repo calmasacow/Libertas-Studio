@@ -46,6 +46,15 @@ Item {
     /// both be in edit at once.
     property string renaming: ""
 
+    /// Dragging a row, the way a layers panel does (ADR-0038). `dragNode` is what was picked
+    /// up, `dropTarget` and `dropZone` are where it would land -- "above", "below" or "into".
+    /// Held here rather than in the row, because the row under the pointer is not the row that
+    /// was pressed.
+    property string dragNode: ""
+    property string dropTarget: ""
+    property string dropZone: ""
+    readonly property bool dragging: panel.dragNode !== ""
+
     /// Open a source's settings. Takes the source id rather than the node's, because that is
     /// what is being configured: one camera in six scenes has one set of settings, and editing
     /// it from any of the six is editing the same thing.
@@ -69,6 +78,44 @@ Item {
         text: qsTr("No scene selected")
         font.pixelSize: 11
         color: Theme.c.textMuted
+    }
+
+    /// Which row the pointer is over, and which third of it -- the three zones a layers panel
+    /// has: above, into, below. A row that is not a group has no middle third, because there
+    /// is nothing to go inside; its whole height splits in two (ADR-0038).
+    function updateDrop(yInList) {
+        const y = yInList + list.contentY;
+        const at = Math.floor(y / 26);
+        if (at < 0 || at >= list.count) {
+            panel.dropTarget = "";
+            return;
+        }
+        const hit = Document.nodeAtRow(at);
+        if (hit.id === undefined) {
+            panel.dropTarget = "";
+            return;
+        }
+        const target = hit.id;
+        const isGroup = hit.isGroup;
+        const within = y - at * 26;
+        let zone;
+        if (isGroup)
+            zone = within < 7 ? "above" : within > 19 ? "below" : "into";
+        else
+            zone = within < 13 ? "above" : "below";
+
+        if (!Document.canDropAt(target, zone)) {
+            panel.dropTarget = "";
+            return;
+        }
+        panel.dropTarget = target;
+        panel.dropZone = zone;
+    }
+
+    function endDrag() {
+        panel.dragNode = "";
+        panel.dropTarget = "";
+        panel.dropZone = "";
     }
 
     ListView {
@@ -110,11 +157,23 @@ Item {
 
             width: ListView.view.width
             height: 26
-            color: row.selected ? Theme.c.accent
+            readonly property bool dropInto: panel.dropTarget === row.nodeId &&
+                                             panel.dropZone === "into"
+
+            color: row.dropInto ? Theme.c.accent
+                 : row.selected ? Theme.c.accent
                  : row.alsoSelected ? Theme.c.panelHeaderActive
                  : mouse.containsMouse ? Theme.c.panelHeaderActive
                  : "transparent"
-            opacity: row.alsoSelected ? 0.85 : 1.0
+            // A group about to receive the drop is outlined rather than only tinted, so
+            // "inside this" cannot be mistaken for "selected".
+            border.width: row.dropInto ? 1 : 0
+            border.color: Theme.c.text
+            // The rows being carried fade, which is what says they are in flight rather than
+            // still where they were.
+            opacity: panel.dragging && Document.selectedNodes.indexOf(row.nodeId) >= 0 ? 0.4
+                   : row.alsoSelected ? 0.85
+                   : 1.0
 
             MouseArea {
                 id: mouse
@@ -122,6 +181,50 @@ Item {
                 anchors.fill: parent
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
+
+                /// Where the press landed, so a drag can start only after the pointer has
+                /// actually moved. Without that every click would begin a drag and the panel
+                /// would feel like it was catching on things.
+                property real pressY: -1
+                property real pressX: -1
+
+                onPressed: (ev) => {
+                    mouse.pressX = ev.x;
+                    mouse.pressY = ev.y;
+                }
+
+                onPositionChanged: (ev) => {
+                    if (ev.buttons !== Qt.LeftButton || mouse.pressY < 0)
+                        return;
+                    if (!panel.dragging) {
+                        // Four pixels: enough that a click with a shaky hand is still a
+                        // click, small enough that a deliberate drag starts at once.
+                        if (Math.abs(ev.y - mouse.pressY) < 4 &&
+                            Math.abs(ev.x - mouse.pressX) < 4)
+                            return;
+                        // Dragging something outside the selection takes just that one, which
+                        // is what a layers panel does -- the selection is not a cargo net.
+                        if (Document.selectedNodes.indexOf(row.nodeId) < 0)
+                            Document.selectNodeOn(panel.canvasId, row.nodeId);
+                        panel.dragNode = row.nodeId;
+                    }
+                    panel.updateDrop(mapToItem(list, ev.x, ev.y).y);
+                }
+
+                onReleased: {
+                    mouse.pressY = -1;
+                    if (!panel.dragging)
+                        return;
+                    if (panel.dropTarget !== "")
+                        Document.dropSelectedAt(panel.dropTarget, panel.dropZone);
+                    panel.endDrag();
+                }
+
+                onCanceled: {
+                    mouse.pressY = -1;
+                    panel.endDrag();
+                }
+
                 onClicked: (ev) => {
                     // Ctrl toggles one, Shift takes the run between the anchor and here --
                     // what every other list does. A right-click never changes the selection
@@ -165,18 +268,10 @@ Item {
                             }
                         });
                     }
-                    // Into an existing group, which there is otherwise no way to do: the
-                    // panel cannot drag yet, so this is the gesture (ADR-0037).
-                    const groups = Document.groupsForMove();
-                    for (let i = 0; i < groups.length; ++i) {
-                        const g = groups[i];
-                        rows.push({
-                            text: qsTr("Move to “%1”").arg(g.name),
-                            checked: false,
-                            action: () => Document.moveSelectedIntoGroup(g.id)
-                        });
-                    }
-                    // And back out, offered only when there is something to come out of.
+                    // Moving into a group is a drag now, not a menu of every group in the
+                    // scene -- that list grows with the project and the gesture people reach
+                    // for is the drag (ADR-0038). Out of a group stays, because there is
+                    // nothing above the top level to drop onto.
                     if (Document.parentOfNode(row.nodeId) !== "") {
                         rows.push({
                             text: qsTr("Move out of group"),
@@ -385,6 +480,29 @@ Item {
         objectName: "addSourceDialog"
         parent: panel.Window.contentItem
         onClosed: panel.adding = false
+    }
+
+    /// Where the drop would land, drawn between rows the way a layers panel does. Only for
+    /// above and below -- "into" is shown by outlining the group itself, because a line at
+    /// the top of a group would be indistinguishable from "above it" (ADR-0038).
+    Rectangle {
+        objectName: "dropLine"
+        parent: list
+        visible: panel.dragging && panel.dropTarget !== "" && panel.dropZone !== "into"
+        x: 0
+        width: list.width
+        height: 2
+        color: Theme.c.accent
+        z: 10
+        y: {
+            if (!visible)
+                return 0;
+            const at = Document.rowOfNode(panel.dropTarget);
+            if (at < 0)
+                return 0;
+            const top = at * 26 - list.contentY;
+            return panel.dropZone === "below" ? top + 26 - 1 : top - 1;
+        }
     }
 
     StripMenu {

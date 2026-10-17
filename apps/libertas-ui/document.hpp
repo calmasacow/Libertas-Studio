@@ -182,9 +182,24 @@ public:
     /// Move every selected source into `groupId`, or out to the top of the scene when it is
     /// empty. The gesture the Sources panel has instead of dragging, which it cannot do yet.
     Q_INVOKABLE void moveSelectedIntoGroup(const QString& groupId);
-    /// The groups in the scene on screen, {id, name}, minus any that are selected or inside
-    /// something selected -- a group cannot be moved into itself.
-    Q_INVOKABLE [[nodiscard]] QVariantList groupsForMove() const;
+
+    /// Drop the selected sources at a row, the way a layers panel does (ADR-0038).
+    ///
+    /// `zone` is "above", "below" or "into": above and below put them beside `targetId` among
+    /// its own siblings, into puts them inside it when it is a group. Refused when the target
+    /// is inside what is being dragged -- a node cannot be moved into itself.
+    Q_INVOKABLE void dropSelectedAt(const QString& targetId, const QString& zone);
+    /// Whether that drop would do anything, so the panel can draw the line only where one
+    /// would land.
+    Q_INVOKABLE [[nodiscard]] bool canDropAt(const QString& targetId, const QString& zone) const;
+    /// The node at a row of the current canvas's flattened tree, and whether it is a group:
+    /// {id, isGroup}. What the panel needs to turn a pointer position into a drop target
+    /// without reaching into model roles by number.
+    Q_INVOKABLE [[nodiscard]] QVariantMap nodeAtRow(int row) const;
+    /// The row a node occupies in that flattened tree, or -1. The inverse of `nodeAtRow`,
+    /// for drawing the drop line.
+    Q_INVOKABLE [[nodiscard]] int rowOfNode(const QString& nodeId) const;
+
     [[nodiscard]] QVariantMap nodeProperties() const;
     [[nodiscard]] QStringList problems() const;
     [[nodiscard]] QStringList blendModes() const;

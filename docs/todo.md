@@ -33,9 +33,10 @@ scene order.
 ### Still open here
 
 - **No rubber-band selection.** `Ctrl+A` exists; dragging a box over rows does not.
-- **The Sources panel still cannot drag.** Moving a source into a group is a right-click menu
-  entry ("Move to ...") rather than a drag, which is the gesture people reach for. The
-  invokable behind it, `moveSelectedIntoGroup`, is what a drop would call.
+- **No auto-scroll while dragging** past the top or bottom of a long list
+  ([ADR-0038](adr/0038-the-sources-panel-drags.md)).
+- **Groups do not collapse**, so there is no spring-loading either — in Photoshop, hovering a
+  closed group during a drag opens it.
 - **Properties blanks above one selection** by the operator's choice. Editing all of them is
   the bigger feature: every field needs a mixed-value state and every setter becomes a batch.
 

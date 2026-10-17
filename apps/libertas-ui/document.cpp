@@ -2839,35 +2839,50 @@ void Document::selectAllNodes() {
     emit selectionChanged();
 }
 
-QVariantList Document::groupsForMove() const {
-    const ldoc::Scene* s = current_scene();
-    if (!s)
-        return {};
-    const QStringList chosen = selectedNodes();
-    QVariantList out;
-    ldoc::visit(s->roots, [&](const ldoc::Node& n) {
-        if (!std::holds_alternative<ldoc::GroupData>(n.data))
-            return;
-        const QString id = id_str(n.id);
-        // Not into itself, and not into a group that is itself being moved -- the command
-        // would refuse the first and the second would take the group along with its target.
-        if (chosen.contains(id) || inside_any(*s, chosen, n.id))
-            return;
-        // Nor into a group that already holds everything selected: nothing would move.
-        bool already = !chosen.isEmpty();
-        for (const QString& sel : chosen) {
-            if (parentOfNode(sel) != id)
-                already = false;
-        }
-        if (already)
-            return;
-        QVariantMap m;
-        m["id"] = id;
-        m["name"] = qstr(n.name);
-        out.append(m);
-    });
+namespace {
+
+/// Where a node sits: its parent, and its index among that parent's children.
+struct Seat {
+    std::optional<ldoc::Id> parent;
+    std::size_t index = 0;
+    bool found = false;
+};
+
+Seat seat_of(const ldoc::Scene& scene, const ldoc::Id& wanted) {
+    Seat out;
+    const std::function<bool(const std::vector<ldoc::Node>&, std::optional<ldoc::Id>)> walk =
+        [&](const std::vector<ldoc::Node>& nodes, std::optional<ldoc::Id> parent) {
+            for (std::size_t i = 0; i < nodes.size(); ++i) {
+                if (nodes[i].id == wanted) {
+                    out = Seat{parent, i, true};
+                    return true;
+                }
+                if (const auto* g = std::get_if<ldoc::GroupData>(&nodes[i].data)) {
+                    if (walk(g->children, nodes[i].id))
+                        return true;
+                }
+            }
+            return false;
+        };
+    walk(scene.roots, std::nullopt);
     return out;
 }
+
+/// Whether `target` is `root` or sits anywhere inside it. Dropping a group into its own
+/// contents is the one move that cannot be allowed: the tree would stop being a tree.
+bool within(const ldoc::Scene& scene, const ldoc::Id& root, const ldoc::Id& target) {
+    const ldoc::Node* n = ldoc::find_node(scene.roots, root);
+    if (!n)
+        return false;
+    bool found = false;
+    ldoc::visit(*n, [&](const ldoc::Node& each) {
+        if (each.id == target)
+            found = true;
+    });
+    return found;
+}
+
+} // namespace
 
 void Document::moveSelectedIntoGroup(const QString& groupId) {
     const ldoc::Scene* s = current_scene();
@@ -2907,6 +2922,106 @@ void Document::moveSelectedIntoGroup(const QString& groupId) {
         if (parentOfNode(id) == groupId)
             continue;
         steps.push_back(ldoc::MoveNode{s->id, *parsed, into, at});
+        ++at;
+    }
+    if (steps.empty())
+        return;
+    run(steps.size() == 1
+            ? steps.front()
+            : ldoc::make_batch(std::move(steps),
+                               std::format("Move {} sources", steps.size())));
+}
+
+QVariantMap Document::nodeAtRow(int row) const {
+    const auto it = nodes_by_canvas_.find(current_canvas_);
+    if (it == nodes_by_canvas_.end() || !it->second)
+        return {};
+    const std::vector<NodeRow>& rows = it->second->rows();
+    if (row < 0 || static_cast<std::size_t>(row) >= rows.size())
+        return {};
+    QVariantMap m;
+    m["id"] = rows[static_cast<std::size_t>(row)].id;
+    m["isGroup"] = rows[static_cast<std::size_t>(row)].isGroup;
+    return m;
+}
+
+int Document::rowOfNode(const QString& nodeId) const {
+    const auto it = nodes_by_canvas_.find(current_canvas_);
+    if (it == nodes_by_canvas_.end() || !it->second)
+        return -1;
+    const std::vector<NodeRow>& rows = it->second->rows();
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].id == nodeId)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+bool Document::canDropAt(const QString& targetId, const QString& zone) const {
+    const ldoc::Scene* s = current_scene();
+    const auto target = parse_id(targetId);
+    if (!s || !target)
+        return false;
+    const ldoc::Node* t = ldoc::find_node(s->roots, *target);
+    if (!t)
+        return false;
+    if (zone == QLatin1String("into") && !std::holds_alternative<ldoc::GroupData>(t->data))
+        return false;
+
+    const QStringList chosen = selectedNodes();
+    if (chosen.isEmpty())
+        return false;
+    for (const QString& id : chosen) {
+        const auto parsed = parse_id(id);
+        if (!parsed)
+            continue;
+        // Into itself, or into something it contains: the move has no meaning and the tree
+        // would stop being one.
+        if (within(*s, *parsed, *target))
+            return false;
+    }
+    return true;
+}
+
+void Document::dropSelectedAt(const QString& targetId, const QString& zone) {
+    const ldoc::Scene* s = current_scene();
+    const auto target = parse_id(targetId);
+    if (!s || !target || !canDropAt(targetId, zone))
+        return;
+
+    std::optional<ldoc::Id> parent;
+    std::size_t index = 0;
+    if (zone == QLatin1String("into")) {
+        const ldoc::Node* t = ldoc::find_node(s->roots, *target);
+        const auto* g = t ? std::get_if<ldoc::GroupData>(&t->data) : nullptr;
+        parent = *target;
+        // The top of the group, which is the front of the draw order -- a layers panel drops
+        // what you dragged above what was already there.
+        index = 0;
+        static_cast<void>(g);
+    } else {
+        const Seat at = seat_of(*s, *target);
+        if (!at.found)
+            return;
+        parent = at.parent;
+        index = zone == QLatin1String("below") ? at.index + 1 : at.index;
+    }
+
+    // Moved in order, each after the last, so a multi-row drag keeps its arrangement.
+    const QStringList chosen = selectedNodes();
+    std::vector<ldoc::Command> steps;
+    std::size_t at = index;
+    for (const QString& id : chosen) {
+        const auto parsed = parse_id(id);
+        if (!parsed || inside_any(*s, chosen, *parsed))
+            continue;
+        // Moving a node down within its own parent: every node before it shifts up by one as
+        // it leaves, so the index it was given counts one too many.
+        const Seat from = seat_of(*s, *parsed);
+        std::size_t landing = at;
+        if (from.found && from.parent == parent && from.index < at && landing > 0)
+            --landing;
+        steps.push_back(ldoc::MoveNode{s->id, *parsed, parent, landing});
         ++at;
     }
     if (steps.empty())
