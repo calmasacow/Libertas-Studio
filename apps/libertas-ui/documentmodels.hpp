@@ -370,6 +370,9 @@ private:
 struct EncodeRow {
     QString id;
     QString name;
+    /// Which canvas this encode reads. The id as well as the name, because the manager lets it
+    /// be changed and a dropdown needs something to compare against (ADR-0035).
+    QString canvasId;
     QString canvasName;
     /// What leaves this encoder: the rescale when it has one, the canvas size when it does not.
     QString resolution;
@@ -391,6 +394,7 @@ public:
     enum Role {
         IdRole = Qt::UserRole + 1,
         NameRole,
+        CanvasIdRole,
         CanvasNameRole,
         ResolutionRole,
         CodecRole,

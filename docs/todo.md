@@ -313,8 +313,9 @@ were waiting on. Each is recorded as an amendment on its ADR.
 - **Moving a scene between canvases.** `Scene::canvas` is settled at creation. A canvas holding
   scenes cannot be removed and the refusal says "move or delete them first" -- which is
   currently advice with no gesture behind it.
-- **An encode of a canvas other than the current one.** `addEncode` uses the current canvas and
-  the manager has no canvas picker, so a vertical canvas cannot be given its own output yet.
+- ~~**An encode of a canvas other than the current one.**~~ Built on 2026-10-17: each encode
+  block in the Outputs Manager has a canvas dropdown
+  ([ADR-0035](adr/0035-an-encode-names-its-canvas.md)).
 - **Choosing an existing encode from an output row.** Deliberately not built: the operator chose
   the manager window over a per-row dropdown (ADR-0029 amendment). `setOutputEncode` exists and
   is covered, but nothing in the UI calls it -- the manager hangs new destinations off an

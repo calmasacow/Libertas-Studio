@@ -306,6 +306,7 @@ QVariant EncodeModel::data(const QModelIndex& index, int role) const {
     switch (role) {
     case IdRole:             return r->id;
     case NameRole:           return r->name;
+    case CanvasIdRole:       return r->canvasId;
     case CanvasNameRole:     return r->canvasName;
     case ResolutionRole:     return r->resolution;
     case CodecRole:          return r->codec;
@@ -321,6 +322,7 @@ QHash<int, QByteArray> EncodeModel::roleNames() const {
     return {
         {IdRole, "encodeId"},
         {NameRole, "name"},
+        {CanvasIdRole, "canvasId"},
         {CanvasNameRole, "canvasName"},
         {ResolutionRole, "resolution"},
         {CodecRole, "codec"},

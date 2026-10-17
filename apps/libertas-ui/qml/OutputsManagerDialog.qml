@@ -132,6 +132,7 @@ Item {
 
                         required property string encodeId
                         required property string name
+                        required property string canvasId
                         required property string canvasName
                         required property string resolution
                         required property string codec
@@ -154,10 +155,35 @@ Item {
                             width: parent.width
                             height: 40
 
+                            // Which canvas this encode reads. Without it a second canvas can
+                            // never be streamed: addEncode takes whichever canvas was current
+                            // and nothing could move it afterwards (ADR-0035).
+                            ChoiceField {
+                                id: canvasPick
+
+                                anchors.right: parent.right
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 190
+                                label: qsTr("Canvas")
+                                labelWidth: 48
+                                choices: Document.canvasNames()
+                                value: encodeBlock.canvasName
+                                onCommitted: (v) => {
+                                    const ids = Document.canvasIds();
+                                    const names = Document.canvasNames();
+                                    for (let i = 0; i < names.length; ++i) {
+                                        if (names[i] === v)
+                                            Document.setEncodeCanvas(encodeBlock.encodeId,
+                                                                     ids[i]);
+                                    }
+                                }
+                            }
+
                             Column {
                                 anchors.left: parent.left
                                 anchors.leftMargin: 10
-                                anchors.right: parent.right
+                                anchors.right: canvasPick.left
                                 anchors.rightMargin: 10
                                 anchors.verticalCenter: parent.verticalCenter
                                 spacing: 1

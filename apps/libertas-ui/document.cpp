@@ -636,6 +636,7 @@ void Document::rebuild() {
         EncodeRow row;
         row.id = id_str(e.id);
         row.name = qstr(e.name);
+        row.canvasId = id_str(e.canvas);
         row.canvasName = canvas_name(e.canvas);
         const ldoc::Canvas* c = p.canvas(e.canvas);
         const double w = e.rescale ? e.rescale->x : (c ? c->width : 0);
@@ -2187,6 +2188,28 @@ void Document::addEncode() {
     e.canvas = c->id;
     e.name = ldoc::default_encode_name(p, e);
     run(ldoc::AddEncode{std::move(e), p.encodes.size()});
+}
+
+void Document::setEncodeCanvas(const QString& id, const QString& canvasId) {
+    const auto parsed = parse_id(id);
+    const auto canvas = parse_id(canvas_key(canvasId));
+    if (!parsed || !canvas)
+        return;
+    const ldoc::Encode* existing = session_->project().encode(*parsed);
+    if (!existing)
+        return;
+    if (!session_->project().canvas(*canvas)) {
+        emit notice(QStringLiteral("That canvas is no longer in the project."));
+        return;
+    }
+    ldoc::Encode next = *existing;
+    next.canvas = *canvas;
+    // The generated name carries the resolution and the canvas decides it, so a name nobody
+    // typed has to follow the move -- the same rule setEncodeRescale works by.
+    retitle_if_auto(session_->project(), *existing, next);
+    if (next == *existing)
+        return;
+    run(ldoc::SetEncode{std::move(next)});
 }
 
 void Document::renameEncode(const QString& id, const QString& name) {

@@ -396,6 +396,10 @@ public:
     Q_INVOKABLE void addOutputOnEncode(const QString& encodeId, const QString& name);
     /// A new encode of the current canvas, with no destination on it yet.
     Q_INVOKABLE void addEncode();
+    /// Point an encode at a different canvas. Without this a second canvas can never be
+    /// streamed: `addEncode` uses whichever canvas is current and nothing could change it
+    /// afterwards (ADR-0035).
+    Q_INVOKABLE void setEncodeCanvas(const QString& id, const QString& canvasId);
     Q_INVOKABLE void renameEncode(const QString& id, const QString& name);
     Q_INVOKABLE void setEncodeRescale(const QString& id, int width, int height);
 

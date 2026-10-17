@@ -2146,6 +2146,32 @@ int main(int argc, char** argv) {
             const int encodes_before = document.encodeCount();
             document.addEncode();
             settle();
+
+            // Which canvas an encode reads has to be changeable, or a second canvas can never
+            // be streamed: addEncode takes whichever one was current (ADR-0035).
+            {
+                const QAbstractItemModel* em = document.encodesModel();
+                const int last = em->rowCount() - 1;
+                const QString enc =
+                    em->index(last, 0).data(role_of(em, "encodeId")).toString();
+                const QString was =
+                    em->index(last, 0).data(role_of(em, "canvasId")).toString();
+                report(!was.isEmpty(), "an encode says which canvas it reads");
+
+                document.addCanvas(QStringLiteral("Second"));
+                settle();
+                const QString other = document.currentCanvas();
+                document.setEncodeCanvas(enc, other);
+                settle();
+                report(em->index(last, 0).data(role_of(em, "canvasId")).toString() == other,
+                       "and can be pointed at another one");
+                report(!em->index(last, 0).data(role_of(em, "resolution")).toString().isEmpty(),
+                       "with a resolution that still reads");
+                document.setEncodeCanvas(enc, was);
+                settle();
+                document.removeCanvas(other);
+                settle();
+            }
             report(document.encodeCount() == encodes_before + 1, "an encode can be added");
 
             // Reuse, which is the whole of ADR-0029 and had no way in from the UI at all
