@@ -2824,6 +2824,99 @@ void Document::ungroupNode(const QString& nodeId) {
     emit selectionChanged();
 }
 
+void Document::selectAllNodes() {
+    const ldoc::Scene* s = current_scene();
+    if (!s || s->roots.empty())
+        return;
+    QStringList all;
+    for (const ldoc::Node& n : s->roots)
+        all << id_str(n.id);
+    // The last one leads, so the Properties panel points at the bottom of the list rather
+    // than at nothing -- and so a following ctrl-click has an anchor to measure from.
+    selected_node_ = all.takeLast();
+    also_selected_ = all;
+    selection_anchor_ = selected_node_;
+    emit selectionChanged();
+}
+
+QVariantList Document::groupsForMove() const {
+    const ldoc::Scene* s = current_scene();
+    if (!s)
+        return {};
+    const QStringList chosen = selectedNodes();
+    QVariantList out;
+    ldoc::visit(s->roots, [&](const ldoc::Node& n) {
+        if (!std::holds_alternative<ldoc::GroupData>(n.data))
+            return;
+        const QString id = id_str(n.id);
+        // Not into itself, and not into a group that is itself being moved -- the command
+        // would refuse the first and the second would take the group along with its target.
+        if (chosen.contains(id) || inside_any(*s, chosen, n.id))
+            return;
+        // Nor into a group that already holds everything selected: nothing would move.
+        bool already = !chosen.isEmpty();
+        for (const QString& sel : chosen) {
+            if (parentOfNode(sel) != id)
+                already = false;
+        }
+        if (already)
+            return;
+        QVariantMap m;
+        m["id"] = id;
+        m["name"] = qstr(n.name);
+        out.append(m);
+    });
+    return out;
+}
+
+void Document::moveSelectedIntoGroup(const QString& groupId) {
+    const ldoc::Scene* s = current_scene();
+    const QStringList chosen = selectedNodes();
+    if (!s || chosen.isEmpty())
+        return;
+
+    std::optional<ldoc::Id> into;
+    if (!groupId.isEmpty()) {
+        const auto parsed = parse_id(groupId);
+        const ldoc::Node* g = parsed ? ldoc::find_node(s->roots, *parsed) : nullptr;
+        if (!g || !std::holds_alternative<ldoc::GroupData>(g->data)) {
+            emit notice(QStringLiteral("That is not a group."));
+            return;
+        }
+        into = *parsed;
+    }
+
+    // Where they land: the end of the group, in the order they are in now, so the list reads
+    // the way it read before the move.
+    std::size_t at = 0;
+    if (into) {
+        const ldoc::Node* g = ldoc::find_node(s->roots, *into);
+        const auto* data = g ? std::get_if<ldoc::GroupData>(&g->data) : nullptr;
+        at = data ? data->children.size() : 0;
+    } else {
+        at = s->roots.size();
+    }
+
+    std::vector<ldoc::Command> steps;
+    for (const QString& id : chosen) {
+        const auto parsed = parse_id(id);
+        if (!parsed || inside_any(*s, chosen, *parsed))
+            continue;
+        // A node already in the right place is not a move, and MoveNode would make an undo
+        // step out of it.
+        if (parentOfNode(id) == groupId)
+            continue;
+        steps.push_back(ldoc::MoveNode{s->id, *parsed, into, at});
+        ++at;
+    }
+    if (steps.empty())
+        return;
+    run(steps.size() == 1
+            ? steps.front()
+            : ldoc::make_batch(std::move(steps),
+                               std::format("Move {} sources", steps.size())));
+}
+
 void Document::removeSelectedNodes() {
     const ldoc::Scene* s = current_scene();
     const QStringList chosen = selectedNodes();

@@ -85,7 +85,15 @@ manager does.
   operator is looking at. They keep their own transforms, so whatever the group's transform
   was doing to them is lost; a group here is a real container (ADR's node model), not OBS's
   presentation-only folder.
-- Not built: no rubber-band selection and no Ctrl+A.
+- `Ctrl+A` selects the scene's top-level sources. Not their children: taking those too would
+  mean a group and its contents both selected, which every operation then has to undo again
+  with `inside_any`.
+- Moving a source into an existing group is a right-click entry, `Move to "..."`, listing the
+  groups it could go to and omitting the ones it cannot -- itself, or one inside the
+  selection. There was otherwise no way to do it but making a new group. The gesture people
+  reach for is a drag, which this panel cannot do yet; `moveSelectedIntoGroup` is what a drop
+  would call when it can.
+- Not built: no rubber-band selection.
 - Delete and copy act on the whole selection, each as one `Batch`, so removing or pasting six
   is one undo. `removeSelectedNodes` and `copySelectedNodes` sit beside `groupSelectedNodes`
   and all three share `inside_any`: a node already travelling inside a selected parent is

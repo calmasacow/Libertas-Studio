@@ -174,6 +174,17 @@ public:
     Q_INVOKABLE void removeSelectedNodes();
     /// Copy every selected source. Pasting puts them all back, in scene order.
     Q_INVOKABLE void copySelectedNodes();
+    /// Select every source in the scene on screen (Ctrl+A). Top-level nodes only: taking the
+    /// children as well would mean a group and its contents both selected, which every
+    /// operation then has to undo again (ADR-0037).
+    Q_INVOKABLE void selectAllNodes();
+
+    /// Move every selected source into `groupId`, or out to the top of the scene when it is
+    /// empty. The gesture the Sources panel has instead of dragging, which it cannot do yet.
+    Q_INVOKABLE void moveSelectedIntoGroup(const QString& groupId);
+    /// The groups in the scene on screen, {id, name}, minus any that are selected or inside
+    /// something selected -- a group cannot be moved into itself.
+    Q_INVOKABLE [[nodiscard]] QVariantList groupsForMove() const;
     [[nodiscard]] QVariantMap nodeProperties() const;
     [[nodiscard]] QStringList problems() const;
     [[nodiscard]] QStringList blendModes() const;

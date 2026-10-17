@@ -212,6 +212,10 @@ void Shortcuts::perform(const QString& ref) {
         document_->groupSelectedNodes();
         return;
     }
+    if (parsed->action == "edit.select-all") {
+        document_->selectAllNodes();
+        return;
+    }
     if (parsed->action == "edit.ungroup") {
         document_->ungroupNode(document_->selectedNode());
         return;

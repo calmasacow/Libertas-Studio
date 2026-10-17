@@ -1390,6 +1390,57 @@ int main(int argc, char** argv) {
             document.undo();
             document.undo();
             settle();
+
+            // Ctrl+A, and moving into a group that already exists -- the panel cannot drag,
+            // so these are the gestures that make a group usable at all (ADR-0037).
+            document.selectNode(QString{});
+            settle();
+            document.selectAllNodes();
+            settle();
+            const int top_level = document.nodesModel()->rowCount();
+            report(document.selectedNodes().size() > 1 &&
+                       document.selectedNodes().size() <= top_level,
+                   "select all takes the scene's sources");
+
+            document.selectNode(a);
+            document.selectNodeExtended(canvas, b, true, false);
+            settle();
+            document.groupSelectedNodes();
+            settle();
+            const QString target = document.selectedNode();
+
+            document.selectNode(pick_c);
+            settle();
+            bool offered_target = false;
+            for (const QVariant& v : document.groupsForMove())
+                offered_target = offered_target || v.toMap().value("id").toString() == target;
+            report(offered_target, "an existing group is offered to move into");
+
+            document.moveSelectedIntoGroup(target);
+            settle();
+            report(document.parentOfNode(pick_c) == target,
+                   "and the source lands inside it");
+
+            // A group cannot be moved into itself, which is the one case the command would
+            // have to refuse.
+            document.selectNode(target);
+            settle();
+            bool offered_itself = false;
+            for (const QVariant& v : document.groupsForMove())
+                offered_itself = offered_itself || v.toMap().value("id").toString() == target;
+            report(!offered_itself, "a group is never offered to move into itself");
+
+            document.selectNode(pick_c);
+            settle();
+            document.moveSelectedIntoGroup(QString{});
+            settle();
+            report(document.parentOfNode(pick_c).isEmpty(),
+                   "and it can be moved back out");
+
+            document.undo();
+            document.undo();
+            document.undo();
+            settle();
             static_cast<void>(outer);
 
             // And through the pointer, with the modifier actually held. Calling

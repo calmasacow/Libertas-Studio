@@ -45,6 +45,8 @@ const std::vector<ActionDef>& catalogue() {
          ArgumentKind::None, "Ctrl+G"},
         {"edit.ungroup", "Ungroup", "Editing", Scope::Application, ArgumentKind::None,
          "Ctrl+Shift+G"},
+        {"edit.select-all", "Select All Sources", "Editing", Scope::Application,
+         ArgumentKind::None, "Ctrl+A"},
 
         // --- the workspace, application scope ---------------------------------------------
         //

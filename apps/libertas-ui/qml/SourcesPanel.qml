@@ -165,6 +165,25 @@ Item {
                             }
                         });
                     }
+                    // Into an existing group, which there is otherwise no way to do: the
+                    // panel cannot drag yet, so this is the gesture (ADR-0037).
+                    const groups = Document.groupsForMove();
+                    for (let i = 0; i < groups.length; ++i) {
+                        const g = groups[i];
+                        rows.push({
+                            text: qsTr("Move to “%1”").arg(g.name),
+                            checked: false,
+                            action: () => Document.moveSelectedIntoGroup(g.id)
+                        });
+                    }
+                    // And back out, offered only when there is something to come out of.
+                    if (Document.parentOfNode(row.nodeId) !== "") {
+                        rows.push({
+                            text: qsTr("Move out of group"),
+                            checked: false,
+                            action: () => Document.moveSelectedIntoGroup("")
+                        });
+                    }
                     // Taking a group apart, beside the gesture that makes one.
                     if (row.isGroup) {
                         rows.push({

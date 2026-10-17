@@ -32,9 +32,10 @@ scene order.
 
 ### Still open here
 
-- **No rubber-band selection and no Ctrl+A.**
-- **No way to move a source into an existing group** except by making a new one. Drag within
-  the Sources panel would be the gesture; nothing drags there yet.
+- **No rubber-band selection.** `Ctrl+A` exists; dragging a box over rows does not.
+- **The Sources panel still cannot drag.** Moving a source into a group is a right-click menu
+  entry ("Move to ...") rather than a drag, which is the gesture people reach for. The
+  invokable behind it, `moveSelectedIntoGroup`, is what a drop would call.
 - **Properties blanks above one selection** by the operator's choice. Editing all of them is
   the bigger feature: every field needs a mixed-value state and every setter becomes a batch.
 
