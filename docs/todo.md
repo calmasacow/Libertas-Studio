@@ -59,8 +59,10 @@ why an unknown type answers "has audio" when `is_self_contained` answers "no".
 
 ## Per-canvas scenes and sources, with scene linking
 
-**Answered by the operator on 2026-10-13 and written up as
-[ADR-0027](adr/0027-scenes-belong-to-a-canvas.md). Not built yet.**
+**Answered by the operator on 2026-10-13, written up as
+[ADR-0027](adr/0027-scenes-belong-to-a-canvas.md), and built on 2026-10-14 and 2026-10-15.**
+All three numbered items below are done; the section is kept for the reasoning, and what is
+still open is listed under "The canvas UI" and "A canvas you can see" above.
 
 The answer was simpler than this file guessed. Canvases are completely independent, each owning
 its own scene list, and nothing about a scene's *contents* ever crosses between them. A link is
@@ -81,8 +83,10 @@ What that leaves to build, in the order it has to happen:
 
 ## The canvas panel, and the two manager dialogs
 
-**Designed by the operator on 2026-10-13, with mockups. Not built; most of it waits on
-[ADR-0027](adr/0027-scenes-belong-to-a-canvas.md).**
+**Designed by the operator on 2026-10-13, with mockups. The Canvas panel, the Canvas Manager
+and the Outputs Manager were built on 2026-10-14.** What remains unbuilt here is listed under
+"What has to be answered before this is built" below: Backtrack as an output kind, hotkeys,
+custom stream delay, and the full encoder sheet. Clone Canvas is deferred post-1.0.
 
 ### The panels
 
