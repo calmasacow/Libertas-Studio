@@ -27,6 +27,10 @@ Item {
     property real gainMin: -60
     property real gainMax: 12
 
+    /// The fader will not move (ADR-0032). Refused here rather than by not wiring the signals,
+    /// so the knob can say so before the refusal is discovered by pushing it.
+    property bool locked: false
+
     property bool dragging: false
     property real shownGain: fader.gainDb
 
@@ -96,9 +100,13 @@ Item {
         width: 24
         height: 10
         radius: 2
-        color: mouse.pressed ? Theme.c.accent : Theme.c.panelHeaderActive
+        color: fader.locked ? Theme.c.panelHeader
+             : mouse.pressed ? Theme.c.accent
+             : Theme.c.panelHeaderActive
         border.width: 1
-        border.color: mouse.containsMouse || mouse.pressed ? Theme.c.accent : Theme.c.border
+        border.color: fader.locked ? Theme.c.textMuted
+                    : mouse.containsMouse || mouse.pressed ? Theme.c.accent
+                    : Theme.c.border
     }
 
     MouseArea {
@@ -109,6 +117,8 @@ Item {
         hoverEnabled: true
 
         onPressed: (ev) => {
+            if (fader.locked)
+                return;
             fader.dragging = true;
             fader.shownGain = fader.dbAt(ev.y);
             fader.moved(fader.shownGain);
@@ -134,11 +144,16 @@ Item {
         // A wheel is the keyboard-adjacent way to trim a fader, and one notch is one command,
         // so it does not need the drag treatment.
         onWheel: (wheel) => {
+            if (fader.locked)
+                return;
             const step = wheel.modifiers & Qt.ShiftModifier ? 0.25 : 1.0;
             fader.moved(Math.max(fader.gainMin,
                                  Math.min(fader.gainMax,
                                           fader.gainDb + (wheel.angleDelta.y > 0 ? step : -step))));
         }
-        onDoubleClicked: fader.reset()
+        onDoubleClicked: {
+            if (!fader.locked)
+                fader.reset();
+        }
     }
 }

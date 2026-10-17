@@ -1120,9 +1120,12 @@ int main(int argc, char** argv) {
         // it has to undo.
         const auto bus_strips = [&] { return collect(window->contentItem(),
                                                      QStringLiteral("busStrip")); };
-        const auto bus_at = [&](int row, int role) {
-            return document.busesModel()->data(document.busesModel()->index(row, 0),
-                                               Qt::UserRole + role);
+        // By name, not by offset. The positional form was here until inserting three roles
+        // silently re-pointed four checks at the wrong columns, and inserting "hidden" and
+        // "levelLocked" would have done it again.
+        const auto bus_at = [&](int row, const char* role) {
+            const QAbstractItemModel* m = document.busesModel();
+            return m->data(m->index(row, 0), role_of(m, role));
         };
         settle();
         const int buses_before = document.busesModel()->rowCount();
@@ -1244,6 +1247,59 @@ int main(int argc, char** argv) {
             }
             report(mix_untouched, "and changes nothing about the mix going out");
 
+            // Hiding and locking (ADR-0032). Both are document state, so both undo; neither
+            // may touch the audio, which is the rule worth a test rather than a comment.
+            report(document.hiddenStripCount() == 0, "nothing starts hidden");
+            const double gain_before_hide = [&] {
+                for (int i = 0; i < sm->rowCount(); ++i) {
+                    if (sm->index(i, 0).data(role_of(sm, "nodeId")).toString() == mic_node)
+                        return sm->index(i, 0).data(role_of(sm, "gainDb")).toDouble();
+                }
+                return 0.0;
+            }();
+
+            document.setNodeHidden(scene_now, mic_node, true);
+            settle();
+            report(document.hiddenStripCount() == 1, "a strip can be hidden");
+            {
+                bool still_there = false;
+                bool gain_kept = false;
+                bool muted_by_hiding = false;
+                for (int i = 0; i < sm->rowCount(); ++i) {
+                    if (sm->index(i, 0).data(role_of(sm, "nodeId")).toString() != mic_node)
+                        continue;
+                    still_there = true;
+                    gain_kept = qFuzzyCompare(
+                        sm->index(i, 0).data(role_of(sm, "gainDb")).toDouble(),
+                        gain_before_hide);
+                    muted_by_hiding = sm->index(i, 0).data(role_of(sm, "mute")).toBool();
+                }
+                // The rule: hiding hides a control, never audio. A hidden strip stays in the
+                // model, at its gain, unmuted -- it is still going to air.
+                report(still_there && gain_kept && !muted_by_hiding,
+                       "and is still in the mix at its own level, unmuted");
+            }
+
+            document.setNodeLevelLocked(scene_now, mic_node, true);
+            settle();
+            {
+                bool locked = false;
+                bool mutable_still = true;
+                for (int i = 0; i < sm->rowCount(); ++i) {
+                    if (sm->index(i, 0).data(role_of(sm, "nodeId")).toString() != mic_node)
+                        continue;
+                    locked = sm->index(i, 0).data(role_of(sm, "levelLocked")).toBool();
+                    mutable_still = !sm->index(i, 0).data(role_of(sm, "mute")).toBool();
+                }
+                report(locked && mutable_still,
+                       "a level can be locked, and a locked strip can still be muted");
+            }
+
+            document.undo();
+            document.undo();
+            settle();
+            report(document.hiddenStripCount() == 0, "both of which undo");
+
             document.undo();
             document.undo();
             settle();
@@ -1275,14 +1331,14 @@ int main(int argc, char** argv) {
         report(document.busesModel()->rowCount() == buses_before + 1, "a bus can be added");
         report(bus_strips().size() == buses_before + 1, "and the mixer redrew");
 
-        const QString new_bus = bus_at(buses_before, 1).toString();
+        const QString new_bus = bus_at(buses_before, "busId").toString();
         document.setBusGain(new_bus, -6.5);
         document.setBusMute(new_bus, true);
         document.setBusPan(new_bus, -0.5);
         settle();
-        report(qFuzzyCompare(bus_at(buses_before, 4).toDouble(), -6.5), "its fader moves");
-        report(bus_at(buses_before, 6).toBool(), "it can be muted");
-        report(qFuzzyCompare(bus_at(buses_before, 5).toDouble(), -0.5), "and panned");
+        report(qFuzzyCompare(bus_at(buses_before, "gainDb").toDouble(), -6.5), "its fader moves");
+        report(bus_at(buses_before, "mute").toBool(), "it can be muted");
+        report(qFuzzyCompare(bus_at(buses_before, "pan").toDouble(), -0.5), "and panned");
 
         // The fader as an operator actually reaches it: synthetic mouse events delivered to the
         // window, so the QML handlers run.
@@ -1313,11 +1369,11 @@ int main(int argc, char** argv) {
                 report(!dragged_bus.isEmpty(), "and the strip it belongs to names its bus");
                 int dragged_row = -1;
                 for (int r = 0; r < document.busesModel()->rowCount(); ++r) {
-                    if (bus_at(r, 1).toString() == dragged_bus)
+                    if (bus_at(r, "busId").toString() == dragged_bus)
                         dragged_row = r;
                 }
                 const auto gain_of_dragged = [&] {
-                    return dragged_row < 0 ? 0.0 : bus_at(dragged_row, 4).toDouble();
+                    return dragged_row < 0 ? 0.0 : bus_at(dragged_row, "gainDb").toDouble();
                 };
 
                 const QPointF top = fader->mapToScene(QPointF(fader->width() / 2.0, 2.0));
@@ -1366,17 +1422,17 @@ int main(int argc, char** argv) {
 
         // A dragged fader: many commands, one undo step, landing where the drag began.
         {
-            const double start = bus_at(buses_before, 4).toDouble();
+            const double start = bus_at(buses_before, "gainDb").toDouble();
             const QString was = document.undoDescription();
             for (int i = 0; i < 40; ++i)
                 document.setBusGain(new_bus, -20.0 + i * 0.25, true);
             settle();
-            report(qFuzzyCompare(bus_at(buses_before, 4).toDouble(), -20.0 + 39 * 0.25),
+            report(qFuzzyCompare(bus_at(buses_before, "gainDb").toDouble(), -20.0 + 39 * 0.25),
                    "a dragged fader follows the drag");
             document.endGesture();
             document.undo();
             settle();
-            report(qFuzzyCompare(bus_at(buses_before, 4).toDouble(), start),
+            report(qFuzzyCompare(bus_at(buses_before, "gainDb").toDouble(), start),
                    "and one undo puts it back where the drag started");
             report(document.undoDescription() == was,
                    "having used exactly one undo step for the whole drag");
@@ -1394,7 +1450,7 @@ int main(int argc, char** argv) {
 
         document.setBusPan(new_bus, 4.0);
         settle();
-        report(bus_at(buses_before, 5).toDouble() <= 1.0, "a pan outside the range is clamped");
+        report(bus_at(buses_before, "pan").toDouble() <= 1.0, "a pan outside the range is clamped");
 
         // Routing: a source node's audio has to be able to reach a bus, and be taken off it again.
         document.addSourceNode(QStringLiteral("Mic"));
@@ -1423,9 +1479,9 @@ int main(int argc, char** argv) {
             settle();
             report(document.nodeProperties().value("audioBus").toString() == new_bus,
                    "it can be routed to a bus");
-            report(bus_at(buses_before, 9).toInt() == 1,
+            report(bus_at(buses_before, "feedCount").toInt() == 1,
                    "which the bus strip counts as something feeding it");
-            report(bus_at(buses_before, 11).toBool(),
+            report(bus_at(buses_before, "carriesSelection").toBool(),
                    "and marks as carrying the selection");
 
             document.setSelectedNodeGain(-3.0);

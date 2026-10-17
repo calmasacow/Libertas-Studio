@@ -531,6 +531,8 @@ void Document::rebuild() {
         row.pan = b.pan;
         row.mute = b.mute;
         row.monitor = b.monitor;
+        row.hidden = b.hidden;
+        row.levelLocked = b.level_locked;
         row.channels = b.channels;
         row.sendCount = static_cast<int>(b.sends.size());
         // Every scene, not just the selected one: a bus is project-level, and the question the
@@ -578,6 +580,8 @@ void Document::rebuild() {
             row.gainDb = placed->audio.gain_db;
             row.mute = placed->audio.mute;
             row.monitor = placed->audio.monitor;
+            row.hidden = placed->audio.hidden;
+            row.levelLocked = placed->audio.level_locked;
             row.selected = row.nodeId == selected_node_;
             strips.push_back(std::move(row));
         });
@@ -1683,6 +1687,27 @@ void Document::setBusMonitor(const QString& id, bool monitor) {
     edit_bus(id, [monitor](ldoc::Bus& b) { b.monitor = monitor; });
 }
 
+int Document::hiddenStripCount() const {
+    int n = 0;
+    for (const BusRow& b : buses_.rows()) {
+        if (b.hidden)
+            ++n;
+    }
+    for (const MixerStripRow& r : mixer_strips_.rows()) {
+        if (r.hidden)
+            ++n;
+    }
+    return n;
+}
+
+void Document::setBusHidden(const QString& id, bool hidden) {
+    edit_bus(id, [hidden](ldoc::Bus& b) { b.hidden = hidden; });
+}
+
+void Document::setBusLevelLocked(const QString& id, bool locked) {
+    edit_bus(id, [locked](ldoc::Bus& b) { b.level_locked = locked; });
+}
+
 /// Same shape for the selected source node's own routing, for the same reason.
 void Document::edit_node_audio(const QString& sceneId, const QString& nodeId,
                                const std::function<void(ldoc::AudioRouting&)>& change,
@@ -1739,6 +1764,15 @@ void Document::setNodeMute(const QString& sceneId, const QString& nodeId, bool m
 
 void Document::setNodeMonitor(const QString& sceneId, const QString& nodeId, bool monitor) {
     edit_node_audio(sceneId, nodeId, [monitor](ldoc::AudioRouting& a) { a.monitor = monitor; });
+}
+
+void Document::setNodeHidden(const QString& sceneId, const QString& nodeId, bool hidden) {
+    edit_node_audio(sceneId, nodeId, [hidden](ldoc::AudioRouting& a) { a.hidden = hidden; });
+}
+
+void Document::setNodeLevelLocked(const QString& sceneId, const QString& nodeId, bool locked) {
+    edit_node_audio(sceneId, nodeId,
+                    [locked](ldoc::AudioRouting& a) { a.level_locked = locked; });
 }
 
 void Document::routeNode(const QString& sceneId, const QString& nodeId, const QString& busId) {

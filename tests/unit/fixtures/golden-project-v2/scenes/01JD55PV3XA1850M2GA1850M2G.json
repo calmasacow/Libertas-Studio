@@ -42,6 +42,8 @@
               {
                 "bus" : "01JD55PV3X40G2081040G20810",
                 "gain_db" : -3.0,
+                "hidden" : false,
+                "level_locked" : false,
                 "monitor" : false,
                 "mute" : false,
                 "sends" : []

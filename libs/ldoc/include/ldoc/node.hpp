@@ -47,6 +47,12 @@ struct AudioRouting {
     bool mute = false;
     /// Heard locally without touching the program mix (ADR-0031).
     bool monitor = false;
+    /// Not drawn in the mixer unless "show hidden" is on. A hidden strip is still routed, still
+    /// at this gain and still going to air: this hides a control, never audio (ADR-0032).
+    bool hidden = false;
+    /// The fader will not move. Mute still works -- a lock that blocked the control reached for
+    /// in an emergency would be a hazard rather than a tidiness feature.
+    bool level_locked = false;
 
     friend bool operator==(const AudioRouting&, const AudioRouting&) = default;
 };

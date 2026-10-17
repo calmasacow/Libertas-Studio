@@ -21,6 +21,8 @@
         {
           "bus" : null,
           "gain_db" : 0.0,
+          "hidden" : false,
+          "level_locked" : false,
           "monitor" : false,
           "mute" : false,
           "sends" : []

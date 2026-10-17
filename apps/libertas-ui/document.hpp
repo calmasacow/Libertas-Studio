@@ -294,6 +294,14 @@ public:
     /// Heard locally. Never changes the program mix, and there is deliberately no solo
     /// (ADR-0031): solo here would be document state, so it would silence other buses on air.
     Q_INVOKABLE void setBusMonitor(const QString& id, bool monitor);
+    /// Hides the strip and nothing else: still routed, still on air (ADR-0032).
+    Q_INVOKABLE void setBusHidden(const QString& id, bool hidden);
+    /// How many strips are hidden, both halves counted. Asked of the document rather than
+    /// counted in QML, which would have to name model roles by numeric offset -- the exact
+    /// thing that silently re-pointed four self-check assertions when a role was inserted.
+    Q_INVOKABLE [[nodiscard]] int hiddenStripCount() const;
+    /// Stops the fader and nothing else. Mute still works.
+    Q_INVOKABLE void setBusLevelLocked(const QString& id, bool locked);
 
     /// Send the selected source node's audio to this bus, or to nothing when the id is empty.
     /// Unrouted is not the same as muted, and the mixer says which it is.
@@ -308,6 +316,9 @@ public:
     Q_INVOKABLE void setNodeMute(const QString& sceneId, const QString& nodeId, bool mute);
     Q_INVOKABLE void setNodeMonitor(const QString& sceneId, const QString& nodeId,
                                     bool monitor);
+    Q_INVOKABLE void setNodeHidden(const QString& sceneId, const QString& nodeId, bool hidden);
+    Q_INVOKABLE void setNodeLevelLocked(const QString& sceneId, const QString& nodeId,
+                                        bool locked);
     Q_INVOKABLE void routeNode(const QString& sceneId, const QString& nodeId,
                                const QString& busId);
 

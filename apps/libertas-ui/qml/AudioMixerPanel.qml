@@ -22,7 +22,17 @@ import Libertas
 Item {
     id: panel
 
-    property bool adding: false
+    /// Whether hidden strips are drawn. A view toggle, so it lives here rather than in the
+    /// document: it is what one operator is looking at now, not a property of the show
+    /// (ADR-0032).
+    property bool showHidden: false
+
+    /// How many strips are hidden right now, across both halves. Drives the footer caption and
+    /// whether the eye is worth pressing.
+    readonly property int hiddenCount: {
+        void Document.revision;
+        return Document.hiddenStripCount();
+    }
     /// Below this the routing line goes, because a strip's fader matters more than a sentence
     /// about the selected source -- the arrow on each strip still routes it. 130 is the panel's
     /// minimum height in llayout, and this has to leave a usable strip at that size.
@@ -80,11 +90,17 @@ Item {
             required property real gainDb
             required property bool mute
             required property bool monitor
+            required property bool hidden
+            required property bool levelLocked
             required property bool selected
 
             objectName: "sourceStrip"
-            width: 84
+            // A hidden strip takes no room unless "show hidden" is on, and is dimmed when it
+            // does, so "hidden but revealed" is never mistaken for an ordinary strip.
+            visible: !src.hidden || panel.showHidden
+            width: src.visible ? 84 : 0
             height: ListView.view.height
+            opacity: src.hidden ? 0.45 : 1.0
 
             property real shownGain: src.gainDb
             property bool dragging: false
@@ -142,6 +158,7 @@ Item {
                     muted: src.mute
                     gainMin: panel.gainMin
                     gainMax: panel.gainMax
+                    locked: src.levelLocked
                     onMoved: (db) => Document.setNodeGain(src.sceneId, src.nodeId, db, true)
                     onReleased: Document.endGesture()
                     onReset: Document.setNodeGain(src.sceneId, src.nodeId, 0)
@@ -193,11 +210,30 @@ Item {
 
             MouseArea {
                 anchors.fill: parent
-                acceptedButtons: Qt.LeftButton
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
                 // Behind the controls, so clicking the strip selects the node without
                 // swallowing a fader drag or the mute button.
                 z: -1
-                onClicked: Document.selectNode(src.nodeId)
+                onClicked: (ev) => {
+                    Document.selectNode(src.nodeId);
+                    if (ev.button !== Qt.RightButton)
+                        return;
+                    const at = mapToItem(panel, ev.x, ev.y);
+                    stripMenu.popup(at.x, at.y, [
+                        {
+                            text: qsTr("Lock Level"),
+                            checked: src.levelLocked,
+                            action: () => Document.setNodeLevelLocked(
+                                src.sceneId, src.nodeId, !src.levelLocked)
+                        },
+                        {
+                            text: qsTr("Hide source"),
+                            checked: src.hidden,
+                            action: () => Document.setNodeHidden(
+                                src.sceneId, src.nodeId, !src.hidden)
+                        }
+                    ]);
+                }
             }
         }
 
@@ -260,14 +296,18 @@ Item {
             required property real pan
             required property bool mute
             required property bool monitor
+            required property bool hidden
+            required property bool levelLocked
             required property int channels
             required property int feedCount
             required property int sendCount
             required property bool carriesSelection
 
             objectName: "busStrip"
-            width: 84
+            visible: !strip.hidden || panel.showHidden
+            width: strip.visible ? 84 : 0
             height: ListView.view.height
+            opacity: strip.hidden ? 0.45 : 1.0
 
             /// What the fader is showing right now. It follows the document except while being
             /// dragged, so the value under the finger is not fighting the model's.
@@ -288,6 +328,29 @@ Item {
             onGainDbChanged: {
                 if (!strip.dragging)
                     strip.shownGain = strip.gainDb;
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.RightButton
+                // Behind the controls, so it cannot swallow a fader drag or a button.
+                z: -1
+                onClicked: (ev) => {
+                    const at = mapToItem(panel, ev.x, ev.y);
+                    stripMenu.popup(at.x, at.y, [
+                        {
+                            text: qsTr("Lock Level"),
+                            checked: strip.levelLocked,
+                            action: () => Document.setBusLevelLocked(
+                                strip.busId, !strip.levelLocked)
+                        },
+                        {
+                            text: qsTr("Hide source"),
+                            checked: strip.hidden,
+                            action: () => Document.setBusHidden(strip.busId, !strip.hidden)
+                        }
+                    ]);
+                }
             }
 
             Rectangle {
@@ -394,6 +457,7 @@ Item {
                     muted: strip.mute
                     gainMin: panel.gainMin
                     gainMax: panel.gainMax
+                    locked: strip.levelLocked
                     onMoved: (db) => Document.setBusGain(strip.busId, db, true)
                     onReleased: Document.endGesture()
                     onReset: Document.setBusGain(strip.busId, 0)
@@ -507,7 +571,7 @@ Item {
 
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: kindPicker.visible ? kindPicker.top : footer.top
+        anchors.bottom: footer.top
         height: visible ? 30 : 0
         visible: panel.showRouting
         color: Theme.c.panelBackground
@@ -577,89 +641,10 @@ Item {
         }
     }
 
-    Rectangle {
-        id: kindPicker
+    StripMenu {
+        id: stripMenu
 
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: footer.top
-        height: visible ? Math.min(kindList.contentHeight + 22, 180) : 0
-        visible: panel.adding
-        color: Theme.c.panelHeader
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            height: 1
-            color: Theme.c.accent
-        }
-
-        Text {
-            id: pickerCaption
-
-            anchors.left: parent.left
-            anchors.leftMargin: 10
-            anchors.top: parent.top
-            anchors.topMargin: 4
-            text: qsTr("New bus")
-            font.pixelSize: 10
-            font.weight: Font.DemiBold
-            color: Theme.c.accent
-        }
-
-        ListView {
-            id: kindList
-
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: pickerCaption.bottom
-            anchors.topMargin: 2
-            anchors.bottom: parent.bottom
-            clip: true
-            model: Document.busKinds
-            boundsBehavior: Flickable.StopAtBounds
-
-            delegate: Rectangle {
-                id: kindRow
-
-                required property var modelData
-
-                width: kindList.width
-                height: 20
-                color: kindMouse.containsMouse ? Theme.c.accent : "transparent"
-
-                Text {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: kindRow.modelData.title
-                    font.pixelSize: 11
-                    color: kindMouse.containsMouse ? Theme.c.window : Theme.c.text
-                }
-
-                Text {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: kindRow.modelData.note
-                    font.pixelSize: 9
-                    color: kindMouse.containsMouse ? Theme.c.window : Theme.c.textMuted
-                    opacity: 0.8
-                }
-
-                MouseArea {
-                    id: kindMouse
-
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    onClicked: {
-                        Document.addBus(kindRow.modelData.title, kindRow.modelData.id);
-                        panel.adding = false;
-                    }
-                }
-            }
-        }
+        z: 100
     }
 
     Rectangle {
@@ -685,17 +670,34 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 4
 
+            // No add button: a bus is not a thing made from here, and a source strip comes
+            // from the scene (ADR-0032). What this corner is for is seeing what is hidden.
             ToolButton {
-                label: panel.adding ? "×" : "+"
-                tip: panel.adding ? qsTr("Cancel") : qsTr("Add bus")
-                onClicked: panel.adding = !panel.adding
+                objectName: "showHiddenToggle"
+                label: ""
+                tip: panel.showHidden ? qsTr("Hide hidden strips")
+                                      : qsTr("Show hidden strips")
+                active: panel.showHidden
+                enabled: panel.hiddenCount > 0 || panel.showHidden
+                onClicked: panel.showHidden = !panel.showHidden
+
+                EyeIcon {
+                    anchors.centerIn: parent
+                    open: panel.showHidden
+                    color: parent.enabled ? Theme.c.text : Theme.c.textMuted
+                }
             }
         }
 
-        // Says what this panel cannot do, where it cannot be mistaken for something it can.
+        // Says what this panel cannot do, where it cannot be mistaken for something it can --
+        // and, when anything is hidden, says so, because a missing microphone during a show
+        // has to be answerable from the panel rather than being a mystery.
         Text {
             anchors.centerIn: parent
-            text: qsTr("no audio host — levels only")
+            text: panel.hiddenCount === 0
+                  ? qsTr("no audio host — levels only")
+                  : qsTr("%n strip(s) hidden · no audio host — levels only", "",
+                         panel.hiddenCount)
             font.pixelSize: 9
             color: Theme.c.textMuted
             opacity: 0.6

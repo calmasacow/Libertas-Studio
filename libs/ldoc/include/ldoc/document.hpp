@@ -75,6 +75,10 @@ struct Bus {
     /// console solo is a monitoring aid, but this is document state the program mix is built
     /// from, so it would silence every other bus on air.
     bool monitor = false;
+    /// Mixer view state that belongs to the show, not the workspace (ADR-0032). Hidden hides a
+    /// strip and nothing else; locked stops the fader and nothing else.
+    bool hidden = false;
+    bool level_locked = false;
     double delay_ms = 0.0;
 
     friend bool operator==(const Bus&, const Bus&) = default;

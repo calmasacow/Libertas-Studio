@@ -159,6 +159,8 @@ struct BusRow {
     double pan = 0.0;
     bool mute = false;
     bool monitor = false;
+    bool hidden = false;
+    bool levelLocked = false;
     int channels = 2;
     /// How many source nodes, across every scene, route here. The mixer shows it because a bus with
     /// nothing feeding it looks identical to a working one until the show starts.
@@ -182,6 +184,8 @@ public:
         PanRole,
         MuteRole,
         MonitorRole,
+        HiddenRole,
+        LevelLockedRole,
         ChannelsRole,
         FeedCountRole,
         SendCountRole,
@@ -220,6 +224,10 @@ struct MixerStripRow {
     bool mute = false;
     /// Heard locally; never changes the program mix (ADR-0031).
     bool monitor = false;
+    /// Hidden from this panel only -- still routed, still on air (ADR-0032).
+    bool hidden = false;
+    /// The fader will not move. Mute still works.
+    bool levelLocked = false;
     bool selected = false;
 
     friend bool operator==(const MixerStripRow&, const MixerStripRow&) = default;
@@ -239,6 +247,8 @@ public:
         GainDbRole,
         MuteRole,
         MonitorRole,
+        HiddenRole,
+        LevelLockedRole,
         SelectedRole,
     };
 

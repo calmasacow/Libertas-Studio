@@ -113,6 +113,8 @@ QVariant BusModel::data(const QModelIndex& index, int role) const {
     case PanRole:              return r->pan;
     case MuteRole:             return r->mute;
     case MonitorRole:          return r->monitor;
+    case HiddenRole:           return r->hidden;
+    case LevelLockedRole:      return r->levelLocked;
     case ChannelsRole:         return r->channels;
     case FeedCountRole:        return r->feedCount;
     case SendCountRole:        return r->sendCount;
@@ -126,7 +128,8 @@ QHash<int, QByteArray> BusModel::roleNames() const {
         {IdRole, "busId"},           {NameRole, "name"},
         {KindRole, "kind"},          {GainDbRole, "gainDb"},
         {PanRole, "pan"},            {MuteRole, "mute"},
-        {MonitorRole, "monitor"},    {ChannelsRole, "channels"},
+        {MonitorRole, "monitor"},    {HiddenRole, "hidden"},
+        {LevelLockedRole, "levelLocked"}, {ChannelsRole, "channels"},
         {FeedCountRole, "feedCount"}, {SendCountRole, "sendCount"},
         {CarriesSelectionRole, "carriesSelection"},
     };
@@ -150,6 +153,8 @@ QVariant MixerStripModel::data(const QModelIndex& index, int role) const {
     case GainDbRole:   return r->gainDb;
     case MuteRole:     return r->mute;
     case MonitorRole:  return r->monitor;
+    case HiddenRole:   return r->hidden;
+    case LevelLockedRole: return r->levelLocked;
     case SelectedRole: return r->selected;
     default:           return {};
     }
@@ -161,7 +166,8 @@ QHash<int, QByteArray> MixerStripModel::roleNames() const {
         {SceneIdRole, "sceneId"}, {NameRole, "name"},
         {BusIdRole, "busId"},     {BusNameRole, "busName"},
         {GainDbRole, "gainDb"},   {MuteRole, "mute"},
-        {MonitorRole, "monitor"}, {SelectedRole, "selected"},
+        {MonitorRole, "monitor"}, {HiddenRole, "hidden"},
+        {LevelLockedRole, "levelLocked"}, {SelectedRole, "selected"},
     };
 }
 

@@ -182,6 +182,8 @@ Jv enc(const AudioRouting& a) {
     o["gain_db"] = a.gain_db;
     o["mute"] = a.mute;
     o["monitor"] = a.monitor;
+    o["hidden"] = a.hidden;
+    o["level_locked"] = a.level_locked;
     return o;
 }
 
@@ -259,6 +261,8 @@ Jv enc(const Bus& b) {
     o["pan"] = b.pan;
     o["mute"] = b.mute;
     o["monitor"] = b.monitor;
+    o["hidden"] = b.hidden;
+    o["level_locked"] = b.level_locked;
     o["delay_ms"] = b.delay_ms;
     return o;
 }
@@ -737,6 +741,8 @@ AudioRouting dec_audio_routing(Rd& rd, const Jv& o, std::string_view path) {
     a.gain_db = rd.number(o, "gain_db", path, 0.0);
     a.mute = rd.boolean(o, "mute", path, false);
     a.monitor = rd.boolean(o, "monitor", path, false);
+    a.hidden = rd.boolean(o, "hidden", path, false);
+    a.level_locked = rd.boolean(o, "level_locked", path, false);
     return a;
 }
 
@@ -851,6 +857,8 @@ Bus dec_bus(Rd& rd, const Jv& v, std::string_view path) {
     // A project written before ADR-0031 carries "solo" here. Unknown keys are ignored, so it
     // simply drops: nothing ever acted on it.
     b.monitor = rd.boolean(v, "monitor", path, false);
+    b.hidden = rd.boolean(v, "hidden", path, false);
+    b.level_locked = rd.boolean(v, "level_locked", path, false);
     b.delay_ms = rd.number(v, "delay_ms", path, 0.0);
     return b;
 }

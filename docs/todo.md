@@ -40,6 +40,10 @@ why an unknown type answers "has audio" when `is_self_contained` answers "no".
   state: it would silence other buses *on air*, not just in the operator's headphones.
 - **Nothing monitors anything yet.** `monitor` is document state the audio host will read, the
   same as the faders are. The rule it has to keep: monitoring never changes the program mix.
+- **The closed eye reads as an umbrella.** `EyeIcon.qml` draws the lid as the lower half of
+  the almond with lashes below, and at 14 pixels the flat top does not say "shut". Accepted
+  during development on 2026-10-16 -- "it will get change for permanent icons later" -- and
+  parked with the rest of the styling below.
 - **The strips are not styled yet** — "that is fine we will make it pretty later", 2026-10-16.
   Correct in behaviour, plain on screen. The operator's reference (an Elgato Wave Link strip)
   carries a level meter beside the fader, a numbered dB scale down its side, and a headphone
