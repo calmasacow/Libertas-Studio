@@ -40,6 +40,13 @@ why an unknown type answers "has audio" when `is_self_contained` answers "no".
   state: it would silence other buses *on air*, not just in the operator's headphones.
 - **Nothing monitors anything yet.** `monitor` is document state the audio host will read, the
   same as the faders are. The rule it has to keep: monitoring never changes the program mix.
+- **The strips are not styled yet** — "that is fine we will make it pretty later", 2026-10-16.
+  Correct in behaviour, plain on screen. The operator's reference (an Elgato Wave Link strip)
+  carries a level meter beside the fader, a numbered dB scale down its side, and a headphone
+  glyph on the monitor button. The meter waits on the audio host; the scale and the glyph do
+  not. Note on the glyph: U+1F3A7 resolves to Noto Color Emoji here and colour emoji cannot be
+  tinted, so a latched monitor would look identical to an unlatched one -- it has to be drawn,
+  as `ChainIcon.qml` is, which is why the button says "H" today.
 - **No way to change a strip's bus from the strip.** `routeNode` exists and is covered, but the
   only route control on screen is still the selected-node line along the bottom.
 - **One mixer, not one per canvas.** Scenes and Sources are per canvas now; buses are
