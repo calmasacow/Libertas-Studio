@@ -12,10 +12,10 @@
 //   * the first barrier is a queue-family *acquire* from VK_QUEUE_FAMILY_FOREIGN_EXT, which is what
 //     preserves the external writer's contents.
 
-#include "vk_import.hpp"
+#include <lrhi/vulkan.hpp>
 
 #include "vk_ctx_internal.hpp"
-#include "vk_convert.hpp"
+
 
 #include <lcore/log.hpp>
 
@@ -29,7 +29,7 @@
 
 #include <drm_fourcc.h>
 
-namespace libertas::spike {
+namespace libertas::rhi {
 
 // VkCtx and ReadbackStaging live in vk_ctx_internal.hpp so vk_convert.cpp can see them too.
 
@@ -234,7 +234,12 @@ void vk_destroy(VkCtx* ctx) {
     if (ctx == nullptr)
         return;
     if (ctx->device != VK_NULL_HANDLE) {
-        vk_convert_destroy(*ctx);
+        // Whoever built a pipeline on this context tears it down first. The NV12 convert pass
+        // lives in the encode spike (ADR-0019) and is not this library's business; inverting the
+        // call rather than linking to it is what lets `lrhi` be a dependency of that spike
+        // instead of the other way round.
+        if (ctx->on_destroy)
+            ctx->on_destroy(*ctx);
         destroy_staging(*ctx, ctx->readback);
     }
     if (ctx->pool != VK_NULL_HANDLE)
@@ -479,7 +484,7 @@ bool vk_import_and_readback(VkCtx& ctx, const CapturedFrame& frame, std::vector<
     }
     const VkFormat vkf = drm_to_vk(frame.drm_format);
     if (vkf == VK_FORMAT_UNDEFINED) {
-        error = std::format("unmapped DRM format {}", fourcc_str(frame.drm_format));
+        error = std::format("unmapped DRM format {}", capture::fourcc_str(frame.drm_format));
         return false;
     }
 
@@ -922,7 +927,7 @@ CapturedFrame vk_exported_as_frame(const VkExportedImage& img, std::uint32_t drm
     f.modifier = img.modifier;
     f.is_dmabuf = true;
     for (std::uint32_t i = 0; i < img.n_planes; ++i) {
-        DmabufPlane p;
+        capture::DmabufPlane p;
         // Borrowed: the import path dups the fd, and the exported image still owns it.
         p.fd = img.dmabuf_fd;
         p.offset = img.offsets[i];
@@ -932,4 +937,4 @@ CapturedFrame vk_exported_as_frame(const VkExportedImage& img, std::uint32_t drm
     return f;
 }
 
-} // namespace libertas::spike
+} // namespace libertas::rhi

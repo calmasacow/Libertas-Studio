@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "vk_import.hpp"
+#include <lrhi/vulkan.hpp>
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace libertas::spike {
+
+// The convert pass builds on lrhi's device (ADR-0019 measured it there, as vk_import).
+using libertas::rhi::VkCtx;
+using libertas::rhi::VkExportedImage;
 
 /// How to interpret and encode colour. ADR-0014: these are *configuration*, never detection -
 /// the capture device will happily claim a range it does not deliver, so the only honest source

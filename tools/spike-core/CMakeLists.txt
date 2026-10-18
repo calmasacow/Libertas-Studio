@@ -16,7 +16,6 @@ find_package(Vulkan REQUIRED)
 add_library(spike-core STATIC
     portal.cpp
     stream.cpp
-    vk_import.cpp
     vk_convert.cpp
     v4l2cap.cpp
 )
@@ -37,11 +36,17 @@ libertas_wayland_protocol(spike-core staging/ext-image-copy-capture/ext-image-co
 libertas_wayland_protocol(spike-core stable/linux-dmabuf/linux-dmabuf-v1.xml)
 
 target_include_directories(spike-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# The convert pass builds a compute pipeline on lrhi's VkCtx, so it needs that library's internal
+# header. Reaching into another target's src/ is not a pattern to copy: it is here because the
+# NV12 pass is still spike code (ADR-0019) and lrhi is deliberately not growing an encoder to
+# hold it.
+target_include_directories(spike-core PRIVATE ${CMAKE_SOURCE_DIR}/libs/lrhi/src)
 
 target_link_libraries(spike-core PUBLIC
     libertas::flags
     libertas::lcore
     libertas::lcapture
+    libertas::lrhi
     PkgConfig::GIO_UNIX
     PkgConfig::PIPEWIRE
     PkgConfig::LIBDRM

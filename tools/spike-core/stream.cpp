@@ -28,16 +28,7 @@
 
 namespace libertas::spike {
 
-std::string fourcc_str(std::uint32_t f) {
-    if (f == 0)
-        return "(none)";
-    char b[5] = {static_cast<char>(f & 0xff), static_cast<char>((f >> 8) & 0xff),
-                 static_cast<char>((f >> 16) & 0xff), static_cast<char>((f >> 24) & 0xff), '\0'};
-    for (char& c : b)
-        if (c != '\0' && (c < 32 || c > 126))
-            c = '?';
-    return std::string(b);
-}
+
 
 std::string modifier_str(std::uint64_t m) {
     if (m == kModifierInvalid)

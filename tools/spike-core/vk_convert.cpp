@@ -14,7 +14,7 @@
 
 #include "vk_convert.hpp"
 
-#include "vk_ctx_internal.hpp"
+#include <vk_ctx_internal.hpp>
 
 #include <array>
 #include <chrono>
@@ -26,6 +26,8 @@
 #include "shaders/bgra_to_nv12_spv.h"
 
 namespace libertas::spike {
+
+using libertas::rhi::VkCtx;
 
 namespace {
 
@@ -54,6 +56,12 @@ std::uint32_t find_memory_type(VkPhysicalDevice phys, std::uint32_t bits,
 } // namespace
 
 /// Everything the convert path owns. Built once, on first use, and torn down with the context.
+} // namespace libertas::spike
+
+// Defined in rhi because that is the namespace VkCtx::convert points into. The contents are the
+// encode spike's business (ADR-0019); lrhi only forward-declares it and never looks inside.
+namespace libertas::rhi {
+
 struct ConvertState {
     VkShaderModule shader = VK_NULL_HANDLE;
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
@@ -79,6 +87,12 @@ struct ConvertState {
     VkImageView view = VK_NULL_HANDLE;
     VkImage view_of = VK_NULL_HANDLE;
 };
+
+} // namespace libertas::rhi
+
+namespace libertas::spike {
+
+using libertas::rhi::ConvertState;
 
 void vk_convert_destroy(VkCtx& ctx) {
     ConvertState* cs = ctx.convert;

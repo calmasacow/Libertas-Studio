@@ -5,7 +5,7 @@
 //
 // This is an *internal* header: it is not in vk_import.hpp because callers outside spike-core
 // are deliberately given only an opaque VkCtx. Everything here is implementation detail that
-// vk_import.cpp and vk_convert.cpp both have to agree on.
+// vulkan.cpp and anything building a pipeline on this context both have to agree on.
 #pragma once
 
 #include <cstdint>
@@ -13,14 +13,11 @@
 
 #include <vulkan/vulkan.h>
 
-namespace libertas::spike {
+namespace libertas::rhi {
 
-/// Owned by vk_convert.cpp; opaque here so this header stays free of its internals.
+/// Owned by whoever built a pipeline on top of this context; opaque here.
 struct ConvertState;
 struct VkCtx;
-
-/// Tears down the convert pipeline. Defined in vk_convert.cpp, called from vk_destroy.
-void vk_convert_destroy(VkCtx& ctx);
 
 /// Staging resources for host readback, kept alive across frames. See `readback_image` for why
 /// per-frame allocation and an uncached memory type were both wrong.
@@ -52,8 +49,12 @@ struct VkCtx {
 
     ReadbackStaging readback;
 
-    /// Compute pipeline + buffers for BGRA->NV12, built on first use. Owned by vk_convert.cpp.
+    /// Compute pipeline + buffers for BGRA->NV12, built on first use. Owned by whoever built it
+    /// -- the encode spike, today -- and torn down through `on_destroy` below.
     ConvertState* convert = nullptr;
+    /// Called by `vk_destroy` before the device goes, so a pipeline built on this context can be
+    /// released without this library having to know what it is.
+    void (*on_destroy)(VkCtx&) = nullptr;
 };
 
-} // namespace libertas::spike
+} // namespace libertas::rhi

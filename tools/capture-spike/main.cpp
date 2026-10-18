@@ -9,7 +9,7 @@
 
 #include "portal.hpp"
 #include "stream.hpp"
-#include "vk_import.hpp"
+#include <lrhi/vulkan.hpp>
 #include <lcapture/wlcap.hpp>
 #include "v4l2cap.hpp"
 
@@ -444,7 +444,7 @@ int run_v4l2(const libertas::spike::V4l2Config& cfg) {
 /// so the transfer buffer is LINEAR - and the downscale happens here, on the compositing GPU,
 /// because moving full-resolution pixels across the bus to shrink them on the far side spends the
 /// bandwidth that is the actual scarce resource.
-bool run_cross_gpu(libertas::spike::VkCtx& src_ctx, const libertas::spike::VkExportedImage& captured,
+bool run_cross_gpu(libertas::rhi::VkCtx& src_ctx, const libertas::rhi::VkExportedImage& captured,
                    std::uint32_t drm_format, const std::string& second_node, std::uint32_t scale_w,
                    std::uint32_t scale_h) {
     std::string err;
@@ -454,15 +454,15 @@ bool run_cross_gpu(libertas::spike::VkCtx& src_ctx, const libertas::spike::VkExp
     std::printf("\n=== cross-GPU transfer: %ux%u -> %ux%u, then import on %s ===\n",
                 captured.width, captured.height, w, h, second_node.c_str());
 
-    libertas::spike::VkCtxPtr dst_ctx = libertas::spike::vk_init(second_node, err);
+    libertas::rhi::VkCtxPtr dst_ctx = libertas::rhi::vk_init(second_node, err);
     if (!dst_ctx) {
         lc::error("second device init failed: {}", err);
         return false;
     }
-    lc::info("second device: {}", libertas::spike::vk_device_name(*dst_ctx));
+    lc::info("second device: {}", libertas::rhi::vk_device_name(*dst_ctx));
 
     const std::vector<std::uint64_t> dst_mods =
-        libertas::spike::vk_supported_modifiers(*dst_ctx, drm_format);
+        libertas::rhi::vk_supported_modifiers(*dst_ctx, drm_format);
     const bool dst_takes_linear =
         std::find(dst_mods.begin(), dst_mods.end(), libertas::spike::kModifierLinear) !=
         dst_mods.end();
@@ -474,10 +474,10 @@ bool run_cross_gpu(libertas::spike::VkCtx& src_ctx, const libertas::spike::VkExp
     }
 
     // Allocate the transfer buffer on the SOURCE device, LINEAR, so both vendors can address it.
-    libertas::spike::VkExportedImage transfer;
+    libertas::rhi::VkExportedImage transfer;
     // host_memory = true: see vk_create_exportable's contract. A VRAM-backed dmabuf imports
     // cleanly on the second card and then fails at submit, which is a miserable thing to debug.
-    if (!libertas::spike::vk_create_exportable(src_ctx, w, h, drm_format,
+    if (!libertas::rhi::vk_create_exportable(src_ctx, w, h, drm_format,
                                                {libertas::spike::kModifierLinear}, true, transfer,
                                                err)) {
         lc::error("could not allocate a LINEAR transfer image on the source device: {}", err);
@@ -486,21 +486,21 @@ bool run_cross_gpu(libertas::spike::VkCtx& src_ctx, const libertas::spike::VkExp
     lc::info("transfer buffer: {}x{} modifier {} stride {}", transfer.width, transfer.height,
              libertas::spike::modifier_str(transfer.modifier), transfer.strides[0]);
 
-    if (!libertas::spike::vk_blit_exported(src_ctx, captured, true, transfer, err)) {
+    if (!libertas::rhi::vk_blit_exported(src_ctx, captured, true, transfer, err)) {
         lc::error("blit/scale on the source device failed: {}", err);
-        libertas::spike::vk_destroy_exportable(src_ctx, transfer);
+        libertas::rhi::vk_destroy_exportable(src_ctx, transfer);
         return false;
     }
 
     // Import on the second device through the ordinary import path - the same code the portal
     // backend uses, so this exercises it too.
     const libertas::spike::CapturedFrame frame =
-        libertas::spike::vk_exported_as_frame(transfer, drm_format);
+        libertas::rhi::vk_exported_as_frame(transfer, drm_format);
     std::vector<std::uint8_t> pixels;
-    const bool ok = libertas::spike::vk_import_and_readback(*dst_ctx, frame, pixels, err);
+    const bool ok = libertas::rhi::vk_import_and_readback(*dst_ctx, frame, pixels, err);
     if (!ok) {
         lc::error("import on the second device failed: {}", err);
-        libertas::spike::vk_destroy_exportable(src_ctx, transfer);
+        libertas::rhi::vk_destroy_exportable(src_ctx, transfer);
         return false;
     }
 
@@ -526,7 +526,7 @@ bool run_cross_gpu(libertas::spike::VkCtx& src_ctx, const libertas::spike::VkExp
         std::printf("  wrote         : /tmp/capture-spike-crossgpu.ppm\n");
     }
 
-    libertas::spike::vk_destroy_exportable(src_ctx, transfer);
+    libertas::rhi::vk_destroy_exportable(src_ctx, transfer);
     const bool pass = nonzero > 0;
     std::printf("  CROSS-GPU: %s\n", pass ? "PASS" : "FAIL - imported but every pixel is black");
     return pass;
@@ -570,18 +570,18 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
             std::printf("      %s\n", libertas::spike::modifier_str(m).c_str());
     }
 
-    libertas::spike::VkCtxPtr vk = libertas::spike::vk_init(prefer_drm_node, err);
+    libertas::rhi::VkCtxPtr vk = libertas::rhi::vk_init(prefer_drm_node, err);
     if (!vk) {
         lc::error("vulkan init failed: {}", err);
         return 4;
     }
-    lc::info("vulkan device: {}", libertas::spike::vk_device_name(*vk));
+    lc::info("vulkan device: {}", libertas::rhi::vk_device_name(*vk));
 
     // Pick the first offered format our device can also use, and intersect the modifier sets.
     // Because *we* allocate, this intersection is the whole negotiation - there is no second round
     // and no way for the compositor to accept a modifier it cannot then write to.
     for (const auto& f : caps.formats) {
-        const std::vector<std::uint64_t> ours = libertas::spike::vk_supported_modifiers(
+        const std::vector<std::uint64_t> ours = libertas::rhi::vk_supported_modifiers(
             *vk, f.drm_format);
         std::vector<std::uint64_t> common;
         for (std::uint64_t m : f.modifiers)
@@ -598,10 +598,10 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
         // A ring of buffers, not one. With a single destination the compositor is serialized
         // against us - it cannot draw frame N+1 while we hold its only target - so a one-buffer
         // measurement both understates the rate and invents a latency tail.
-        std::vector<libertas::spike::VkExportedImage> ring(slots);
+        std::vector<libertas::rhi::VkExportedImage> ring(slots);
         bool alloc_ok = true;
         for (std::uint32_t si = 0; si < slots; ++si) {
-            if (!libertas::spike::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
+            if (!libertas::rhi::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
                                                        common, false, ring[si], err)) {
                 lc::warn("could not allocate exportable image {} for {}: {}", si,
                          libertas::spike::fourcc_str(f.drm_format), err);
@@ -616,10 +616,10 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
         }
         if (!alloc_ok) {
             for (auto& r : ring)
-                libertas::spike::vk_destroy_exportable(*vk, r);
+                libertas::rhi::vk_destroy_exportable(*vk, r);
             continue;
         }
-        libertas::spike::VkExportedImage& img = ring.front();
+        libertas::rhi::VkExportedImage& img = ring.front();
         lc::info("allocated {} slot(s) of {}x{} {} modifier {} planes {} stride {}, fd {}", slots,
                  img.width,
                  img.height, libertas::spike::fourcc_str(f.drm_format),
@@ -648,7 +648,7 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
                               "ever",
                               captured, frames, err);
                     for (auto& r : ring)
-                        libertas::spike::vk_destroy_exportable(*vk, r);
+                        libertas::rhi::vk_destroy_exportable(*vk, r);
                     return 7;
                 }
                 lc::error("capture failed on frame {}: {}", i, err);
@@ -668,15 +668,15 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
                 .count();
         if (captured == 0) {
             for (auto& r : ring)
-                libertas::spike::vk_destroy_exportable(*vk, r);
+                libertas::rhi::vk_destroy_exportable(*vk, r);
             continue;
         }
 
-        libertas::spike::VkExportedImage& last = ring[(captured - 1) % slots];
-        if (!libertas::spike::vk_readback_exported(*vk, last, true, pixels, err)) {
+        libertas::rhi::VkExportedImage& last = ring[(captured - 1) % slots];
+        if (!libertas::rhi::vk_readback_exported(*vk, last, true, pixels, err)) {
             lc::error("readback failed: {}", err);
             for (auto& r : ring)
-                libertas::spike::vk_destroy_exportable(*vk, r);
+                libertas::rhi::vk_destroy_exportable(*vk, r);
             return 5;
         }
 
@@ -747,7 +747,7 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
         }
 
         for (auto& r : ring)
-            libertas::spike::vk_destroy_exportable(*vk, r);
+            libertas::rhi::vk_destroy_exportable(*vk, r);
         const bool pass = nonzero > 0 && cross_ok;
         std::printf("\n  VERDICT: %s\n\n",
                     pass ? "PASS - compositor rendered into our Vulkan image, real pixel content"
@@ -930,18 +930,18 @@ int main(int argc, char** argv) {
     // Bring Vulkan up first so negotiation can advertise the modifiers this device can really
     // import, and - just as important - so a Vulkan failure happens *before* the user is asked to
     // click a picker rather than after.
-    libertas::spike::VkCtxPtr vk;
+    libertas::rhi::VkCtxPtr vk;
     std::vector<std::uint64_t> vk_mods;
     if (stage >= 3 || sweep) {
         std::string verr;
-        vk = libertas::spike::vk_init(prefer_drm_node, verr);
+        vk = libertas::rhi::vk_init(prefer_drm_node, verr);
         if (!vk) {
             lc::error("vulkan init failed: {}", verr);
             return 4;
         }
-        lc::info("vulkan device: {}", libertas::spike::vk_device_name(*vk));
+        lc::info("vulkan device: {}", libertas::rhi::vk_device_name(*vk));
         // ARGB8888 is what a BGRA SPA format maps to.
-        vk_mods = libertas::spike::vk_supported_modifiers(*vk, 0x34325241 /* DRM_FORMAT_ARGB8888 */);
+        vk_mods = libertas::rhi::vk_supported_modifiers(*vk, 0x34325241 /* DRM_FORMAT_ARGB8888 */);
         std::printf("\n=== modifiers this device can import for ARGB8888 (%zu) ===\n",
                     vk_mods.size());
         for (std::uint64_t m : vk_mods)
@@ -1011,7 +1011,7 @@ int main(int argc, char** argv) {
     // Chain Vulkan import onto the frame callback when stage 3 is active.
     if (stage >= 3 && vk) {
         auto base = sc.on_frame;
-        libertas::spike::VkCtx* vkp = vk.get();
+        libertas::rhi::VkCtx* vkp = vk.get();
         sc.on_frame = [&stats, base, vkp](const libertas::spike::CapturedFrame& f) {
             if (base)
                 base(f);
@@ -1022,7 +1022,7 @@ int main(int argc, char** argv) {
                 return;
             std::vector<std::uint8_t> pixels;
             std::string ierr;
-            if (!libertas::spike::vk_import_and_readback(*vkp, f, pixels, ierr)) {
+            if (!libertas::rhi::vk_import_and_readback(*vkp, f, pixels, ierr)) {
                 ++stats.import_failed;
                 if (stats.first_import_error.empty())
                     stats.first_import_error = ierr;
@@ -1284,7 +1284,7 @@ int main(int argc, char** argv) {
 
     // ---------------------------------------------------------------- stage 3: Vulkan import
     std::printf("=== stage 3 result: Vulkan dmabuf import ===\n");
-    std::printf("  device        : %s\n", libertas::spike::vk_device_name(*vk).c_str());
+    std::printf("  device        : %s\n", libertas::rhi::vk_device_name(*vk).c_str());
     std::printf("  imported      : %u ok, %u failed\n", stats.imported, stats.import_failed);
     if (!stats.first_import_error.empty())
         std::printf("  first error   : %s\n", stats.first_import_error.c_str());

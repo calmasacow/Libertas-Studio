@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "stream.hpp"
-
 #include <lcapture/dmabuf.hpp>
 
 #include <cstdint>
@@ -11,7 +9,10 @@
 #include <string>
 #include <vector>
 
-namespace libertas::spike {
+namespace libertas::rhi {
+
+using libertas::capture::CapturedFrame;
+using libertas::capture::DmabufImage;
 
 struct VkCtx;
 
@@ -86,4 +87,4 @@ CapturedFrame vk_exported_as_frame(const VkExportedImage& img, std::uint32_t drm
 bool vk_import_and_readback(VkCtx& ctx, const CapturedFrame& frame, std::vector<std::uint8_t>& out,
                             std::string& error);
 
-} // namespace libertas::spike
+} // namespace libertas::rhi

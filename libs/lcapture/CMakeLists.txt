@@ -16,6 +16,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
 
 add_library(lcapture STATIC
+    src/dmabuf.cpp
     src/wlcap.cpp
 )
 add_library(libertas::lcapture ALIAS lcapture)

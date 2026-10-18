@@ -13,7 +13,7 @@
 #include "encoder.hpp"
 
 #include <vk_convert.hpp>
-#include <vk_import.hpp>
+#include <lrhi/vulkan.hpp>
 #include <lcapture/wlcap.hpp>
 
 #include <lcore/log.hpp>
@@ -165,21 +165,21 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    libertas::spike::VkCtxPtr vk = libertas::spike::vk_init(drm_node, err);
+    libertas::rhi::VkCtxPtr vk = libertas::rhi::vk_init(drm_node, err);
     if (!vk) {
         lc::error("vulkan init failed: {}", err);
         return 2;
     }
-    lc::info("vulkan device: {}", libertas::spike::vk_device_name(*vk));
+    lc::info("vulkan device: {}", libertas::rhi::vk_device_name(*vk));
     lc::info("capture: {}x{} from {}", caps.width, caps.height,
              output_name.empty() ? "the first output" : output_name.c_str());
 
     // Allocate the ring from the intersection of what the compositor offers and what our device
     // can use. Because we allocate, this intersection IS the negotiation (ADR-0011).
-    std::vector<libertas::spike::VkExportedImage> ring;
+    std::vector<libertas::rhi::VkExportedImage> ring;
     std::uint32_t chosen_format = 0;
     for (const auto& f : caps.formats) {
-        const std::vector<std::uint64_t> ours = libertas::spike::vk_supported_modifiers(*vk, f.drm_format);
+        const std::vector<std::uint64_t> ours = libertas::rhi::vk_supported_modifiers(*vk, f.drm_format);
         std::vector<std::uint64_t> common;
         for (std::uint64_t m : f.modifiers)
             if (std::find(ours.begin(), ours.end(), m) != ours.end())
@@ -190,7 +190,7 @@ int main(int argc, char** argv) {
         ring.assign(slots, {});
         bool ok = true;
         for (std::uint32_t s = 0; s < slots; ++s) {
-            if (!libertas::spike::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
+            if (!libertas::rhi::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
                                                        common, false, ring[s], err) ||
                 !libertas::capture::wlcap_add_slot(*cap, ring[s], f.drm_format, err)) {
                 ok = false;
@@ -202,7 +202,7 @@ int main(int argc, char** argv) {
             break;
         }
         for (auto& r : ring)
-            libertas::spike::vk_destroy_exportable(*vk, r);
+            libertas::rhi::vk_destroy_exportable(*vk, r);
         ring.clear();
     }
     if (chosen_format == 0) {
@@ -322,7 +322,7 @@ int main(int argc, char** argv) {
                     latest.err = e;
                     return;
                 }
-            } else if (!libertas::spike::vk_readback_exported(*vk, ring[slot], true, local, e)) {
+            } else if (!libertas::rhi::vk_readback_exported(*vk, ring[slot], true, local, e)) {
                 std::lock_guard<std::mutex> lk(latest.mu);
                 latest.err = e;
                 return;
@@ -580,7 +580,7 @@ int main(int argc, char** argv) {
                     "pays one-time setup, %.3f ms)\n",
                     capture_ms.size(), first_frame_ms);
         std::printf("  %s\n", gpu_convert ? libertas::spike::vk_convert_note(*vk).c_str()
-                                          : libertas::spike::vk_readback_note(*vk).c_str());
+                                          : libertas::rhi::vk_readback_note(*vk).c_str());
         report("capture", capture_ms);
         report("readback", readback_ms);
         report("convert+readback", gpu_convert_ms);

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <lcapture/dmabuf.hpp>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -10,24 +12,12 @@
 
 namespace libertas::spike {
 
-struct DmabufPlane {
-    int fd = -1;
-    std::uint32_t offset = 0;
-    std::uint32_t stride = 0;
-    std::int64_t size = 0;
-};
+// These moved to libs/lcapture beside DmabufImage: both capture backends describe a frame the
+// same way, and the import side must not be able to tell which one produced it. Aliased rather
+// than renamed so the PipeWire half of this spike stays as it was measured.
+using DmabufPlane = libertas::capture::DmabufPlane;
 
-/// One frame as PipeWire delivered it. Plane fds are borrowed; valid only during the callback.
-struct CapturedFrame {
-    std::uint64_t sequence = 0;
-    std::int64_t pts = 0;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::uint32_t drm_format = 0;   ///< DRM_FORMAT_* fourcc
-    std::uint64_t modifier = 0;     ///< DRM format modifier, or kModifierInvalid
-    bool is_dmabuf = false;         ///< false => shm/MemPtr fallback path
-    std::vector<DmabufPlane> planes;
-};
+using CapturedFrame = libertas::capture::CapturedFrame;
 
 struct NegotiatedFormat {
     std::uint32_t width = 0;
@@ -40,7 +30,7 @@ struct NegotiatedFormat {
     std::int32_t fps_den = 1;
 };
 
-inline constexpr std::uint64_t kModifierInvalid = 0x00ffffffffffffffULL;
+using libertas::capture::kModifierInvalid;
 inline constexpr std::uint64_t kModifierLinear = 0;
 
 /// A long-lived PipeWire connection. One per process: pw_init/pw_deinit are not reliably
@@ -123,7 +113,7 @@ const char* node_readiness_str(NodeReadiness r);
 bool pw_dump_formats(PwSession& session, std::uint32_t node_id);
 
 /// Human-readable fourcc, e.g. "AR24".
-std::string fourcc_str(std::uint32_t fourcc);
+using libertas::capture::fourcc_str;
 /// Decodes the vendor nibble of a DRM format modifier, e.g. "NVIDIA(0x...)".
 std::string modifier_str(std::uint64_t modifier);
 
