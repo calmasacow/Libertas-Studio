@@ -19,6 +19,17 @@ std::filesystem::path g_bindings_file;
 
 QString qstr(const std::string& s) { return QString::fromStdString(s); }
 
+/// Performed by the shell before `resolve`. `resolve` still says these are not available,
+/// because they are not document commands; the table should not claim nothing does them.
+bool shell_performs(const std::string& action) {
+    if (action.starts_with("transform."))
+        return true;
+    return action == "edit.copy" || action == "edit.paste" || action == "edit.group" ||
+           action == "edit.ungroup" || action == "edit.select-all" || action == "layer.delete" ||
+           action == "layer.move-forward" || action == "layer.move-back" ||
+           action == "layer.move-to-front" || action == "layer.move-to-back";
+}
+
 std::string to_std(const QString& s) {
     const QByteArray b = s.toUtf8();
     return std::string{b.constData(), static_cast<std::size_t>(b.size())};
@@ -125,8 +136,9 @@ void Shortcuts::rebuild() {
         row.trigger = qstr(bindings_.trigger_for(ref));
         row.isDefault = bindings_.is_default(ref);
         const auto resolved = lsession::resolve(ref, project);
-        row.available = resolved.outcome != lsession::Outcome::NotYetAvailable &&
-                        resolved.outcome != lsession::Outcome::Unknown;
+        row.available = shell_performs(ref.action) ||
+                        (resolved.outcome != lsession::Outcome::NotYetAvailable &&
+                         resolved.outcome != lsession::Outcome::Unknown);
         if (!row.trigger.isEmpty()) {
             if (const auto clash = bindings_.conflict(ref, to_std(row.trigger), project))
                 row.conflict = qstr(lsession::describe(*clash, project));
@@ -224,6 +236,79 @@ void Shortcuts::perform(const QString& ref) {
     // resolving to a RemoveNode in the session (ADR-0037).
     if (parsed->action == "layer.delete") {
         document_->removeSelectedNodes();
+        return;
+    }
+    if (parsed->action == "layer.move-forward") {
+        document_->moveNode(document_->selectedNode(), -1);
+        return;
+    }
+    if (parsed->action == "layer.move-back") {
+        document_->moveNode(document_->selectedNode(), 1);
+        return;
+    }
+    if (parsed->action == "layer.move-to-front") {
+        document_->moveSelectedToEnd(true);
+        return;
+    }
+    if (parsed->action == "layer.move-to-back") {
+        document_->moveSelectedToEnd(false);
+        return;
+    }
+    if (parsed->action == "transform.edit") {
+        if (workspace_)
+            workspace_->focusPanel(QStringLiteral("properties"));
+        return;
+    }
+    if (parsed->action == "transform.copy") {
+        document_->copyTransform();
+        return;
+    }
+    if (parsed->action == "transform.paste") {
+        document_->pasteTransform();
+        return;
+    }
+    if (parsed->action == "transform.reset") {
+        document_->resetTransform();
+        return;
+    }
+    if (parsed->action == "transform.rotate-cw") {
+        document_->rotateBy(90.0);
+        return;
+    }
+    if (parsed->action == "transform.rotate-ccw") {
+        document_->rotateBy(-90.0);
+        return;
+    }
+    if (parsed->action == "transform.rotate-180") {
+        document_->rotateBy(180.0);
+        return;
+    }
+    if (parsed->action == "transform.flip-h") {
+        document_->flipHorizontal();
+        return;
+    }
+    if (parsed->action == "transform.flip-v") {
+        document_->flipVertical();
+        return;
+    }
+    if (parsed->action == "transform.fit") {
+        document_->fitToCanvas(false);
+        return;
+    }
+    if (parsed->action == "transform.stretch") {
+        document_->fitToCanvas(true);
+        return;
+    }
+    if (parsed->action == "transform.center") {
+        document_->centerOnCanvas(true, true);
+        return;
+    }
+    if (parsed->action == "transform.center-h") {
+        document_->centerOnCanvas(true, false);
+        return;
+    }
+    if (parsed->action == "transform.center-v") {
+        document_->centerOnCanvas(false, true);
         return;
     }
 

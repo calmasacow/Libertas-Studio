@@ -4,7 +4,6 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Dialogs
 import Libertas
 
 /// What one source is configured to be: the gear at the bottom of the Sources panel, and a
@@ -21,13 +20,13 @@ import Libertas
 /// committing per field and reverting on Cancel -- leaves the abandoned edits on the undo stack
 /// for the operator to press Ctrl+Z through later.
 ///
-/// The preview is honest, the same rule the add dialog follows. A colour is the one source this
-/// build can draw correctly with no renderer, so a colour shows the colour being typed, live.
+/// The preview is honest, the same rule the add dialog follows. A colour shows the colour being
+/// chosen. An image shows the file being chosen, from `pending`, so it is on screen before OK.
 /// Everything else says there is no pipeline attached, because there is not.
 ///
-/// Drawn inside the workspace rather than as its own window (ADR-0015). The file chooser is the
-/// exception and is meant to be: that is the portal's dialog, run by the desktop, and it is the
-/// only way a Wayland client gets a path the sandbox will honour.
+/// Drawn inside the workspace rather than as its own window (ADR-0015). Browse is the exception:
+/// it opens the desktop's file chooser, the XDG portal, which this machine routes to Omanta.
+/// The path lands in `pending` and is not applied until OK.
 Item {
     id: dialog
 
@@ -39,11 +38,21 @@ Item {
     /// because assigning into a var object in place notifies nothing.
     property var pending: ({})
     property string pendingName: ""
-    /// Which path field a Browse press came from.
-    property string browsingKey: ""
 
     readonly property bool known: Object.keys(dialog.details).length > 0
     readonly property string typeId: dialog.known ? dialog.details.type : ""
+    /// The image file sitting in `pending`, or empty. A local path, the same string OK will store.
+    readonly property string pendingFile: {
+        const path = dialog.pending["file"];
+        return typeof path === "string" ? path : "";
+    }
+
+    function localFileUrl(path) {
+        if (path === "")
+            return "";
+        const absolute = path.startsWith("/") ? path : ("/" + path);
+        return "file://" + encodeURI(absolute);
+    }
 
     signal closed
 
@@ -98,19 +107,6 @@ Item {
     }
 
     Keys.onEscapePressed: dialog.close()
-
-    FileDialog {
-        id: picker
-
-        title: qsTr("Choose a file")
-        onAccepted: {
-            // A local path, not a URL: it is what goes in the project, and what the worker
-            // process will eventually be asked to open.
-            const path = decodeURIComponent(picker.selectedFile.toString()
-                                                  .replace(/^file:\/\//, ""));
-            dialog.setValue(dialog.browsingKey, path);
-        }
-    }
 
     // The workspace behind is inert while this is up, and clicking away closes it.
     MouseArea {
@@ -211,11 +207,13 @@ Item {
             radius: 2
             clip: true
 
-            // The one thing this build can draw correctly with no renderer, and it tracks what
-            // is being typed rather than what is stored -- which is the whole use of a preview.
+            // Tracks what is being chosen rather than what is stored. A colour is the colour.
+            // An image is the file. Both are on screen before OK, and neither is committed by
+            // being shown.
             //
-            // Letterboxed to the card's own size rather than filling the box, so that the width
-            // and height below are visibly the thing they say they are.
+            // The colour is letterboxed to the card's own size rather than filling the box, so
+            // that the width and height below are visibly the thing they say they are. The image
+            // is letterboxed the same way, so a wide file stays a wide file in this card.
             Rectangle {
                 readonly property real aspect: {
                     const w = Number(dialog.pending["width"]);
@@ -234,9 +232,24 @@ Item {
                 }
             }
 
+            Image {
+                id: still
+
+                objectName: "sourceSettingsImage"
+                anchors.fill: parent
+                anchors.margins: 1
+                visible: dialog.typeId === "source.image" && still.status === Image.Ready
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                cache: false
+                mipmap: true
+                source: dialog.typeId === "source.image"
+                        ? dialog.localFileUrl(dialog.pendingFile) : ""
+            }
+
             Column {
                 anchors.centerIn: parent
-                visible: dialog.typeId !== "source.color"
+                visible: dialog.typeId !== "source.color" && !still.visible
                 spacing: 4
 
                 Text {
@@ -249,7 +262,11 @@ Item {
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: qsTr("no pipeline attached")
+                    text: dialog.typeId === "source.image" && dialog.pendingFile !== ""
+                          ? (still.status === Image.Error
+                             ? qsTr("could not read that image")
+                             : qsTr("reading the image"))
+                          : qsTr("no pipeline attached")
                     font.pixelSize: 11
                     color: Theme.c.textMuted
                     opacity: 0.7
@@ -329,8 +346,15 @@ Item {
                         onCommitted: newValue =>
                             dialog.setValue(settingRow.modelData.key, newValue)
                         onBrowseRequested: {
-                            dialog.browsingKey = settingRow.modelData.key;
-                            picker.open();
+                            const key = settingRow.modelData.key;
+                            const current = dialog.pending[key];
+                            const path = FileDialog.pick(qsTr("Choose a file"),
+                                                         typeof current === "string" ? current : "",
+                                                         dialog.typeId === "source.image" && key === "file");
+                            if (path !== "")
+                                dialog.setValue(key, path);
+                            else if (FileDialog.lastError() !== "")
+                                NoticeLog.add(FileDialog.lastError());
                         }
                     }
                 }

@@ -134,6 +134,15 @@ public:
     /// That canvas's pixel size, so its Program panel can be drawn the shape it really is.
     /// Empty `canvasId` means the first canvas; an unknown one gives an invalid size.
     Q_INVOKABLE [[nodiscard]] QSize canvasSizeOf(const QString& canvasId) const;
+    /// The rectangle the program picture draws for this node, in canvas pixels, and the terms a
+    /// resize needs to keep the opposite edge still. Empty when this canvas's program scene does
+    /// not draw that node.
+    Q_INVOKABLE [[nodiscard]] QVariantMap placedRect(const QString& canvasId,
+                                                     const QString& nodeId) const;
+    /// Every such rectangle in the program scene, topmost first, so a click can find a source.
+    Q_INVOKABLE [[nodiscard]] QVariantList placedNodes(const QString& canvasId) const;
+    /// Select that node, and the program scene the picture is of, so a drag edits the picture.
+    Q_INVOKABLE void focusPlacedNode(const QString& canvasId, const QString& nodeId);
     /// Every canvas id, first one first. Drives the per-canvas panels the workspace keeps.
     Q_INVOKABLE [[nodiscard]] QStringList canvasIds() const;
     /// The same list, by name, in the same order.
@@ -493,6 +502,31 @@ public:
     // ---- the selected node's properties ------------------------------------------------------
 
     Q_INVOKABLE void setNodePosition(double x, double y);
+    /// Position and scale together. `dragging` makes the whole gesture one undo step; the caller
+    /// finishes with `endGesture()`. A canvas handle changes scale, not the layout box: with the
+    /// default fit the box is not the rectangle on screen.
+    Q_INVOKABLE void setNodeFrame(double x, double y, double scaleX, double scaleY,
+                                  bool dragging = false);
+    /// The drawn rectangle, in canvas pixels. Rotation stays, and so does the sign of the
+    /// scale. Position and scale are solved so the picture lands on this rectangle. `dragging`
+    /// is the same one-undo gesture as `setNodeFrame`.
+    Q_INVOKABLE void setDrawnRect(double x, double y, double width, double height,
+                                  bool dragging = false);
+    Q_INVOKABLE void resetTransform();
+    Q_INVOKABLE void rotateBy(double degrees);
+    Q_INVOKABLE void flipHorizontal();
+    Q_INVOKABLE void flipVertical();
+    /// `stretch` fills the canvas on both axes. Otherwise the picture keeps its aspect and sits
+    /// in the middle.
+    Q_INVOKABLE void fitToCanvas(bool stretch);
+    Q_INVOKABLE void centerOnCanvas(bool horizontal, bool vertical);
+    Q_INVOKABLE void copyTransform();
+    Q_INVOKABLE void pasteTransform();
+    Q_INVOKABLE [[nodiscard]] bool hasCopiedTransform() const;
+    /// `front` is the top of the stack, index 0. One undo either way.
+    Q_INVOKABLE void moveSelectedToEnd(bool front);
+    /// Ask the sources list to rename the selection. The canvas has no text field of its own.
+    Q_INVOKABLE void requestRename();
     Q_INVOKABLE void setNodeScale(double x, double y);
     Q_INVOKABLE void setNodeRotation(double degrees);
     Q_INVOKABLE void setNodeOpacity(double opacity);
@@ -529,6 +563,8 @@ signals:
     void canvasChanged();
     /// Something to say in the status bar: a refused command, a failed save, a recovered journal.
     void notice(const QString& text);
+    /// The sources list should start renaming this node.
+    void renameRequested(const QString& nodeId);
 
 private:
     void rebuild();
@@ -538,6 +574,8 @@ private:
     /// `canvasId`, or the first canvas's id when it is empty.
     [[nodiscard]] QString canvas_key(const QString& canvasId) const;
     [[nodiscard]] const ldoc::Node* current_node() const;
+    /// The selection, when a transform edit is allowed. A locked node is refused out loud.
+    bool prepare_transform(const ldoc::Scene*& scene, const ldoc::Node*& node);
     /// The canvas the shell is currently working against. One canvas until Phase 2 gives the UI
     /// a way to choose; taking the first is honest rather than pretending otherwise.
     [[nodiscard]] const ldoc::Canvas* current_canvas() const;
@@ -577,6 +615,8 @@ private:
     /// three. One copied node is a list of one rather than a separate case.
     std::vector<ldoc::Node> copied_nodes_;
     std::optional<ldoc::Scene> copied_scene_;
+    /// A transform copied on its own, separate from a copied node (the menu's Copy Transform).
+    std::optional<ldoc::Transform> copied_transform_;
 
     BusModel buses_;
     MixerStripModel mixer_strips_;

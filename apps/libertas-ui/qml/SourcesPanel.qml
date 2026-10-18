@@ -72,6 +72,14 @@ Item {
         onActivated: panel.renaming = Document.selectedNode
     }
 
+    // The canvas menu has no row to type into. It asks, and the list does the rename.
+    Connections {
+        target: Document
+        function onRenameRequested(nodeId) {
+            panel.renaming = nodeId;
+        }
+    }
+
     Text {
         anchors.centerIn: parent
         visible: Document.selectedScene === ""
@@ -485,6 +493,7 @@ Item {
         objectName: "addSourceDialog"
         parent: panel.Window.contentItem
         onClosed: panel.adding = false
+        onCreated: sourceId => panel.configure(sourceId)
     }
 
     /// Where the drop would land, drawn between rows the way a layers panel does. Only for

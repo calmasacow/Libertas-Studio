@@ -5,6 +5,7 @@
 #include "ldoc/document.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,9 @@ enum class GapReason : std::uint8_t {
     UnsupportedType,
     /// Any blend other than Normal, including clipping to the node below.
     UnsupportedBlend,
-    /// Rotation, skew, or a negative scale. Axis-aligned, or not at all.
+    /// Skew, or a rotation that is not a quarter turn. A flip is a negative scale, and a
+    /// quarter turn is transposed in place: both are the picture that was asked for. Anything
+    /// else would be a different one.
     UnsupportedTransform,
     /// An enabled effect would change the pixels, and none are applied here.
     UnsupportedEffect,
@@ -35,6 +38,9 @@ enum class GapReason : std::uint8_t {
     MissingScene,
     /// A precomp that reaches a scene already on the stack.
     Cycle,
+    /// An image whose file is empty, missing, unreadable, not a PNG, JPEG, or WebP, or larger
+    /// than the preview will allocate. Nothing is invented in its place.
+    Unreadable,
 };
 
 /// What the picture is, as a whole, rather than node by node.
@@ -78,12 +84,59 @@ struct Picture {
 /// different picture than the one the operator authored.
 inline constexpr std::int32_t kMaxPreviewEdge = 8192;
 
+/// Where a node is drawn, in canvas pixels, before the integer snap the picture uses.
+///
+/// The Program canvas sizes its handles from this. A second copy of the fit rules would drift,
+/// and the handles would miss the picture. The rectangle is the axis-aligned bounds after a
+/// quarter turn and a flip, so the handles sit on the picture. `base_width` is the drawn size
+/// before scale. `rel_cx` and `rel_dx` are the pivot and the unscaled origin, relative to the
+/// position.
+struct DrawnFrame {
+    double x = 0;
+    double y = 0;
+    double width = 0;
+    double height = 0;
+    double base_width = 0;
+    double base_height = 0;
+    double rel_cx = 0;
+    double rel_cy = 0;
+    double rel_dx = 0;
+    double rel_dy = 0;
+};
+
+/// 0, 1, 2, or 3 clockwise quarter-turns in screen space. Empty when `degrees` is not one of
+/// those: a slanted picture is not drawn, rather than drawn upright.
+[[nodiscard]] std::optional<int> quarter_turn(double degrees);
+
+/// The same placement the compositor paints. `why` is set when nothing is returned. A frame
+/// whose width or height is not positive is a scale that collapsed it; the picture draws nothing.
+[[nodiscard]] std::optional<DrawnFrame> drawn_frame(const ldoc::Node& node, double natural_w,
+                                                    double natural_h, bool have_natural,
+                                                    GapReason& why);
+
+/// Position and scale that put the drawn rectangle on `x, y, width, height`.
+///
+/// Rotation stays, and so does the sign of the scale, which is the flip. Empty when this
+/// picture cannot draw the node's transform, or the rectangle is not usable.
+struct SolvedFrame {
+    double x = 0;
+    double y = 0;
+    double scale_x = 1;
+    double scale_y = 1;
+};
+
+[[nodiscard]] std::optional<SolvedFrame> solve_drawn_rect(const ldoc::Node& node, double natural_w,
+                                                          double natural_h, bool have_natural,
+                                                          double x, double y, double width,
+                                                          double height);
+
 /// Draw the program scene of `canvas` into a new picture.
 ///
 /// `roots[0]` is the topmost node and is drawn last, which is the order the Sources panel
 /// shows. Groups pass their opacity down. A precomp is drawn into its own buffer first, so a
-/// cycle is a gap instead of a hang. Audio-only sources are skipped: they have no picture to
-/// fail at, and counting them would make a microphone a permanent "not drawn".
+/// cycle is a gap instead of a hang. An image is the file it names, decoded and placed with
+/// the same fit as a colour. Audio-only sources are skipped: they have no picture to fail at,
+/// and counting them would make a microphone a permanent "not drawn".
 [[nodiscard]] Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas);
 
 } // namespace lcomp

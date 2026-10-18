@@ -17,6 +17,8 @@ endfunction()
 libertas_unit_test(test_actions          libertas::lsession)
 libertas_unit_test(test_command          libertas::ldoc)
 libertas_unit_test(test_composite        libertas::lcomp)
+target_compile_definitions(test_composite PRIVATE
+    LIBERTAS_IMAGE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/images")
 libertas_unit_test(test_document         libertas::ldoc)
 libertas_unit_test(test_dropzone        libertas::llayout)
 libertas_unit_test(test_journal          libertas::ldoc libertas::lcore)

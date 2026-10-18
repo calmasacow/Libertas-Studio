@@ -49,6 +49,9 @@ Item {
     }
 
     signal closed
+    /// A source was just created, as opposed to an existing one being placed. Its settings
+    /// are still the defaults, so the panel that owns this dialog opens them.
+    signal created(string sourceId)
 
     anchors.fill: parent
     visible: false
@@ -353,10 +356,18 @@ Item {
                             hoverEnabled: true
                             enabled: Document.selectedScene !== ""
                             onClicked: {
+                                // An existing source is already configured, so placing one just
+                                // closes this dialog. A new one has nothing but the type's
+                                // defaults, and the operator would otherwise have to find the
+                                // row and open it.
+                                const before = Document.nodeProperties.sourceId;
                                 Document.addNewSourceToScene(dialog.titleOf(dialog.selectedType),
                                                              dialog.selectedType,
                                                              dialog.makeVisible);
+                                const sourceId = Document.nodeProperties.sourceId;
                                 dialog.close();
+                                if (sourceId !== "" && sourceId !== before)
+                                    dialog.created(sourceId);
                             }
                         }
                     }

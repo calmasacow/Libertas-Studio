@@ -8,10 +8,9 @@ import Libertas
 
 /// A colour, drawn as itself with its hex written on it.
 ///
-/// There is no colour wheel behind a "Select colour" button, because there is no colour wheel
-/// in this build and a button that opens nothing is worse than no button. The bar *is* the
-/// field: it shows the colour at the size the eye can judge it, and the six digits on it are
-/// the thing you type into.
+/// Clicking it opens Qt's colour dialog. That dialog is the picker, and the custom colours
+/// saved in it are there the next time it is opened, whichever source the field belongs to.
+/// The hex stays on the bar so the colour can be read without opening anything.
 ///
 /// Values are sRGB hex, which is what a human reads. Everything the document composites in is
 /// scene-linear, and the one conversion between them lives in `ldoc::Rgba` (ADR: types.hpp).
@@ -28,13 +27,8 @@ Item {
 
     implicitHeight: 22
 
-    readonly property bool parses: /^#?[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(input.text.trim())
-    readonly property color shown: field.parses ? field.swatchColour(input.text) : "transparent"
-
-    function swatchColour(text) {
-        const t = text.trim();
-        return t.startsWith("#") ? t : "#" + t;
-    }
+    readonly property bool parses: /^#[0-9a-fA-F]{6}$/.test(field.value)
+    readonly property color shown: field.parses ? field.value : "transparent"
 
     Text {
         id: caption
@@ -58,53 +52,44 @@ Item {
         radius: 2
         color: field.parses ? field.shown : Theme.c.window
         border.width: 1
-        border.color: input.activeFocus ? Theme.c.accent
+        border.color: mouse.containsMouse ? Theme.c.accent
                     : !field.parses ? Theme.c.warning
                     : Theme.c.border
 
         // Checked against the swatch rather than the theme: white text on a pale yellow card
-        // is unreadable, and the swatch is whatever the operator typed.
+        // is unreadable, and the swatch is whatever the colour is.
         readonly property color ink: !field.parses ? Theme.c.warning
             : (0.299 * field.shown.r + 0.587 * field.shown.g + 0.114 * field.shown.b) > 0.55
               ? "#101010" : "#f0f0f0"
 
-        TextInput {
-            id: input
-
+        Text {
             anchors.centerIn: parent
             width: parent.width - 12
-            horizontalAlignment: TextInput.AlignHCenter
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideRight
             font.pixelSize: 11
             font.family: "monospace"
             color: parent.ink
-            selectionColor: Theme.c.accent
-            selectByMouse: true
-
-            text: activeFocus ? text : field.value
-
-            onEditingFinished: {
-                if (!field.parses)
-                    text = field.value;
-                else if (field.swatchColour(text) !== field.value)
-                    field.committed(field.swatchColour(text).toLowerCase());
-            }
-            Keys.onEscapePressed: {
-                text = field.value;
-                focus = false;
-            }
+            text: field.value
         }
 
         MouseArea {
+            id: mouse
+
             anchors.fill: parent
-            cursorShape: Qt.IBeamCursor
-            acceptedButtons: Qt.LeftButton
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
             onClicked: {
-                input.forceActiveFocus();
-                input.selectAll();
+                const chosen = ColourDialog.pick(field.parses ? field.value : "#ffffff");
+                if (chosen !== "")
+                    field.committed(chosen);
             }
-            // The text input sits on top and takes its own clicks; this is only the margin
-            // around it, so clicking anywhere on the bar starts an edit.
-            z: -1
+        }
+
+        ToolTipText {
+            hoverArea: mouse
+            text: qsTr("Choose a colour")
+            visible: mouse.containsMouse
         }
     }
 }

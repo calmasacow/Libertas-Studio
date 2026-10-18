@@ -3,6 +3,8 @@
 
 #include "lcomp/composite.hpp"
 
+#include "image.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -13,24 +15,37 @@
 #include <vector>
 
 namespace lcomp {
-namespace {
 
-/// The inverse of the curve in `Rgba::to_srgb8`. Copied rather than shared because that function
-/// is local to the document library and the two have to stay inverses: the half-coverage test
-/// is a literal sRGB byte, and a drift here is what it would catch.
-double srgb_to_linear(double c) {
-    return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
-}
-
-bool audio_only(std::string_view type) {
-    return type == "source.audio-input" || type == "source.audio-output";
-}
-
-bool effect_enabled(const ldoc::Node& node) {
-    return std::ranges::any_of(node.effects, [](const ldoc::Effect& e) { return e.enabled; });
+std::optional<int> quarter_turn(double degrees) {
+    if (!std::isfinite(degrees))
+        return std::nullopt;
+    double wrapped = std::fmod(degrees, 360.0);
+    if (wrapped < 0.0)
+        wrapped += 360.0;
+    const double steps = std::round(wrapped / 90.0);
+    if (std::abs(wrapped - steps * 90.0) > 1e-4)
+        return std::nullopt;
+    int quarter = static_cast<int>(steps) % 4;
+    if (quarter < 0)
+        quarter += 4;
+    return quarter;
 }
 
 bool transform_supported(const ldoc::Transform& t) {
+    if (t.skew_deg.x != 0.0 || t.skew_deg.y != 0.0)
+        return false;
+    if (!quarter_turn(t.rotation_deg))
+        return false;
+    const double fields[] = {t.position.x, t.position.y,   t.scale.x,    t.scale.y,   t.pivot.x,
+                             t.pivot.y,    t.rotation_deg, t.skew_deg.x, t.skew_deg.y};
+    return std::ranges::all_of(fields, [](double v) { return std::isfinite(v); });
+}
+
+namespace {
+
+/// A group's own transform is not applied to its children. The old rule stays for it: a flip
+/// or a turn on the group would otherwise draw the children as if it were not there.
+bool group_transform_ok(const ldoc::Transform& t) {
     if (t.rotation_deg != 0.0 || t.skew_deg.x != 0.0 || t.skew_deg.y != 0.0)
         return false;
     if (t.scale.x < 0.0 || t.scale.y < 0.0)
@@ -40,24 +55,41 @@ bool transform_supported(const ldoc::Transform& t) {
     return std::ranges::all_of(fields, [](double v) { return std::isfinite(v); });
 }
 
-struct Px {
-    int x0 = 0;
-    int y0 = 0;
-    int x1 = 0;
-    int y1 = 0;
+/// Clockwise, in screen space where Y grows downward. `(1, 0)` becomes `(0, 1)`.
+void rotate_cw(int quarter, double x, double y, double& out_x, double& out_y) {
+    switch (quarter) {
+    case 1:
+        out_x = -y;
+        out_y = x;
+        return;
+    case 2:
+        out_x = -x;
+        out_y = -y;
+        return;
+    case 3:
+        out_x = y;
+        out_y = -x;
+        return;
+    default:
+        out_x = x;
+        out_y = y;
+        return;
+    }
+}
 
-    [[nodiscard]] bool empty() const { return x1 <= x0 || y1 <= y0; }
+/// The fitted content before scale and rotation. Scale and the quarter turn are applied by
+/// the callers, so a resize can solve them without a second copy of the fit rules.
+struct Unscaled {
+    double base_w = 0;
+    double base_h = 0;
+    double rel_cx = 0;
+    double rel_cy = 0;
+    double rel_dx = 0;
+    double rel_dy = 0;
 };
 
-/// Where a node's box lands, in pixel edges, half-open.
-///
-/// Natural size is the source's own size after crop. The box is `layout.size` when it is set
-/// and the natural size otherwise — the document's rule that a zero box means "the source's
-/// natural size". Fit then places the source inside that box, and scale acts around the box's
-/// pivot. Integer-aligned inputs stay on pixel edges; nothing here antialiases, so a test can
-/// name a pixel and mean it.
-std::optional<Px> place(const ldoc::Node& node, double natural_w, double natural_h,
-                        bool have_natural, GapReason& why) {
+std::optional<Unscaled> unscaled_content(const ldoc::Node& node, double natural_w, double natural_h,
+                                         bool have_natural, GapReason& why) {
     if (!transform_supported(node.transform)) {
         why = GapReason::UnsupportedTransform;
         return std::nullopt;
@@ -141,33 +173,180 @@ std::optional<Px> place(const ldoc::Node& node, double natural_w, double natural
     }
     }
 
+    Unscaled out;
+    out.base_w = dw;
+    out.base_h = dh;
+    out.rel_cx = bw * node.transform.pivot.x;
+    out.rel_cy = bh * node.transform.pivot.y;
+    out.rel_dx = dx - bx;
+    out.rel_dy = dy - by;
+    return out;
+}
+
+void scaled_corners(const Unscaled& u, double sx, double sy, double& left, double& top,
+                    double& right, double& bottom) {
+    left = (u.rel_dx - u.rel_cx) * sx;
+    top = (u.rel_dy - u.rel_cy) * sy;
+    right = left + u.base_w * sx;
+    bottom = top + u.base_h * sy;
+}
+
+} // namespace
+
+std::optional<DrawnFrame> drawn_frame(const ldoc::Node& node, double natural_w, double natural_h,
+                                      bool have_natural, GapReason& why) {
+    const std::optional<Unscaled> fitted =
+        unscaled_content(node, natural_w, natural_h, have_natural, why);
+    if (!fitted)
+        return std::nullopt;
+
+    const int quarter = quarter_turn(node.transform.rotation_deg).value_or(0);
     const double sx = node.transform.scale.x;
     const double sy = node.transform.scale.y;
-    if (sx != 1.0 || sy != 1.0) {
-        const double cx = bx + bw * node.transform.pivot.x;
-        const double cy = by + bh * node.transform.pivot.y;
-        dx = cx + (dx - cx) * sx;
-        dy = cy + (dy - cy) * sy;
-        dw *= sx;
-        dh *= sy;
-    }
-    if (!(dw > 0.0) || !(dh > 0.0))
-        return Px{};
+    double left = 0;
+    double top = 0;
+    double right = 0;
+    double bottom = 0;
+    scaled_corners(*fitted, sx, sy, left, top, right, bottom);
 
-    // A position a corrupt document can carry, and which does not fit in an int. Refuse it
-    // rather than letting the cast overflow.
+    const double xs[4] = {left, right, left, right};
+    const double ys[4] = {top, top, bottom, bottom};
+    double min_x = std::numeric_limits<double>::infinity();
+    double min_y = min_x;
+    double max_x = -min_x;
+    double max_y = -min_x;
+    for (int i = 0; i < 4; ++i) {
+        double rx = 0;
+        double ry = 0;
+        rotate_cw(quarter, xs[i], ys[i], rx, ry);
+        min_x = std::min(min_x, rx);
+        min_y = std::min(min_y, ry);
+        max_x = std::max(max_x, rx);
+        max_y = std::max(max_y, ry);
+    }
+
+    DrawnFrame frame;
+    frame.base_width = fitted->base_w;
+    frame.base_height = fitted->base_h;
+    frame.rel_cx = fitted->rel_cx;
+    frame.rel_cy = fitted->rel_cy;
+    frame.rel_dx = fitted->rel_dx;
+    frame.rel_dy = fitted->rel_dy;
+    frame.x = node.transform.position.x + fitted->rel_cx + min_x;
+    frame.y = node.transform.position.y + fitted->rel_cy + min_y;
+    frame.width = max_x - min_x;
+    frame.height = max_y - min_y;
+    if (!(frame.width > 0.0) || !(frame.height > 0.0))
+        return frame;
+
     constexpr double kBound = 1.0e7;
-    if (!std::isfinite(dx) || !std::isfinite(dy) || std::abs(dx) > kBound ||
-        std::abs(dy) > kBound || dw > kBound || dh > kBound) {
+    if (!std::isfinite(frame.x) || !std::isfinite(frame.y) || !std::isfinite(frame.width) ||
+        !std::isfinite(frame.height) || std::abs(frame.x) > kBound || std::abs(frame.y) > kBound ||
+        frame.width > kBound || frame.height > kBound) {
         why = GapReason::UnsupportedTransform;
         return std::nullopt;
     }
+    return frame;
+}
+
+std::optional<SolvedFrame> solve_drawn_rect(const ldoc::Node& node, double natural_w,
+                                            double natural_h, bool have_natural, double x, double y,
+                                            double width, double height) {
+    GapReason why = GapReason::NoSize;
+    const std::optional<Unscaled> fitted =
+        unscaled_content(node, natural_w, natural_h, have_natural, why);
+    if (!fitted || !(fitted->base_w > 0.0) || !(fitted->base_h > 0.0))
+        return std::nullopt;
+    const std::optional<int> quarter = quarter_turn(node.transform.rotation_deg);
+    if (!quarter || !(width > 0.0) || !(height > 0.0) || !std::isfinite(x) || !std::isfinite(y))
+        return std::nullopt;
+
+    const double sign_x = node.transform.scale.x < 0.0 ? -1.0 : 1.0;
+    const double sign_y = node.transform.scale.y < 0.0 ? -1.0 : 1.0;
+    const bool turned = *quarter == 1 || *quarter == 3;
+    const double abs_sx = turned ? height / fitted->base_w : width / fitted->base_w;
+    const double abs_sy = turned ? width / fitted->base_h : height / fitted->base_h;
+    if (!(abs_sx > 0.0) || !(abs_sy > 0.0) || !std::isfinite(abs_sx) || !std::isfinite(abs_sy))
+        return std::nullopt;
+    const double sx = sign_x * abs_sx;
+    const double sy = sign_y * abs_sy;
+
+    double left = 0;
+    double top = 0;
+    double right = 0;
+    double bottom = 0;
+    scaled_corners(*fitted, sx, sy, left, top, right, bottom);
+    const double xs[4] = {left, right, left, right};
+    const double ys[4] = {top, top, bottom, bottom};
+    double min_x = std::numeric_limits<double>::infinity();
+    double min_y = min_x;
+    for (int i = 0; i < 4; ++i) {
+        double rx = 0;
+        double ry = 0;
+        rotate_cw(*quarter, xs[i], ys[i], rx, ry);
+        min_x = std::min(min_x, rx);
+        min_y = std::min(min_y, ry);
+    }
+
+    SolvedFrame solved;
+    solved.x = x - fitted->rel_cx - min_x;
+    solved.y = y - fitted->rel_cy - min_y;
+    solved.scale_x = sx;
+    solved.scale_y = sy;
+    if (!std::isfinite(solved.x) || !std::isfinite(solved.y))
+        return std::nullopt;
+    return solved;
+}
+
+namespace {
+
+/// The inverse of the curve in `Rgba::to_srgb8`. Copied rather than shared because that function
+/// is local to the document library and the two have to stay inverses: the half-coverage test
+/// is a literal sRGB byte, and a drift here is what it would catch.
+double srgb_to_linear(double c) {
+    return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+bool audio_only(std::string_view type) {
+    return type == "source.audio-input" || type == "source.audio-output";
+}
+
+bool effect_enabled(const ldoc::Node& node) {
+    return std::ranges::any_of(node.effects, [](const ldoc::Effect& e) { return e.enabled; });
+}
+
+struct Px {
+    int x0 = 0;
+    int y0 = 0;
+    int x1 = 0;
+    int y1 = 0;
+
+    [[nodiscard]] bool empty() const { return x1 <= x0 || y1 <= y0; }
+};
+
+/// Where a node's box lands, in pixel edges, half-open.
+///
+/// Natural size is the source's own size after crop. The box is `layout.size` when it is set
+/// and the natural size otherwise — the document's rule that a zero box means "the source's
+/// natural size". Fit then places the source inside that box, and scale acts around the box's
+/// pivot. Integer-aligned inputs stay on pixel edges; nothing here antialiases, so a test can
+/// name a pixel and mean it.
+std::optional<Px> place(const ldoc::Node& node, double natural_w, double natural_h,
+                        bool have_natural, GapReason& why) {
+    // Integer edges of `drawn_frame`. The overlay reads the continuous rectangle; the picture
+    // reads these, and they have to be the same placement or the handles miss the pixels.
+    const std::optional<DrawnFrame> frame =
+        drawn_frame(node, natural_w, natural_h, have_natural, why);
+    if (!frame)
+        return std::nullopt;
+    if (!(frame->width > 0.0) || !(frame->height > 0.0))
+        return Px{};
 
     Px out;
-    out.x0 = static_cast<int>(std::floor(dx));
-    out.y0 = static_cast<int>(std::floor(dy));
-    out.x1 = static_cast<int>(std::ceil(dx + dw));
-    out.y1 = static_cast<int>(std::ceil(dy + dh));
+    out.x0 = static_cast<int>(std::floor(frame->x));
+    out.y0 = static_cast<int>(std::floor(frame->y));
+    out.x1 = static_cast<int>(std::ceil(frame->x + frame->width));
+    out.y1 = static_cast<int>(std::ceil(frame->y + frame->height));
     return out;
 }
 
@@ -226,10 +405,25 @@ void fill_rect(Picture& picture, const Px& rect, const ldoc::Rgba& colour, doubl
     }
 }
 
+/// One axis of the stretched blit. `flip` reads the far end of the destination first, which
+/// is how a negative scale mirrors. The straight path uses this same division.
+int sample_axis(int i, int dest_n, int src_n, bool flip) {
+    if (dest_n <= 0 || src_n <= 0)
+        return 0;
+    const int from = flip ? dest_n - 1 - i : i;
+    const int sampled = static_cast<int>((static_cast<std::int64_t>(from) * src_n) / dest_n);
+    return std::clamp(sampled, 0, src_n - 1);
+}
+
 /// Copy an already-sRGB buffer into `picture`. A precomp's offscreen result. Opaque pixels are
 /// copied; transparent ones leave the destination, which is why the offscreen buffer starts
 /// clear rather than black — an empty nested scene must not punch a hole.
-void blit(Picture& picture, const Px& rect, const Picture& src, double opacity) {
+///
+/// `quarter` is a clockwise quarter turn of the content inside `rect`, and the flips are a
+/// negative scale applied before that turn. A solid colour does not come through here: its
+/// bounds are enough.
+void blit(Picture& picture, const Px& rect, const Picture& src, double opacity, int quarter,
+          bool flip_x, bool flip_y) {
     if (rect.empty() || src.width <= 0 || src.height <= 0 || opacity <= 0.0)
         return;
     const int x0 = std::max(0, rect.x0);
@@ -241,18 +435,45 @@ void blit(Picture& picture, const Px& rect, const Picture& src, double opacity) 
     if (dw <= 0 || dh <= 0)
         return;
     const double covered = std::clamp(opacity, 0.0, 1.0);
+    const bool plain = quarter == 0 && !flip_x && !flip_y;
 
     for (int y = y0; y < y1; ++y) {
-        const int sy = static_cast<int>((static_cast<std::int64_t>(y - rect.y0) * src.height) / dh);
-        const int clamped_y = std::clamp(sy, 0, src.height - 1);
-        const std::uint8_t* srow =
-            src.pixels.data() + static_cast<std::size_t>(clamped_y) * src.stride;
+        const int iy = y - rect.y0;
         std::uint8_t* drow = picture.pixels.data() + static_cast<std::size_t>(y) * picture.stride;
         for (int x = x0; x < x1; ++x) {
-            const int sx =
-                static_cast<int>((static_cast<std::int64_t>(x - rect.x0) * src.width) / dw);
-            const int clamped_x = std::clamp(sx, 0, src.width - 1);
-            const std::uint8_t* s = srow + static_cast<std::size_t>(clamped_x) * 4u;
+            const int ix = x - rect.x0;
+            int sx = 0;
+            int sy = 0;
+            if (plain) {
+                sx = sample_axis(ix, dw, src.width, false);
+                sy = sample_axis(iy, dh, src.height, false);
+            } else {
+                switch (quarter) {
+                case 1:
+                    sx = sample_axis(iy, dh, src.width, false);
+                    sy = sample_axis(ix, dw, src.height, true);
+                    break;
+                case 2:
+                    sx = sample_axis(ix, dw, src.width, true);
+                    sy = sample_axis(iy, dh, src.height, true);
+                    break;
+                case 3:
+                    sx = sample_axis(iy, dh, src.width, true);
+                    sy = sample_axis(ix, dw, src.height, false);
+                    break;
+                default:
+                    sx = sample_axis(ix, dw, src.width, false);
+                    sy = sample_axis(iy, dh, src.height, false);
+                    break;
+                }
+                if (flip_x)
+                    sx = src.width - 1 - sx;
+                if (flip_y)
+                    sy = src.height - 1 - sy;
+            }
+            const std::uint8_t* srow =
+                src.pixels.data() + static_cast<std::size_t>(sy) * src.stride;
+            const std::uint8_t* s = srow + static_cast<std::size_t>(sx) * 4u;
             std::uint8_t* d = drow + static_cast<std::size_t>(x) * 4u;
             if (s[3] == 0)
                 continue;
@@ -292,6 +513,40 @@ struct CanvasTarget {
 void paint_scene(const ldoc::Project& project, const ldoc::Scene& scene, double opacity,
                  CanvasTarget& target);
 
+/// The file named by the image source, at its decoded size. A missing or unreadable file is a
+/// gap. Nothing is kept between pictures, so the next composite reads the file again.
+void paint_image(const ldoc::Source& src, const ldoc::Node& node, double opacity,
+                 CanvasTarget& target) {
+    const auto it = src.settings.find("file");
+    const auto* path = it == src.settings.end() ? nullptr : std::get_if<std::string>(&it->second);
+    if (path == nullptr || path->empty()) {
+        refuse(target.picture, node, GapReason::Unreadable);
+        return;
+    }
+    std::optional<DecodedImage> image = decode_image(*path);
+    if (!image) {
+        refuse(target.picture, node, GapReason::Unreadable);
+        return;
+    }
+    GapReason why = GapReason::NoSize;
+    const std::optional<Px> rect = place(node, static_cast<double>(image->width),
+                                         static_cast<double>(image->height), true, why);
+    if (!rect) {
+        refuse(target.picture, node, why);
+        return;
+    }
+    Picture sampled;
+    sampled.width = image->width;
+    sampled.height = image->height;
+    sampled.stride = static_cast<std::uint32_t>(image->width) * 4u;
+    sampled.pixels = std::move(image->pixels);
+    target.drew = true;
+    // One blend, the same one a colour uses. `alphaLinear` would be a second blend.
+    blit(target.picture, *rect, sampled, opacity,
+         quarter_turn(node.transform.rotation_deg).value_or(0), node.transform.scale.x < 0.0,
+         node.transform.scale.y < 0.0);
+}
+
 void paint_node(const ldoc::Project& project, const ldoc::Node& node, double parent_opacity,
                 CanvasTarget& target) {
     if (!node.visible || parent_opacity <= 0.0)
@@ -311,7 +566,12 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         refuse(target.picture, node, GapReason::UnsupportedEffect);
         return;
     }
-    if (!transform_supported(node.transform)) {
+    // A group does not push its transform onto its children. A flip or a turn on the group
+    // itself would draw them as if it were not there, so the group keeps the stricter rule.
+    const bool transform_ok = std::holds_alternative<ldoc::GroupData>(node.data)
+                                  ? group_transform_ok(node.transform)
+                                  : transform_supported(node.transform);
+    if (!transform_ok) {
         refuse(target.picture, node, GapReason::UnsupportedTransform);
         return;
     }
@@ -335,6 +595,10 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         }
         if (audio_only(src->type))
             return;
+        if (src->type == "source.image") {
+            paint_image(*src, node, opacity, target);
+            return;
+        }
         if (src->type != "source.color") {
             refuse(target.picture, node, GapReason::UnsupportedType);
             return;
@@ -415,7 +679,9 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
             return;
         }
         target.drew = true;
-        blit(target.picture, *rect, offscreen, opacity);
+        blit(target.picture, *rect, offscreen, opacity,
+             quarter_turn(node.transform.rotation_deg).value_or(0), node.transform.scale.x < 0.0,
+             node.transform.scale.y < 0.0);
         return;
     }
 

@@ -5,7 +5,10 @@
 
 #include <format>
 
+#include "lcomp/composite.hpp"
 #include "ldoc/command.hpp"
+
+#include <QImageReader>
 
 #include <algorithm>
 #include <cmath>
@@ -195,6 +198,83 @@ QSize Document::canvasSizeOf(const QString& canvasId) const {
     return c ? QSize(c->width, c->height) : QSize{};
 }
 
+namespace {
+
+const ldoc::Scene* program_scene(const ldoc::Project& project, const ldoc::Id& canvas);
+std::optional<QVariantMap> placed_map(const ldoc::Project& project, const ldoc::Canvas& canvas,
+                                      const ldoc::Node& node);
+
+const ldoc::Canvas* canvas_of(const ldoc::Project& project, const ldoc::Id& id) {
+    for (const ldoc::Canvas& canvas : project.canvases) {
+        if (canvas.id == id)
+            return &canvas;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+QVariantMap Document::placedRect(const QString& canvasId, const QString& nodeId) const {
+    const ldoc::Project& project = session_->project();
+    const auto canvas_id = parse_id(canvas_key(canvasId));
+    const auto node_id = parse_id(nodeId);
+    if (!canvas_id || !node_id)
+        return {};
+    const ldoc::Canvas* canvas = canvas_of(project, *canvas_id);
+    const ldoc::Scene* scene = canvas ? program_scene(project, canvas->id) : nullptr;
+    if (!canvas || !scene)
+        return {};
+    const ldoc::Node* node = ldoc::find_node(scene->roots, *node_id);
+    if (!node)
+        return {};
+    return placed_map(project, *canvas, *node).value_or(QVariantMap{});
+}
+
+QVariantList Document::placedNodes(const QString& canvasId) const {
+    QVariantList out;
+    const ldoc::Project& project = session_->project();
+    const auto canvas_id = parse_id(canvas_key(canvasId));
+    if (!canvas_id)
+        return out;
+    const ldoc::Canvas* canvas = canvas_of(project, *canvas_id);
+    const ldoc::Scene* scene = canvas ? program_scene(project, canvas->id) : nullptr;
+    if (!canvas || !scene)
+        return out;
+
+    const auto walk = [&](const auto& self, const ldoc::Node& node, double parent_opacity) -> void {
+        if (!node.visible)
+            return;
+        const double opacity = parent_opacity * std::clamp(node.blend.opacity, 0.0, 1.0);
+        if (opacity <= 0.0)
+            return;
+        if (const auto* kids = node.children()) {
+            for (const ldoc::Node& child : *kids)
+                self(self, child, opacity);
+            return;
+        }
+        if (const std::optional<QVariantMap> map = placed_map(project, *canvas, node))
+            out.push_back(*map);
+    };
+    for (const ldoc::Node& node : scene->roots)
+        walk(walk, node, 1.0);
+    return out;
+}
+
+void Document::focusPlacedNode(const QString& canvasId, const QString& nodeId) {
+    const ldoc::Project& project = session_->project();
+    const auto canvas_id = parse_id(canvas_key(canvasId));
+    const auto node_id = parse_id(nodeId);
+    if (!canvas_id || !node_id)
+        return;
+    const ldoc::Scene* scene = program_scene(project, *canvas_id);
+    if (!scene || !ldoc::find_node(scene->roots, *node_id))
+        return;
+    const QString scene_id = id_str(scene->id);
+    if (selectedSceneOn(canvasId) != scene_id || current_canvas_ != canvas_key(canvasId))
+        selectSceneOn(canvasId, scene_id);
+    selectNodeOn(canvasId, nodeId);
+}
+
 QStringList Document::canvasIds() const {
     QStringList out;
     for (const ldoc::Canvas& c : session_->project().canvases)
@@ -295,6 +375,151 @@ namespace {
 void retitle_if_auto(const ldoc::Project& p, const ldoc::Encode& before, ldoc::Encode& after) {
     if (before.name == ldoc::default_encode_name(p, before))
         after.name = ldoc::default_encode_name(p, after);
+}
+
+std::optional<double> number_setting(const ldoc::ParamMap& settings, const char* key) {
+    const auto it = settings.find(key);
+    if (it == settings.end())
+        return std::nullopt;
+    if (const auto* i = std::get_if<std::int64_t>(&it->second))
+        return static_cast<double>(*i);
+    if (const auto* n = std::get_if<double>(&it->second))
+        return *n;
+    return std::nullopt;
+}
+
+/// Pixel size of an image file, from its header. The compositor decodes the same file to paint;
+/// this only needs the dimensions the handles are drawn at.
+std::optional<QSize> image_pixels(const std::string& path) {
+    if (path.empty())
+        return std::nullopt;
+    QImageReader reader{QString::fromStdString(path)};
+    const QSize size = reader.size();
+    if (!size.isValid() || size.width() <= 0 || size.height() <= 0)
+        return std::nullopt;
+    return size;
+}
+
+bool effect_enabled(const ldoc::Node& node) {
+    for (const ldoc::Effect& effect : node.effects) {
+        if (effect.enabled)
+            return true;
+    }
+    return false;
+}
+
+const ldoc::Scene* program_scene(const ldoc::Project& project, const ldoc::Id& canvas) {
+    for (const ldoc::Deck& deck : project.decks) {
+        if (deck.canvas == canvas && deck.program_scene)
+            return project.scene(*deck.program_scene);
+    }
+    return nullptr;
+}
+
+/// Natural size for a kind the compositor actually paints. Anything else has no rectangle.
+bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, const ldoc::Node& node,
+                  double& width, double& height) {
+    if (const auto* source = std::get_if<ldoc::SourceData>(&node.data)) {
+        if (!source->source)
+            return false;
+        const ldoc::Source* src = project.source(*source->source);
+        if (!src)
+            return false;
+        if (src->type == "source.color") {
+            const auto w = number_setting(src->settings, "width");
+            const auto h = number_setting(src->settings, "height");
+            if (!w || !h || !(*w > 0.0) || !(*h > 0.0))
+                return false;
+            width = *w;
+            height = *h;
+            return true;
+        }
+        if (src->type == "source.image") {
+            const auto it = src->settings.find("file");
+            const auto* path =
+                it == src->settings.end() ? nullptr : std::get_if<std::string>(&it->second);
+            if (!path)
+                return false;
+            const std::optional<QSize> size = image_pixels(*path);
+            if (!size)
+                return false;
+            width = size->width();
+            height = size->height();
+            return true;
+        }
+        return false;
+    }
+    if (const auto* pre = std::get_if<ldoc::PrecompData>(&node.data)) {
+        if (pre->size.x > 0.0 && pre->size.y > 0.0) {
+            width = pre->size.x;
+            height = pre->size.y;
+            return true;
+        }
+        if (canvas.width > 0 && canvas.height > 0) {
+            width = canvas.width;
+            height = canvas.height;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool drawable(const ldoc::Node& node) {
+    if (std::holds_alternative<ldoc::PrecompData>(node.data))
+        return true;
+    const auto* source = std::get_if<ldoc::SourceData>(&node.data);
+    if (!source || !source->source)
+        return false;
+    return true; // natural_size refuses kinds the picture does not draw
+}
+
+QVariantMap frame_map(const lcomp::DrawnFrame& frame, const ldoc::Node& node) {
+    QVariantMap m;
+    m.insert(QStringLiteral("id"), id_str(node.id));
+    m.insert(QStringLiteral("x"), frame.x);
+    m.insert(QStringLiteral("y"), frame.y);
+    m.insert(QStringLiteral("width"), frame.width);
+    m.insert(QStringLiteral("height"), frame.height);
+    m.insert(QStringLiteral("baseWidth"), frame.base_width);
+    m.insert(QStringLiteral("baseHeight"), frame.base_height);
+    m.insert(QStringLiteral("relCx"), frame.rel_cx);
+    m.insert(QStringLiteral("relCy"), frame.rel_cy);
+    m.insert(QStringLiteral("relDx"), frame.rel_dx);
+    m.insert(QStringLiteral("relDy"), frame.rel_dy);
+    m.insert(QStringLiteral("posX"), node.transform.position.x);
+    m.insert(QStringLiteral("posY"), node.transform.position.y);
+    m.insert(QStringLiteral("scaleX"), node.transform.scale.x);
+    m.insert(QStringLiteral("scaleY"), node.transform.scale.y);
+    m.insert(QStringLiteral("locked"), node.locked);
+    return m;
+}
+
+std::optional<QVariantMap> placed_map(const ldoc::Project& project, const ldoc::Canvas& canvas,
+                                      const ldoc::Node& node) {
+    if (!node.visible || node.blend.opacity <= 0.0)
+        return std::nullopt;
+    if (node.blend.mode != ldoc::BlendMode::Normal || node.blend.clip_to_below ||
+        effect_enabled(node) || !drawable(node))
+        return std::nullopt;
+    double natural_w = 0.0;
+    double natural_h = 0.0;
+    const bool have = natural_size(project, canvas, node, natural_w, natural_h);
+    // An image with no readable file is a gap, even if a box is set. A colour can still be
+    // placed from its box alone, which is what the compositor does.
+    if (const auto* source = std::get_if<ldoc::SourceData>(&node.data)) {
+        const ldoc::Source* src = source->source ? project.source(*source->source) : nullptr;
+        if (src && src->type == "source.image" && !have)
+            return std::nullopt;
+        if (src && src->type != "source.color" && src->type != "source.image")
+            return std::nullopt;
+    }
+    lcomp::GapReason why = lcomp::GapReason::NoSize;
+    const std::optional<lcomp::DrawnFrame> frame =
+        lcomp::drawn_frame(node, natural_w, natural_h, have, why);
+    if (!frame || !(frame->width > 0.0) || !(frame->height > 0.0) || !(frame->base_width > 0.0) ||
+        !(frame->base_height > 0.0))
+        return std::nullopt;
+    return frame_map(*frame, node);
 }
 
 } // namespace
@@ -3120,6 +3345,232 @@ void Document::setNodePosition(double x, double y) {
     ldoc::Transform t = n->transform;
     t.position = ldoc::Vec2{x, y};
     run(ldoc::SetNodeTransform{s->id, n->id, t});
+}
+
+void Document::setNodeFrame(double x, double y, double scaleX, double scaleY, bool dragging) {
+    const ldoc::Scene* s = current_scene();
+    const ldoc::Node* n = current_node();
+    if (!s || !n || n->locked)
+        return;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(scaleX) || !std::isfinite(scaleY))
+        return;
+    ldoc::Transform t = n->transform;
+    t.position = ldoc::Vec2{x, y};
+    t.scale = ldoc::Vec2{scaleX, scaleY};
+    if (t == n->transform)
+        return;
+    const ldoc::SetNodeTransform command{s->id, n->id, t};
+    if (!dragging) {
+        run(command);
+        return;
+    }
+    // One name for the whole drag, position and scale together, so the inverse kept is the
+    // transform from before the press. Closed by endGesture().
+    const std::string gesture = std::format("node.frame:{}", n->id.to_string());
+    const auto applied = session_->run(command, gesture);
+    if (!applied)
+        emit notice(qstr(applied.error()));
+}
+
+bool Document::prepare_transform(const ldoc::Scene*& scene, const ldoc::Node*& node) {
+    scene = current_scene();
+    node = current_node();
+    if (!scene || !node)
+        return false;
+    if (node->locked) {
+        emit notice(QStringLiteral("That source is locked."));
+        return false;
+    }
+    return true;
+}
+
+void Document::setDrawnRect(double x, double y, double width, double height, bool dragging) {
+    const ldoc::Scene* scene = current_scene();
+    const ldoc::Node* node = current_node();
+    const ldoc::Canvas* canvas = current_canvas();
+    if (!scene || !node || !canvas || node->locked)
+        return;
+    if (!std::isfinite(x) || !std::isfinite(y) || !(width > 0.0) || !(height > 0.0))
+        return;
+    double natural_w = 0.0;
+    double natural_h = 0.0;
+    const bool have = natural_size(session_->project(), *canvas, *node, natural_w, natural_h);
+    const auto solved =
+        lcomp::solve_drawn_rect(*node, natural_w, natural_h, have, x, y, width, height);
+    if (!solved)
+        return;
+    ldoc::Transform t = node->transform;
+    t.position = ldoc::Vec2{solved->x, solved->y};
+    t.scale = ldoc::Vec2{solved->scale_x, solved->scale_y};
+    if (t == node->transform)
+        return;
+    const ldoc::SetNodeTransform command{scene->id, node->id, t};
+    if (!dragging) {
+        run(command);
+        return;
+    }
+    const std::string gesture = std::format("node.frame:{}", node->id.to_string());
+    const auto applied = session_->run(command, gesture);
+    if (!applied)
+        emit notice(qstr(applied.error()));
+}
+
+void Document::resetTransform() {
+    const ldoc::Scene* scene = nullptr;
+    const ldoc::Node* node = nullptr;
+    if (!prepare_transform(scene, node))
+        return;
+    ldoc::Transform t = node->transform;
+    t.position = {};
+    t.rotation_deg = 0.0;
+    t.scale = {1.0, 1.0};
+    t.skew_deg = {};
+    if (t == node->transform)
+        return;
+    run(ldoc::SetNodeTransform{scene->id, node->id, t});
+}
+
+void Document::rotateBy(double degrees) {
+    const ldoc::Scene* scene = nullptr;
+    const ldoc::Node* node = nullptr;
+    if (!prepare_transform(scene, node) || !std::isfinite(degrees))
+        return;
+    ldoc::Transform t = node->transform;
+    double turned = std::fmod(t.rotation_deg + degrees, 360.0);
+    if (turned < 0.0)
+        turned += 360.0;
+    t.rotation_deg = turned;
+    if (t == node->transform)
+        return;
+    run(ldoc::SetNodeTransform{scene->id, node->id, t});
+}
+
+void Document::flipHorizontal() {
+    const ldoc::Scene* scene = nullptr;
+    const ldoc::Node* node = nullptr;
+    if (!prepare_transform(scene, node))
+        return;
+    ldoc::Transform t = node->transform;
+    t.scale.x = t.scale.x == 0.0 ? -1.0 : -t.scale.x;
+    if (t == node->transform)
+        return;
+    run(ldoc::SetNodeTransform{scene->id, node->id, t});
+}
+
+void Document::flipVertical() {
+    const ldoc::Scene* scene = nullptr;
+    const ldoc::Node* node = nullptr;
+    if (!prepare_transform(scene, node))
+        return;
+    ldoc::Transform t = node->transform;
+    t.scale.y = t.scale.y == 0.0 ? -1.0 : -t.scale.y;
+    if (t == node->transform)
+        return;
+    run(ldoc::SetNodeTransform{scene->id, node->id, t});
+}
+
+void Document::fitToCanvas(bool stretch) {
+    const ldoc::Scene* scene = nullptr;
+    const ldoc::Node* node = nullptr;
+    if (!prepare_transform(scene, node))
+        return;
+    const ldoc::Canvas* canvas = current_canvas();
+    if (!canvas || canvas->width <= 0 || canvas->height <= 0)
+        return;
+    const QVariantMap rect = placedRect(QString{}, id_str(node->id));
+    const double w = rect.value(QStringLiteral("width")).toDouble();
+    const double h = rect.value(QStringLiteral("height")).toDouble();
+    if (!(w > 0.0) || !(h > 0.0))
+        return;
+    const double cw = static_cast<double>(canvas->width);
+    const double ch = static_cast<double>(canvas->height);
+    if (stretch) {
+        setDrawnRect(0.0, 0.0, cw, ch, false);
+        return;
+    }
+    const double s = std::min(cw / w, ch / h);
+    const double nw = w * s;
+    const double nh = h * s;
+    setDrawnRect((cw - nw) / 2.0, (ch - nh) / 2.0, nw, nh, false);
+}
+
+void Document::centerOnCanvas(bool horizontal, bool vertical) {
+    const ldoc::Scene* scene = nullptr;
+    const ldoc::Node* node = nullptr;
+    if (!prepare_transform(scene, node))
+        return;
+    const ldoc::Canvas* canvas = current_canvas();
+    if (!canvas || canvas->width <= 0 || canvas->height <= 0)
+        return;
+    const QVariantMap rect = placedRect(QString{}, id_str(node->id));
+    const double w = rect.value(QStringLiteral("width")).toDouble();
+    const double h = rect.value(QStringLiteral("height")).toDouble();
+    if (!(w > 0.0) || !(h > 0.0))
+        return;
+    double nx = rect.value(QStringLiteral("x")).toDouble();
+    double ny = rect.value(QStringLiteral("y")).toDouble();
+    if (horizontal)
+        nx = (static_cast<double>(canvas->width) - w) / 2.0;
+    if (vertical)
+        ny = (static_cast<double>(canvas->height) - h) / 2.0;
+    setDrawnRect(nx, ny, w, h, false);
+}
+
+void Document::copyTransform() {
+    const ldoc::Node* node = current_node();
+    if (!node) {
+        emit notice(QStringLiteral("Select a source to copy the transform from."));
+        return;
+    }
+    copied_transform_ = node->transform;
+    emit notice(QStringLiteral("Copied the transform."));
+}
+
+void Document::pasteTransform() {
+    if (!copied_transform_) {
+        emit notice(QStringLiteral("There is no transform to paste."));
+        return;
+    }
+    const ldoc::Scene* scene = nullptr;
+    const ldoc::Node* node = nullptr;
+    if (!prepare_transform(scene, node))
+        return;
+    if (node->transform == *copied_transform_)
+        return;
+    run(ldoc::SetNodeTransform{scene->id, node->id, *copied_transform_});
+}
+
+bool Document::hasCopiedTransform() const { return copied_transform_.has_value(); }
+
+void Document::moveSelectedToEnd(bool front) {
+    const ldoc::Scene* scene = current_scene();
+    const QString id = selectedNode();
+    const auto parsed = parse_id(id);
+    if (!scene || !parsed)
+        return;
+    const std::function<bool(const std::vector<ldoc::Node>&)> search =
+        [&](const std::vector<ldoc::Node>& nodes) -> bool {
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            if (nodes[i].id == *parsed) {
+                const int delta = front ? -static_cast<int>(i)
+                                        : static_cast<int>(nodes.size() - 1 - i);
+                moveNode(id, delta);
+                return true;
+            }
+            if (const auto* kids = nodes[i].children()) {
+                if (search(*kids))
+                    return true;
+            }
+        }
+        return false;
+    };
+    search(scene->roots);
+}
+
+void Document::requestRename() {
+    if (selected_node_.isEmpty())
+        return;
+    emit renameRequested(selected_node_);
 }
 
 void Document::setNodeScale(double x, double y) {

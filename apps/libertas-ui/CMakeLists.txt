@@ -8,14 +8,19 @@
 # answer -- including whether a drop is legal -- comes back from there, so what the operator sees
 # is what the headless tests cover.
 
-# QuickDialogs2 is here for one thing: the file chooser behind a source's path setting. It is
-# the desktop's own dialog -- the XDG portal, on Wayland -- which is the only way a client gets a
-# path the sandbox will honour, and the one deliberate exception to ADR-0015's single surface.
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick QuickShapes QuickDialogs2)
+# DBus is here for one thing: the file chooser behind a source's path setting. The call is the
+# desktop portal's OpenFile, and this machine's portal config sends that to Omanta. Qt's own
+# dialog is not used. Widgets is here for QColorDialog, which the colour field opens. That
+# dialog already has the picker and the custom-colour slots, so they are not rebuilt here.
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core DBus Gui Qml Quick QuickShapes Widgets)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(libertas-ui
+    colourdialog.cpp
+    colourdialog.hpp
+    filedialog.cpp
+    filedialog.hpp
     document.cpp
     document.hpp
     documentmodels.cpp
@@ -76,6 +81,7 @@ qt_add_qml_module(libertas-ui
         qml/OutputsPanel.qml
         qml/PanelBody.qml
         qml/PanelFrame.qml
+        qml/ProgramOverlay.qml
         qml/PropertiesPanel.qml
         qml/SceneLinkDialog.qml
         qml/ScenesPanel.qml
@@ -98,10 +104,11 @@ target_link_libraries(libertas-ui PRIVATE
     libertas::llayout
     libertas::lsession
     libertas::ltheme
+    Qt6::DBus
     Qt6::Gui
     Qt6::Quick
-    Qt6::QuickDialogs2
     Qt6::QuickShapes
+    Qt6::Widgets
 )
 
 # The shell spawns this. A path baked in at build time is the one the self-check runs, rather

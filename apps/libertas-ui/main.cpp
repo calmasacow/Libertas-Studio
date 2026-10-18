@@ -14,7 +14,7 @@
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
-#include <QGuiApplication>
+#include <QApplication>
 #include <QMouseEvent>
 #include <QObject>
 #include <QQmlApplicationEngine>
@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 
 namespace {
 
@@ -88,14 +89,15 @@ int fail(const char* msg) {
 } // namespace
 
 int main(int argc, char** argv) {
-    // Read before QGuiApplication: the platform plugin is chosen during its construction, long
-    // before QCommandLineParser gets a look at argv.
+    // Read before QApplication: the platform plugin is chosen during its construction, long
+    // before QCommandLineParser gets a look at argv. QApplication, rather than QGuiApplication,
+    // because the colour field opens QColorDialog and a widget dialog needs it.
     bool check = false;
     for (int i = 1; i < argc; ++i)
         check = check || std::string_view{argv[i]} == "--check";
     insist_on_wayland(check);
 
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("libertas"));
     QGuiApplication::setOrganizationName(QStringLiteral("Libertas-Studio"));
     QGuiApplication::setApplicationVersion(QStringLiteral("0.0.1"));
@@ -268,8 +270,9 @@ int main(int argc, char** argv) {
         // by every gesture check: proving a function works proves nothing about the pointer
         // that is supposed to reach it.
         const auto post = [&window](QEvent::Type type, QPointF at, Qt::MouseButton b,
-                                    Qt::MouseButtons held) {
-            QMouseEvent e{type, at, window->mapToGlobal(at), b, held, {}};
+                                    Qt::MouseButtons held,
+                                    Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            QMouseEvent e{type, at, window->mapToGlobal(at), b, held, mods};
             QCoreApplication::sendEvent(window, &e);
         };
 
@@ -1154,6 +1157,356 @@ int main(int argc, char** argv) {
                 settle();
                 report(!panels.front()->isVisible(), "Cancel puts it away");
             }
+        }
+
+        // Creating a source and placing one that already exists are different gestures. The
+        // new one has nothing but the type's defaults, so the click that creates it opens
+        // its settings. The check drives that click; the C++ call above does not, and must
+        // not, because the rest of this run creates sources without an operator present.
+        {
+            const QList<QQuickItem*> adders =
+                collect(window->contentItem(), QStringLiteral("addSourceDialog"));
+            const QList<QQuickItem*> panels =
+                collect(window->contentItem(), QStringLiteral("sourceSettingsDialog"));
+            report(adders.size() == 1 && panels.size() == 1,
+                   "the add dialog and the settings panel are both there");
+            if (!adders.isEmpty() && !panels.isEmpty()) {
+                QQuickItem* adder = adders.front();
+                const QString was = document.selectedNode();
+                const int count_before = document.sourcesModel()->rowCount();
+                QMetaObject::invokeMethod(adder, "open");
+                settle();
+                adder->setProperty("selectedType", QStringLiteral("source.color"));
+                settle();
+                const QList<QQuickItem*> tiles =
+                    collect(window->contentItem(), QStringLiteral("addNewSourceTile"));
+                report(!tiles.isEmpty() && tiles.front()->isVisible() &&
+                           tiles.front()->width() > 20.0,
+                       "a new colour has a tile to click");
+                if (!tiles.isEmpty() && tiles.front()->isVisible()) {
+                    const QPointF at = tiles.front()->mapToScene(
+                        QPointF(tiles.front()->width() / 2.0, tiles.front()->height() / 2.0));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    const QString created =
+                        document.nodeProperties().value(QStringLiteral("sourceId")).toString();
+                    report(!adder->isVisible(), "creating a source closes the add dialog");
+                    report(panels.front()->isVisible() &&
+                               panels.front()->property("sourceId").toString() == created &&
+                               !created.isEmpty(),
+                           "and opens that new source's settings");
+                    report(document.sourcesModel()->rowCount() == count_before + 1,
+                           "the source itself was created");
+                }
+                if (adder->isVisible())
+                    QMetaObject::invokeMethod(adder, "close");
+                if (panels.front()->isVisible())
+                    QMetaObject::invokeMethod(panels.front(), "close");
+                if (document.sourcesModel()->rowCount() == count_before + 1)
+                    document.undo();
+                if (!was.isEmpty())
+                    document.selectNode(was);
+                settle();
+                report(!panels.front()->isVisible() && !adder->isVisible(),
+                       "and both dialogs are put away again");
+            }
+        }
+
+        // The file is on the card as soon as it is chosen. OK is what puts it in the project
+        // and on the program canvas; the preview reads `pending`, so a cancel still has
+        // nothing to undo.
+        {
+            const QList<QQuickItem*> panels =
+                collect(window->contentItem(), QStringLiteral("sourceSettingsDialog"));
+            report(!panels.isEmpty(), "the settings panel is there for an image preview");
+            if (!panels.isEmpty()) {
+                const QString was = document.selectedNode();
+                const int image_count = document.sourcesModel()->rowCount();
+                document.addNewSourceToScene(QStringLiteral("Still"),
+                                             QStringLiteral("source.image"), true);
+                settle();
+                const QString source_id =
+                    document.nodeProperties().value(QStringLiteral("sourceId")).toString();
+                const QString stored_file =
+                    document.sourceDetails(source_id).value(QStringLiteral("settings")).toMap()
+                        .value(QStringLiteral("file")).toString();
+                const auto png =
+                    std::filesystem::temp_directory_path() / "libertas-settings-preview.png";
+                {
+                    // A 2x2 PNG: red, green, blue, and a clear pixel. The same bytes the
+                    // composite test draws, so this check is looking at a real file.
+                    static constexpr unsigned char bytes[] = {
+                        137, 80, 78, 71,  13,  10,  26,  10,  0,   0,   0,   13,  73,  72,  68,
+                        82,  0,   0,   0,   2,   0,   0,   0,   2,   8,   6,   0,   0,   0,   114,
+                        182, 13,  36,  0,   0,   0,   19,  73,  68,  65,  84,  120, 218, 99,  248,
+                        207, 192, 240, 31,  12,  129, 52,  136, 96,  0,   0,   63,  210, 5,   251,
+                        127, 230, 106, 43,  0,   0,   0,   0,   73,  69,  78,  68,  174, 66,  96,
+                        130};
+                    std::ofstream out(png, std::ios::binary);
+                    out.write(reinterpret_cast<const char*>(bytes), sizeof bytes);
+                }
+                QMetaObject::invokeMethod(panels.front(), "open",
+                                          Q_ARG(QVariant, QVariant{source_id}));
+                settle();
+                const bool set = QMetaObject::invokeMethod(
+                    panels.front(), "setValue",
+                    Q_ARG(QVariant, QVariant{QStringLiteral("file")}),
+                    Q_ARG(QVariant, QVariant{QString::fromStdString(png.string())}));
+                report(set && panels.front()->isVisible(),
+                       "an image source's settings take a file while the panel is open");
+                QQuickItem* image = nullptr;
+                int status = 0;
+                for (int i = 0; i < 50; ++i) {
+                    const QList<QQuickItem*> images =
+                        collect(window->contentItem(), QStringLiteral("sourceSettingsImage"));
+                    image = images.isEmpty() ? nullptr : images.front();
+                    status = image == nullptr ? 0 : image->property("status").toInt();
+                    // Image.Ready. The enum lives in a private header; Null is 0, Ready is 1.
+                    if (image != nullptr && image->isVisible() && status == 1)
+                        break;
+                    pump(40);
+                }
+                report(image != nullptr && image->isVisible() && status == 1,
+                       "the settings preview shows the chosen image before OK");
+                report(document.sourceDetails(source_id).value(QStringLiteral("settings")).toMap()
+                           .value(QStringLiteral("file")).toString() == stored_file,
+                       "and the file is still pending, not yet in the project");
+                QMetaObject::invokeMethod(panels.front(), "close");
+                if (document.sourcesModel()->rowCount() == image_count + 1)
+                    document.undo();
+                if (!was.isEmpty())
+                    document.selectNode(was);
+                std::error_code ec;
+                std::filesystem::remove(png, ec);
+                settle();
+                report(!panels.front()->isVisible(), "the image preview is put away");
+            }
+        }
+
+        // A selected source on the program picture: drag it, and pull a handle. The pointer is
+        // the path, and each gesture is one undo back to where the press began.
+        {
+            const QString canvas_was = document.currentCanvas();
+            const QString scene_was = document.selectedScene();
+            const QString node_was = document.selectedNode();
+            const int card_count = document.sourcesModel()->rowCount();
+            const QString stack = document.undoDescription();
+
+            const QStringList canvases = document.canvasIds();
+            if (!canvases.isEmpty())
+                document.selectCanvas(canvases.front());
+            if (QAbstractItemModel* scenes = document.scenesModel()) {
+                for (int i = 0; i < scenes->rowCount(); ++i) {
+                    if (scenes->index(i, 0).data(role_of(scenes, "isProgram")).toBool()) {
+                        document.selectScene(scenes->index(i, 0)
+                                                 .data(role_of(scenes, "sceneId"))
+                                                 .toString());
+                        break;
+                    }
+                }
+            }
+
+            document.addNewSourceToScene(QStringLiteral("Card"), QStringLiteral("source.color"),
+                                         true);
+            settle();
+            const QString card = document.selectedNode();
+            const QString after_add = document.undoDescription();
+            const QVariantMap placed = document.placedRect(QString{}, card);
+            report(placed.value(QStringLiteral("width")).toDouble() == 1920.0 &&
+                       placed.value(QStringLiteral("height")).toDouble() == 1080.0 &&
+                       placed.value(QStringLiteral("x")).toDouble() == 0.0 &&
+                       placed.value(QStringLiteral("y")).toDouble() == 0.0,
+                   "a selected colour sits on the program canvas at its own size");
+
+            QQuickItem* frame = nullptr;
+            int handles = 0;
+            for (QQuickItem* box :
+                 collect(window->contentItem(), QStringLiteral("programSelection"))) {
+                if (!box->isVisible() || !box->parentItem() || !box->parentItem()->parentItem())
+                    continue;
+                frame = box->parentItem()->parentItem();
+            }
+            for (QQuickItem* handle :
+                 collect(window->contentItem(), QStringLiteral("programHandle"))) {
+                if (handle->isVisible())
+                    ++handles;
+            }
+            report(frame != nullptr && frame->width() > 1.0 && frame->height() > 1.0,
+                   "the selected source has a frame on the canvas");
+            report(handles == 8, "and eight resize handles");
+
+            if (frame != nullptr && !card.isEmpty()) {
+                const QPointF mid =
+                    frame->mapToScene(QPointF(frame->width() / 2.0, frame->height() / 2.0));
+                const QPointF shifted = frame->mapToScene(
+                    QPointF(frame->width() / 2.0 + 36.0, frame->height() / 2.0 + 24.0));
+                post(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseMove, shifted, Qt::NoButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, shifted, Qt::LeftButton, Qt::NoButton);
+                settle();
+
+                const double canvas_dx = 36.0 * 1920.0 / frame->width();
+                const double canvas_dy = 24.0 * 1080.0 / frame->height();
+                const QVariantMap moved = document.nodeProperties();
+                report(std::abs(moved.value(QStringLiteral("positionX")).toDouble() - canvas_dx) <
+                               1.5 &&
+                           std::abs(moved.value(QStringLiteral("positionY")).toDouble() -
+                                    canvas_dy) < 1.5,
+                       "dragging the canvas moves the source");
+                document.undo();
+                settle();
+                const QVariantMap restored = document.nodeProperties();
+                report(std::abs(restored.value(QStringLiteral("positionX")).toDouble()) < 0.05 &&
+                           std::abs(restored.value(QStringLiteral("positionY")).toDouble()) <
+                               0.05 &&
+                           document.undoDescription() == after_add,
+                       "one undo puts the drag back where it started");
+
+                const QPointF corner = frame->mapToScene(
+                    QPointF(frame->width() - 1.0, frame->height() - 1.0));
+                const QPointF inward = frame->mapToScene(
+                    QPointF(frame->width() - 1.0 - 48.0, frame->height() - 1.0 - 36.0));
+                post(QEvent::MouseButtonPress, corner, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseMove, inward, Qt::NoButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, inward, Qt::LeftButton, Qt::NoButton);
+                settle();
+                const QVariantMap scaled = document.nodeProperties();
+                report(scaled.value(QStringLiteral("scaleX")).toDouble() < 0.98 &&
+                           scaled.value(QStringLiteral("scaleY")).toDouble() < 0.98,
+                       "a corner handle resizes the source");
+                document.undo();
+                settle();
+                const QVariantMap unscaled = document.nodeProperties();
+                report(std::abs(unscaled.value(QStringLiteral("scaleX")).toDouble() - 1.0) <
+                               0.001 &&
+                           std::abs(unscaled.value(QStringLiteral("scaleY")).toDouble() - 1.0) <
+                               0.001 &&
+                           std::abs(unscaled.value(QStringLiteral("positionX")).toDouble()) <
+                               0.05 &&
+                           std::abs(unscaled.value(QStringLiteral("positionY")).toDouble()) <
+                               0.05 &&
+                           document.undoDescription() == after_add,
+                       "one undo puts the resize back where it started");
+
+                const auto drag_handle = [&](QPointF to, Qt::KeyboardModifiers mods) {
+                    post(QEvent::MouseButtonPress, corner, Qt::LeftButton, Qt::LeftButton, mods);
+                    post(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton, mods);
+                    post(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton, mods);
+                    settle();
+                };
+                const QPointF uneven = frame->mapToScene(
+                    QPointF(frame->width() - 1.0 - 70.0, frame->height() - 1.0 - 12.0));
+                drag_handle(uneven, Qt::ShiftModifier);
+                const QVariantMap locked_aspect = document.nodeProperties();
+                const double locked_x = locked_aspect.value(QStringLiteral("scaleX")).toDouble();
+                const double locked_y = locked_aspect.value(QStringLiteral("scaleY")).toDouble();
+                const QVariantMap locked_rect = document.placedRect(QString{}, card);
+                report(std::abs(locked_x - locked_y) < 0.02 && locked_x < 0.98 && locked_x > 0.05 &&
+                           std::abs(locked_rect.value(QStringLiteral("x")).toDouble()) < 1.5 &&
+                           std::abs(locked_rect.value(QStringLiteral("y")).toDouble()) < 1.5,
+                       "shift locks the aspect ratio while resizing");
+                document.undo();
+                settle();
+
+                const QPointF inward_alt = frame->mapToScene(
+                    QPointF(frame->width() - 1.0 - 40.0, frame->height() - 1.0 - 30.0));
+                drag_handle(inward_alt, Qt::AltModifier);
+                const QVariantMap alt_rect = document.placedRect(QString{}, card);
+                const double alt_x = alt_rect.value(QStringLiteral("x")).toDouble();
+                const double alt_y = alt_rect.value(QStringLiteral("y")).toDouble();
+                const double alt_w = alt_rect.value(QStringLiteral("width")).toDouble();
+                const double alt_h = alt_rect.value(QStringLiteral("height")).toDouble();
+                report(std::abs((alt_x + alt_w / 2.0) - 960.0) < 2.0 &&
+                           std::abs((alt_y + alt_h / 2.0) - 540.0) < 2.0 && alt_w < 1900.0 &&
+                           alt_h < 1060.0,
+                       "alt resizes the source in place");
+                document.undo();
+                settle();
+
+                drag_handle(uneven, Qt::AltModifier | Qt::ShiftModifier);
+                const QVariantMap both = document.nodeProperties();
+                const QVariantMap both_rect = document.placedRect(QString{}, card);
+                const double both_x = both_rect.value(QStringLiteral("x")).toDouble();
+                const double both_y = both_rect.value(QStringLiteral("y")).toDouble();
+                const double both_w = both_rect.value(QStringLiteral("width")).toDouble();
+                const double both_h = both_rect.value(QStringLiteral("height")).toDouble();
+                report(std::abs(both.value(QStringLiteral("scaleX")).toDouble() -
+                                both.value(QStringLiteral("scaleY")).toDouble()) < 0.02 &&
+                           std::abs((both_x + both_w / 2.0) - 960.0) < 2.0 &&
+                           std::abs((both_y + both_h / 2.0) - 540.0) < 2.0 && both_w < 1900.0,
+                       "alt and shift together lock the aspect and resize in place");
+                document.undo();
+                settle();
+
+                const QPointF nudged = frame->mapToScene(
+                    QPointF(frame->width() / 2.0 + 20.0, frame->height() / 2.0 + 16.0));
+                post(QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseMove, nudged, Qt::NoButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, nudged, Qt::LeftButton, Qt::NoButton);
+                settle();
+                post(QEvent::MouseButtonPress, mid, Qt::RightButton, Qt::RightButton);
+                post(QEvent::MouseButtonRelease, mid, Qt::RightButton, Qt::NoButton);
+                settle();
+
+                QQuickItem* transform_item = nullptr;
+                for (QQuickItem* item :
+                     collect(window->contentItem(), QStringLiteral("stripMenuItem"))) {
+                    if (item->isVisible() &&
+                        item->property("label").toString() == QLatin1String("Transform"))
+                        transform_item = item;
+                }
+                report(transform_item != nullptr, "right-clicking the source opens its menu");
+                if (transform_item != nullptr) {
+                    const QPointF at = transform_item->mapToScene(
+                        QPointF(transform_item->width() / 2.0, transform_item->height() / 2.0));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                }
+                QQuickItem* reset_item = nullptr;
+                for (QQuickItem* item :
+                     collect(window->contentItem(), QStringLiteral("stripMenuItem"))) {
+                    if (item->isVisible() &&
+                        item->property("label").toString() == QLatin1String("Reset Transform"))
+                        reset_item = item;
+                }
+                report(reset_item != nullptr, "and the transform menu has reset");
+                if (reset_item != nullptr) {
+                    const QPointF at = reset_item->mapToScene(
+                        QPointF(reset_item->width() / 2.0, reset_item->height() / 2.0));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                }
+                const QVariantMap reset = document.nodeProperties();
+                report(std::abs(reset.value(QStringLiteral("positionX")).toDouble()) < 0.05 &&
+                           std::abs(reset.value(QStringLiteral("positionY")).toDouble()) < 0.05 &&
+                           std::abs(reset.value(QStringLiteral("scaleX")).toDouble() - 1.0) <
+                               0.001 &&
+                           std::abs(reset.value(QStringLiteral("scaleY")).toDouble() - 1.0) <
+                               0.001 &&
+                           std::abs(reset.value(QStringLiteral("rotation")).toDouble()) < 0.001,
+                       "reset puts the transform back");
+                for (int step = 0; step < 6 && document.canUndo() &&
+                                    document.undoDescription() != after_add;
+                     ++step)
+                    document.undo();
+                settle();
+            }
+
+            if (document.sourcesModel()->rowCount() == card_count + 1)
+                document.undo();
+            report(document.sourcesModel()->rowCount() == card_count &&
+                       document.undoDescription() == stack,
+                   "the canvas source leaves with the add");
+            if (!scene_was.isEmpty())
+                document.selectScene(scene_was);
+            else if (!canvas_was.isEmpty())
+                document.selectCanvas(canvas_was);
+            if (!node_was.isEmpty())
+                document.selectNode(node_was);
+            settle();
         }
 
         // The other way in, and the one the block above cannot reach: the row itself. That block
