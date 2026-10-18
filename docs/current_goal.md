@@ -9,19 +9,12 @@ and then went looking for why it is slow. Read this before picking the work up e
 
 ## The state of the tree right now
 
-`main` is at `b8e15c3`, pushed. **There are uncommitted changes in the working tree** — about
-eighteen files. They build warning-free and the suite is 24/24. They were held back while the
-composite was still slow for an unexplained reason; that reason is now found and fixed (see
-below), so they are ready to commit once the `DIAG` instrumentation is stripped.
+`main` is at `8731e1c`, pushed, **and the working tree is clean**. Everything this session
+produced is committed: the benchmark instrumentation has been stripped, the build is
+warning-free under `-Werror`, and the suite is 24/24.
 
-Two files still carry temporary `DIAG` instrumentation that must not be committed as-is:
-
-- `libs/lcomp/src/composite.cpp` — timing around the walk, `paint_image`, `paint_screen`, the
-  frame fetch and the blit, plus an alpha probe and a geometry probe.
-- `libs/lcomp/src/preview.cpp` — timing around `composite_canvas`.
-
-They print to stderr every sixtieth frame. Strip them before any commit, or keep them while
-chasing the open problem below — they are how the numbers in this document were obtained.
+The app was launched after the final commit to confirm capture still opens and the composite
+idles at 0% CPU on a static screen.
 
 ## What landed and is pushed
 
@@ -37,10 +30,15 @@ Four commits put a live screen on the canvas, in this order:
   desktop in the Program panel.
 - `6c54750` — removed six self-check assertions that were measuring event-loop passes rather
   than layout, and split the capture budget into a first-frame wait and a later-frame wait.
+- `ee69359` — the blit was doing four million integer divisions a frame. See "The problem that
+  was open" below.
+- `cb03a51` — this document, with the CPU cost table and the GPU brief.
+- `8731e1c` — the four operator-reported fixes, the screen dropdown, the live preview timer and
+  the performance work. The section below is its shape.
 
-## What is in the uncommitted working tree
+## What landed in the last commit (`8731e1c`)
 
-Everything here was written this session, builds clean under `-Werror`, and passes 24/24.
+All committed. Listed because the commit is large and this is the shape of it.
 
 **Four operator-reported fixes:**
 
