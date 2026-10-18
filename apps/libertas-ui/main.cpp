@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "document.hpp"
+#include "preview.hpp"
 #include "shortcuts.hpp"
 #include "telemetry.hpp"
 #include "theme.hpp"
@@ -149,6 +150,7 @@ int main(int argc, char** argv) {
         parser.isSet(project_opt)
             ? std::filesystem::path(parser.value(project_opt).toStdString())
             : std::filesystem::path{});
+    libertas::ui::Preview::configure(LIBERTAS_RENDER_EXE);
     libertas::ui::Shortcuts::configure(config_dir() / "bindings.toml");
     // Free space is measured where recordings would land, which is beside the project. With no
     // project open there is nothing to measure against yet, so it falls back to the home
@@ -167,13 +169,16 @@ int main(int argc, char** argv) {
     auto* theme_ptr = engine.singletonInstance<libertas::ui::Theme*>("Libertas", "Theme");
     auto* document_ptr =
         engine.singletonInstance<libertas::ui::Document*>("Libertas", "Document");
+    auto* preview_ptr =
+        engine.singletonInstance<libertas::ui::Preview*>("Libertas", "Preview");
     auto* shortcuts_ptr =
         engine.singletonInstance<libertas::ui::Shortcuts*>("Libertas", "Shortcuts");
-    if (!workspace_ptr || !theme_ptr || !document_ptr || !shortcuts_ptr)
+    if (!workspace_ptr || !theme_ptr || !document_ptr || !preview_ptr || !shortcuts_ptr)
         return fail("the singletons could not be created");
     libertas::ui::Workspace& workspace = *workspace_ptr;
     libertas::ui::Theme& theme = *theme_ptr;
     libertas::ui::Document& document = *document_ptr;
+    libertas::ui::Preview& preview = *preview_ptr;
     libertas::ui::Shortcuts& shortcuts = *shortcuts_ptr;
 
     const auto say = [](const QString& t) {
@@ -182,6 +187,7 @@ int main(int argc, char** argv) {
     QObject::connect(&workspace, &libertas::ui::Workspace::notice, &app, say);
     QObject::connect(&theme, &libertas::ui::Theme::notice, &app, say);
     QObject::connect(&document, &libertas::ui::Document::notice, &app, say);
+    QObject::connect(&preview, &libertas::ui::Preview::notice, &app, say);
     QObject::connect(&shortcuts, &libertas::ui::Shortcuts::notice, &app, say);
 
     // Each canvas has its own Scenes and Sources panels, so the workspace has to be told
@@ -194,6 +200,13 @@ int main(int argc, char** argv) {
     };
     QObject::connect(&document, &libertas::ui::Document::changed, &app, sync_canvas_panels);
     sync_canvas_panels();
+
+    // From the notification, not from a command's return (ADR-0024). The first one is the
+    // document the shell opened on; nothing has emitted `changed` since this connection existed.
+    QObject::connect(&document, &libertas::ui::Document::changed, &app, [&preview, &document] {
+        preview.publish(document.projectForBindings());
+    });
+    preview.publish(document.projectForBindings());
 
     engine.load(QUrl(QStringLiteral("qrc:/qt/qml/Libertas/qml/Main.qml")));
 
@@ -316,6 +329,35 @@ int main(int argc, char** argv) {
             QTimer::singleShot(160, &loop, &QEventLoop::quit);
             loop.exec();
         };
+        const auto pump = [](int ms) {
+            QEventLoop loop;
+            QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+            loop.exec();
+        };
+        const auto visible_status = [&] {
+            QString text;
+            for (QQuickItem* item :
+                 collect(window->contentItem(), QStringLiteral("programStatus"))) {
+                if (item->isVisible())
+                    text = item->property("text").toString();
+            }
+            return text;
+        };
+        // The first frame has to land before the resting grab. A caption that changes between
+        // the two grabs of the drag would be counted as the overlay moving.
+        QString pipeline;
+        for (int i = 0; i < 50; ++i) {
+            pipeline = visible_status();
+            if (!pipeline.isEmpty() &&
+                !pipeline.contains(QStringLiteral("no pipeline attached")))
+                break;
+            pump(40);
+        }
+        const QString want = preview.caption(QString{});
+        report(pipeline == want && want.contains(QStringLiteral("nothing in the scene")),
+               "the empty program scene is a picture, and says there is nothing in it");
+        // The caption updates in the same event as the frame. The image paints on the next
+        // pass, and a picture that appears between the two drag grabs is counted as spill.
         settle();
         const QImage resting = grab();
         report(!resting.isNull() && resting.width() > 0, "the window renders a frame at rest");
@@ -412,6 +454,71 @@ int main(int argc, char** argv) {
 
         report(workspace.endDrag(), "the drop applied");
         report(!workspace.dragging(), "and the drag is over");
+
+        // A colour the document holds has to show up here, which means it crossed into the
+        // render process and back. After the drag comparison: the two grabs have to be of the
+        // same picture. Undone before anything else looks at the document.
+        {
+            document.addNewSourceToScene(QStringLiteral("Wash"), QStringLiteral("source.color"));
+            const QString wash =
+                document.nodeProperties().value(QStringLiteral("sourceId")).toString();
+            QVariantMap settings =
+                document.sourceDetails(wash).value(QStringLiteral("settings")).toMap();
+            settings[QStringLiteral("color")] = QStringLiteral("#ff0000");
+            document.applySourceSettings(wash, QString{}, settings);
+            // The source is added with the default colour first, and that frame is also
+            // complete, so the size on its own is not enough: wait until the red one is what
+            // is actually drawn.
+            QString red_caption;
+            double fraction = 0.0;
+            QQuickItem* frame_item = nullptr;
+            for (int i = 0; i < 50; ++i) {
+                pump(40);
+                red_caption = visible_status();
+                frame_item = nullptr;
+                for (QQuickItem* item :
+                     collect(window->contentItem(), QStringLiteral("programFrame"))) {
+                    if (item->isVisible())
+                        frame_item = item;
+                }
+                fraction = 0.0;
+                if (frame_item == nullptr)
+                    continue;
+                const QImage shot = grab();
+                const qreal dpr = window->devicePixelRatio();
+                const int inset = std::max(1, static_cast<int>(4.0 * dpr));
+                const QPointF origin = frame_item->mapToScene(QPointF{0, 0});
+                const int x0 = static_cast<int>(origin.x() * dpr) + inset;
+                const int y0 = static_cast<int>(origin.y() * dpr) + inset;
+                const int x1 =
+                    static_cast<int>((origin.x() + frame_item->width()) * dpr) - inset;
+                const int y1 =
+                    static_cast<int>((origin.y() + frame_item->height()) * dpr) - inset;
+                long long red = 0;
+                long long total = 0;
+                for (int y = y0; y < y1; ++y) {
+                    for (int x = x0; x < x1; ++x) {
+                        if (x < 0 || y < 0 || x >= shot.width() || y >= shot.height())
+                            continue;
+                        const QRgb sample = shot.pixel(x, y);
+                        ++total;
+                        if (qRed(sample) > 240 && qGreen(sample) < 20 && qBlue(sample) < 20)
+                            ++red;
+                    }
+                }
+                fraction = total == 0 ? 0.0
+                                      : static_cast<double>(red) / static_cast<double>(total);
+                if (red_caption == QLatin1String("1920x1080") && fraction > 0.8)
+                    break;
+            }
+            report(red_caption == QLatin1String("1920x1080"),
+                   "a red colour replaces the empty-scene caption with the size alone");
+            report(frame_item != nullptr, "the program frame is on screen");
+            std::fprintf(stderr, "       (program picture: %.0f%% red)\n", fraction * 100.0);
+            report(fraction > 0.8, "most of the program picture is the red the document asked for");
+            document.undo();
+            document.undo();
+        }
 
         report(workspace.canUndo(), "the dock is undoable");
         const int panels_after_dock = workspace.panelCount();

@@ -261,9 +261,9 @@ public:
 
     // ---- sources (project level; a source node binds one) -------------------------------------
 
-    /// The source types this build can hold in a document. None of them render yet; the list is
-    /// here because a document that cannot name what it is waiting for is harder to build a
-    /// pipeline against than one that can.
+    /// The source types this build can hold in a document. A colour is drawn by the program
+    /// preview; nothing else is. The list is here because a document that cannot name what it
+    /// is waiting for is harder to build a pipeline against than one that can.
     /// What the add dialog lists down its left side: every source type, plus "Scene".
     ///
     /// Separate from `sourceTypes` deliberately. A scene is not a source -- it has no settings
@@ -422,10 +422,10 @@ public:
 
     // ---- decks and outputs (the controls panel) ---------------------------------------------
     //
-    // Nothing here starts a broadcast: there is no render process yet, and the panel says so.
-    // What these edit is the document -- which scene is on program, which is staged on preview,
-    // what each output would encode and where it would send it. That is the state the render
-    // process will read when it exists, so getting it right now is not a placeholder.
+    // Nothing here starts a broadcast. The render process draws the program preview and does
+    // not encode or send, and this panel does not start it. What these edit is the document --
+    // which scene is on program, which is staged on preview, what each output would encode and
+    // where it would send it. That is the state a later encode will read.
 
     /// Transitions this build can name, as {id, title}. One of them is a cut, which is the only
     /// one that needs no renderer to be honest about.

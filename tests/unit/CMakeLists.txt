@@ -16,6 +16,7 @@ endfunction()
 
 libertas_unit_test(test_actions          libertas::lsession)
 libertas_unit_test(test_command          libertas::ldoc)
+libertas_unit_test(test_composite        libertas::lcomp)
 libertas_unit_test(test_document         libertas::ldoc)
 libertas_unit_test(test_dropzone        libertas::llayout)
 libertas_unit_test(test_journal          libertas::ldoc libertas::lcore)
@@ -25,6 +26,10 @@ target_compile_definitions(test_golden PRIVATE
     LIBERTAS_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 libertas_unit_test(test_ipc              libertas::lipc)
 libertas_unit_test(test_json             libertas::ldoc)
+libertas_unit_test(test_preview         libertas::lcomp)
+target_compile_definitions(test_preview PRIVATE
+    LIBERTAS_RENDER="$<TARGET_FILE:libertas-render>")
+add_dependencies(test_preview libertas-render)
 libertas_unit_test(test_project_io       libertas::ldoc libertas::lcore)
 libertas_unit_test(test_layout          libertas::llayout)
 libertas_unit_test(test_layout_history  libertas::llayout)

@@ -32,14 +32,16 @@ What exists is a workspace you can use and a document you can edit:
   NVML. The broadcast figures beside them read "—" rather than zero, because zero dropped frames
   is a claim about a running show.
 
-What does not exist yet: the compositor, capture, encode and output. Those live in `tools/` as
-measured spikes and have not been made product code. The panels that will drive them say so on
-their faces — the audio mixer draws no meters, the controls panel has no Go Live button, and the
-program canvas reads "no pipeline attached" — because a panel that looks finished while being
-incapable is a panel nobody can tell the truth about later. See [`docs/adr/`](docs/adr/) —
-twenty-eight decisions, each recording what was measured and what was rejected. Two of them are
-proposed rather than built: the scene model the vertical workflow needs, and the rename that
-follows it.
+The program canvas shows a picture of what this build can draw — a colour, a group of those, a
+scene inside a scene made of those — published by `libertas-render`. Anything else is left
+undrawn and the caption says how many. Capture, encode and output do not exist yet; those live
+in `tools/` as measured spikes and have not been made product code. The panels that will drive
+them say so on their faces — the audio mixer draws no meters and the controls panel has no Go
+Live button — because a panel that looks finished while being incapable is a panel nobody can
+tell the truth about later. With no render process running, the program canvas still reads "no
+pipeline attached". See [`docs/adr/`](docs/adr/) — twenty-eight decisions, each recording what
+was measured and what was rejected. Two of them are proposed rather than built: the scene model
+the vertical workflow needs, and the rename that follows it.
 
 ## Why
 

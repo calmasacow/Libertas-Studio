@@ -25,6 +25,8 @@ qt_add_executable(libertas-ui
     layoutmodels.cpp
     layoutmodels.hpp
     main.cpp
+    preview.cpp
+    preview.hpp
     rowmodel.hpp
     telemetry.cpp
     theme.cpp
@@ -92,6 +94,7 @@ qt_add_qml_module(libertas-ui
 
 target_link_libraries(libertas-ui PRIVATE
     libertas::flags
+    libertas::lcomp
     libertas::llayout
     libertas::lsession
     libertas::ltheme
@@ -100,6 +103,12 @@ target_link_libraries(libertas-ui PRIVATE
     Qt6::QuickDialogs2
     Qt6::QuickShapes
 )
+
+# The shell spawns this. A path baked in at build time is the one the self-check runs, rather
+# than whatever happens to be first on PATH.
+target_compile_definitions(libertas-ui PRIVATE
+    LIBERTAS_RENDER_EXE="$<TARGET_FILE:libertas-render>")
+add_dependencies(libertas-ui libertas-render)
 
 # Qt's generated sources (moc, qrc, the QML type registration) are not ours to keep warning-free,
 # and -Werror on a CI build would fail on them rather than on anything we wrote.

@@ -8,10 +8,9 @@ import Libertas
 
 // Panel contents.
 //
-// Everything here is a placeholder, and says so. This is the Phase 1 workspace slice: the layout
-// engine, the docking gesture and theme following are real, the panel contents are not yet
-// wired to anything. Drawing convincing fake meters and a fake scene list would make the shell
-// look finished and make it impossible to tell, later, which parts actually work.
+// The program picture is a frame published by libertas-render when one has arrived (ADR-0040).
+// Until then the panel still says no pipeline is attached. The other bodies are this shell's
+// own controls; a meter or a live button this build cannot back is not drawn.
 Item {
     id: body
 
@@ -154,6 +153,10 @@ Item {
 
     // The program canvas. ADR-0015 rule 2: it is a region of this surface, never a separate OS
     // window, so it cannot be lost, moved off-screen or closed by accident.
+    //
+    // The pixels, when there are any, are the render process's frame. This item does not
+    // composite. No frame yet — the process has not started, or it has gone — and the centred
+    // caption stays the one that says so.
     Item {
         id: programView
 
@@ -168,6 +171,18 @@ Item {
             void Document.revision;
             return Document.canvasNameOf(body.panelCanvas);
         }
+        /// `caption` and `hasFrame` are calls. A bare statement is not a dependency — the QML
+        /// compiler drops it — so the generation has to be used in the value.
+        readonly property int previewGeneration: Preview.generation
+        readonly property bool frameReady: programView.previewGeneration >= 0 &&
+                                            Preview.hasFrame(body.panelCanvas)
+        readonly property string liveCaption: programView.previewGeneration < 0
+                                              ? ""
+                                              : Preview.caption(body.panelCanvas)
+        readonly property string idleCaption: programView.canvasSize.width > 0
+                ? qsTr("%1x%2 · no pipeline attached")
+                    .arg(programView.canvasSize.width).arg(programView.canvasSize.height)
+                : qsTr("no pipeline attached")
         /// Width over height. A 9:16 vertical canvas has to look like one: drawn into the old
         /// fixed 16:9 frame it would read as a second landscape output.
         readonly property real aspect: programView.canvasSize.width > 0 &&
@@ -189,6 +204,21 @@ Item {
             color: Theme.c.window
             border.width: 1
             border.color: Theme.c.border
+
+            // Behind the thirds. Stretch, unsmoothed: a solid colour has to stay that colour
+            // when the frame is a different size from the canvas.
+            Image {
+                anchors.fill: parent
+                visible: programView.frameReady
+                cache: false
+                smooth: false
+                asynchronous: false
+                fillMode: Image.Stretch
+                source: programView.frameReady
+                        ? "image://program/" + Preview.canvasKey(body.panelCanvas) + "/" +
+                          programView.previewGeneration
+                        : ""
+            }
 
             // Thirds, which is what an operator actually frames against.
             Repeater {
@@ -218,6 +248,7 @@ Item {
             }
 
             Column {
+                visible: !programView.frameReady
                 anchors.centerIn: parent
                 spacing: 4
 
@@ -231,13 +262,34 @@ Item {
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: programView.canvasSize.width > 0
-                          ? qsTr("%1x%2 · no pipeline attached")
-                                .arg(programView.canvasSize.width).arg(programView.canvasSize.height)
-                          : qsTr("no pipeline attached")
+                    objectName: "programStatus"
+                    text: programView.idleCaption
                     font.pixelSize: 11
                     color: Theme.c.textMuted
                     opacity: 0.7
+                }
+            }
+
+            // Once a frame is up, the caption is a corner note. The picture is the content;
+            // a title stacked on the middle of it would be covering the thing it describes.
+            Rectangle {
+                visible: programView.frameReady
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                anchors.margins: 6
+                radius: 2
+                color: Theme.c.panelBackground
+                opacity: 0.82
+                width: liveStatus.implicitWidth + 10
+                height: liveStatus.implicitHeight + 6
+
+                Text {
+                    id: liveStatus
+                    objectName: "programStatus"
+                    anchors.centerIn: parent
+                    text: programView.liveCaption
+                    font.pixelSize: 11
+                    color: Theme.c.text
                 }
             }
         }

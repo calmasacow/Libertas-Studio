@@ -1,0 +1,389 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "preview.hpp"
+
+#include "lcomp/preview.hpp"
+
+#include <QImage>
+#include <QQuickImageProvider>
+#include <QSocketNotifier>
+#include <QTimer>
+#include <chrono>
+#include <csignal>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <mutex>
+#include <sys/wait.h>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace libertas::ui {
+namespace {
+
+std::filesystem::path g_renderer;
+
+QImage image_from(const lcomp::PreviewFrame& frame) {
+    if (frame.width <= 0 || frame.height <= 0 || frame.stride == 0)
+        return {};
+    if (frame.stride > static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
+        return {};
+    if (frame.stride < static_cast<std::uint32_t>(frame.width) * 4u)
+        return {};
+    const auto rows = static_cast<std::size_t>(frame.height);
+    if (rows > std::numeric_limits<std::size_t>::max() / frame.stride)
+        return {};
+    const std::size_t bytes = static_cast<std::size_t>(frame.stride) * rows;
+    if (frame.pixels.size() < bytes)
+        return {};
+    // Copy. The vector is about to be discarded, and a QImage must not alias it. Format_RGBA8888
+    // is straight bytes in our order; the premultiplied format would darken a partial pixel.
+    const QImage view(frame.pixels.data(), frame.width, frame.height,
+                      static_cast<int>(frame.stride), QImage::Format_RGBA8888);
+    return view.copy();
+}
+
+} // namespace
+
+struct Preview::Held {
+    QImage image;
+    lcomp::PictureStatus status = lcomp::PictureStatus::NoProgram;
+    int width = 0;
+    int height = 0;
+    std::uint32_t gaps = 0;
+};
+
+struct Preview::State {
+    std::mutex mu;
+    std::map<QString, Held> frames;
+    int generation = 0;
+};
+
+struct Preview::Link {
+    std::optional<lcomp::PreviewLink> channel;
+    pid_t child = -1;
+    QSocketNotifier* read = nullptr;
+    QSocketNotifier* write = nullptr;
+    bool alive = false;
+    bool in_flight = false;
+    bool dirty = false;
+    bool have_pending = false;
+    /// Set when this commit was a fault, so its ack does not publish a picture of the last one.
+    bool failed = false;
+    ldoc::Project pending;
+    std::vector<QString> sent;
+    std::map<QString, Held> incoming;
+};
+
+class ProgramImageProvider : public QQuickImageProvider {
+  public:
+    explicit ProgramImageProvider(std::shared_ptr<Preview::State> state)
+        : QQuickImageProvider(QQuickImageProvider::Image), state_(std::move(state)) {}
+
+    QImage requestImage(const QString& id, QSize* size, const QSize& /*requested*/) override {
+        const QString key = id.section(QLatin1Char('/'), 0, 0);
+        std::lock_guard lock(state_->mu);
+        const auto it = state_->frames.find(key);
+        if (it == state_->frames.end() || it->second.image.isNull()) {
+            if (size != nullptr)
+                *size = QSize(1, 1);
+            QImage blank(1, 1, QImage::Format_RGBA8888);
+            blank.fill(0);
+            return blank;
+        }
+        if (size != nullptr)
+            *size = it->second.image.size();
+        return it->second.image;
+    }
+
+  private:
+    std::shared_ptr<Preview::State> state_;
+};
+
+void Preview::configure(std::filesystem::path renderer) {
+    g_renderer = std::move(renderer);
+}
+
+Preview* Preview::create(QQmlEngine* engine, QJSEngine*) {
+    auto* preview = new Preview(nullptr);
+    if (engine != nullptr)
+        engine->addImageProvider(QLatin1String("program"),
+                                 new ProgramImageProvider(preview->state_));
+    preview->start();
+    return preview;
+}
+
+Preview::Preview(QObject* parent)
+    : QObject(parent), renderer_(g_renderer), state_(std::make_shared<State>()),
+      link_(std::make_unique<Link>()) {}
+
+Preview::~Preview() {
+    if (!link_)
+        return;
+    if (link_->read != nullptr)
+        link_->read->setEnabled(false);
+    if (link_->write != nullptr)
+        link_->write->setEnabled(false);
+    if (link_->channel) {
+        link_->channel->quit();
+        link_->channel->close();
+        link_->channel.reset();
+    }
+    reap(true);
+}
+
+int Preview::generation() const {
+    return state_->generation;
+}
+
+QString Preview::resolve(const QString& canvasId) const {
+    return canvasId.isEmpty() ? first_canvas_ : canvasId;
+}
+
+QString Preview::canvasKey(const QString& canvasId) const {
+    return resolve(canvasId);
+}
+
+bool Preview::hasFrame(const QString& canvasId) const {
+    const QString key = resolve(canvasId);
+    if (key.isEmpty())
+        return false;
+    std::lock_guard lock(state_->mu);
+    return state_->frames.contains(key);
+}
+
+QString Preview::caption(const QString& canvasId) const {
+    const QString key = resolve(canvasId);
+    if (key.isEmpty())
+        return {};
+    Held held;
+    {
+        std::lock_guard lock(state_->mu);
+        const auto it = state_->frames.find(key);
+        if (it == state_->frames.end())
+            return {};
+        held = it->second;
+    }
+    if (held.status == lcomp::PictureStatus::Unsupported)
+        return QStringLiteral("too large to preview");
+    const QString size = QStringLiteral("%1x%2").arg(held.width).arg(held.height);
+    switch (held.status) {
+    case lcomp::PictureStatus::NoProgram:
+        return size + QStringLiteral(" · no program scene");
+    case lcomp::PictureStatus::Empty:
+        return size + QStringLiteral(" · nothing in the scene");
+    case lcomp::PictureStatus::Partial:
+        return size + QStringLiteral(" · %1 not drawn").arg(held.gaps);
+    case lcomp::PictureStatus::Complete:
+        return size;
+    case lcomp::PictureStatus::Unsupported:
+        break;
+    }
+    return QStringLiteral("too large to preview");
+}
+
+void Preview::publish(const ldoc::Project& project) {
+    if (!link_ || !link_->alive)
+        return;
+    link_->pending = project;
+    link_->have_pending = true;
+    if (!project.canvases.empty())
+        first_canvas_ = QString::fromStdString(project.canvases.front().id.to_string());
+    if (link_->in_flight) {
+        link_->dirty = true;
+        return;
+    }
+    try_send();
+}
+
+/// Posted, not emitted directly. `start` runs while the singleton is being created, which is
+/// before main has connected `notice`, and a direct emit there would be a failure nobody heard.
+void Preview::report(const QString& text) {
+    QMetaObject::invokeMethod(this, [this, text] { emit notice(text); }, Qt::QueuedConnection);
+}
+
+void Preview::start() {
+    if (renderer_.empty()) {
+        report(QStringLiteral("No render process is configured."));
+        return;
+    }
+    auto ends = lipc::Channel::pair();
+    if (!ends) {
+        report(QString::fromStdString(ends.error()));
+        return;
+    }
+    auto pid = lcomp::spawn_renderer(renderer_, std::move(ends->second).take_socket());
+    if (!pid) {
+        report(QString::fromStdString(pid.error()));
+        return;
+    }
+    link_->child = *pid;
+    link_->channel.emplace(std::move(ends->first));
+    // Before the notifier exists, so it cannot take the hello this call is waiting for.
+    const auto hello = link_->channel->take_hello(2000);
+    if (!hello) {
+        lose(QString::fromStdString(hello.error()));
+        return;
+    }
+    link_->alive = true;
+    link_->read = new QSocketNotifier(link_->channel->poll_fd(), QSocketNotifier::Read, this);
+    link_->write = new QSocketNotifier(link_->channel->poll_fd(), QSocketNotifier::Write, this);
+    link_->write->setEnabled(false);
+    QObject::connect(link_->read, &QSocketNotifier::activated, this, [this] { on_readable(); });
+    QObject::connect(link_->write, &QSocketNotifier::activated, this, [this] { on_writable(); });
+    // A frame can already be queued by the time the notifier is created. The notifier is
+    // level-triggered, and this still drains whatever arrived between hello and the first poll.
+    QTimer::singleShot(0, this, [this] { on_readable(); });
+}
+
+void Preview::try_send() {
+    if (!link_ || !link_->alive || !link_->channel || !link_->have_pending || link_->in_flight)
+        return;
+    link_->incoming.clear();
+    link_->failed = false;
+    const auto sent = link_->channel->send_project(link_->pending);
+    if (!sent) {
+        if (lcomp::send_would_block(sent.error())) {
+            link_->write->setEnabled(true);
+            return;
+        }
+        lose(QString::fromStdString(sent.error()));
+        return;
+    }
+    if (link_->write != nullptr)
+        link_->write->setEnabled(false);
+    link_->in_flight = true;
+    link_->dirty = false;
+    link_->sent.clear();
+    link_->sent.reserve(link_->pending.canvases.size());
+    for (const ldoc::Canvas& canvas : link_->pending.canvases)
+        link_->sent.push_back(QString::fromStdString(canvas.id.to_string()));
+}
+
+void Preview::on_readable() {
+    if (!link_ || !link_->channel)
+        return;
+    for (;;) {
+        auto event = link_->channel->poll();
+        if (!event) {
+            lose(QString::fromStdString(event.error()));
+            return;
+        }
+        if (!event->has_value())
+            return;
+        const lcomp::PreviewEvent& got = **event;
+        switch (got.kind) {
+        case lcomp::PreviewEvent::Kind::Hello:
+            break;
+        case lcomp::PreviewEvent::Kind::Frame: {
+            Held held;
+            held.status = got.frame.status;
+            held.width = got.frame.width;
+            held.height = got.frame.height;
+            held.gaps = got.frame.gaps;
+            held.image = image_from(got.frame);
+            link_->incoming.insert_or_assign(QString::fromStdString(got.frame.canvas.to_string()),
+                                             std::move(held));
+            break;
+        }
+        case lcomp::PreviewEvent::Kind::Fault:
+            link_->failed = true;
+            link_->incoming.clear();
+            report(QString::fromStdString(got.fault));
+            break;
+        case lcomp::PreviewEvent::Kind::Ack: {
+            link_->in_flight = false;
+            const bool failed = link_->failed;
+            link_->failed = false;
+            if (!failed) {
+                {
+                    std::lock_guard lock(state_->mu);
+                    state_->frames.clear();
+                    for (auto& [key, held] : link_->incoming)
+                        state_->frames.emplace(key, std::move(held));
+                    ++state_->generation;
+                }
+                link_->incoming.clear();
+                emit changed();
+            } else {
+                link_->incoming.clear();
+            }
+            if (link_->dirty)
+                try_send();
+            break;
+        }
+        case lcomp::PreviewEvent::Kind::PeerGone:
+            lose(QStringLiteral("The render process is gone."));
+            return;
+        }
+    }
+}
+
+void Preview::on_writable() {
+    if (link_ && link_->write != nullptr)
+        link_->write->setEnabled(false);
+    try_send();
+}
+
+void Preview::lose(const QString& why) {
+    // Already torn down. Hello can fail before `alive` is set, and that path still has a child
+    // to reap, so "not alive" on its own is not "already gone".
+    if (!link_)
+        return;
+    if (!link_->alive && link_->child <= 0 && !link_->channel)
+        return;
+    link_->alive = false;
+    link_->in_flight = false;
+    link_->have_pending = false;
+    link_->dirty = false;
+    if (link_->read != nullptr)
+        link_->read->setEnabled(false);
+    if (link_->write != nullptr)
+        link_->write->setEnabled(false);
+    if (link_->channel) {
+        link_->channel->close();
+        link_->channel.reset();
+    }
+    {
+        std::lock_guard lock(state_->mu);
+        if (!state_->frames.empty()) {
+            state_->frames.clear();
+            ++state_->generation;
+        }
+    }
+    reap(false);
+    emit changed();
+    report(why);
+}
+
+void Preview::reap(bool patient) {
+    if (!link_ || link_->child <= 0)
+        return;
+    const pid_t child = link_->child;
+    link_->child = -1;
+    const auto wait_for = [child](int timeout_ms) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        for (;;) {
+            int status = 0;
+            const pid_t got = ::waitpid(child, &status, WNOHANG);
+            if (got != 0)
+                return true;
+            if (std::chrono::steady_clock::now() >= deadline)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    };
+    if (!wait_for(patient ? 500 : 50)) {
+        ::kill(child, SIGTERM);
+        if (!wait_for(200)) {
+            ::kill(child, SIGKILL);
+            int status = 0;
+            ::waitpid(child, &status, 0);
+        }
+    }
+}
+
+} // namespace libertas::ui

@@ -1,0 +1,165 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include "lcomp/composite.hpp"
+#include "lipc/channel.hpp"
+
+#include <cstdint>
+#include <expected>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <utility>
+#include <vector>
+
+namespace lcomp {
+
+/// The preview protocol. Version 1.
+///
+/// Whole messages on a `lipc::Channel`, bulk in sealed memfds. The bytes are little-endian and
+/// carry no padding, so a reader does not depend on the writer's struct layout.
+///
+///   Hello    u8 kind, u16 version. Renderer to client, once, before anything else.
+///   Project  u8 kind, u32 length, one memfd of `project_to_json`. Resets the assembly.
+///   Scene    u8 kind, u32 length, one memfd of `scene_to_json`.
+///   Commit   u8 kind. Composite what has been assembled and answer.
+///   Quit     u8 kind. The renderer exits.
+///   Frame    u8 kind, 26-byte canvas id, u32 width, u32 height, u32 stride, u8 status,
+///            u32 gap count. The first frame for a canvas, and any frame whose size changed,
+///            carries one memfd of tightly packed straight sRGB8. Later frames of the same
+///            size reuse it: the client copies on receipt, and it does not send another
+///            snapshot until it has copied, so the renderer is not writing what is being read.
+///   Ack      u8 kind. One per commit, after that commit's frames. The client may send again.
+///   Fault    u8 kind, the rest UTF-8. Something about the snapshot could not be drawn at all.
+///            An ack still follows, or the client would wait forever.
+///
+/// An empty payload cannot be sent (ADR-0026), and every message here starts with its kind, so
+/// none of them are empty.
+inline constexpr std::uint16_t kPreviewProtocol = 1;
+
+/// One frame, with the pixels already copied out of the shared buffer.
+struct PreviewFrame {
+    ldoc::Id canvas;
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+    std::uint32_t stride = 0;
+    PictureStatus status = PictureStatus::NoProgram;
+    std::uint32_t gaps = 0;
+    std::vector<std::uint8_t> pixels;
+};
+
+/// What `poll` produced. `fault` is set for Fault; `frame` is set for Frame.
+struct PreviewEvent {
+    enum class Kind : std::uint8_t { Hello, Frame, Ack, Fault, PeerGone };
+
+    Kind kind = Kind::PeerGone;
+    PreviewFrame frame;
+    std::string fault;
+};
+
+/// The UI's end of the preview, and the test's. It does not composite.
+///
+/// Send the latest document, then read frames. Only one snapshot is in flight at a time: call
+/// `send_project` again after an Ack, not before. That is what keeps a drag from filling the
+/// socket with projects the renderer will throw away.
+class PreviewLink {
+  public:
+    explicit PreviewLink(lipc::Channel channel);
+    ~PreviewLink();
+
+    PreviewLink(const PreviewLink&) = delete;
+    PreviewLink& operator=(const PreviewLink&) = delete;
+
+    [[nodiscard]] bool valid() const { return channel_.valid(); }
+
+    [[nodiscard]] int poll_fd() const { return channel_.poll_fd(); }
+
+    /// Block until the renderer's hello arrives, or `timeout_ms` passes. A negative timeout
+    /// waits forever. The version has to be `kPreviewProtocol`.
+    [[nodiscard]] std::expected<void, std::string> take_hello(int timeout_ms);
+
+    /// Project file, then one scene each, then commit. Fails without committing if a send
+    /// does not fit, so the renderer never composites a half-snapshot from this call; a later
+    /// call starts with Project, which resets whatever did arrive.
+    [[nodiscard]] std::expected<void, std::string> send_project(const ldoc::Project& project);
+
+    /// Ask the renderer to exit. A peer that has already gone is not an error here.
+    void quit();
+
+    /// One message, if one is waiting. `WouldBlock` is an empty optional, not an error: the
+    /// peer is still there.
+    [[nodiscard]] std::expected<std::optional<PreviewEvent>, std::string> poll();
+
+    /// `poll` after waiting. `timeout_ms` as in `take_hello`.
+    [[nodiscard]] std::expected<std::optional<PreviewEvent>, std::string> receive(int timeout_ms);
+
+    void close() { channel_.close(); }
+
+  private:
+    /// A mapping of one canvas's frame buffer. Move-only: the view is unmapped exactly once.
+    struct Mapping {
+        lipc::Fd fd;
+        void* view = nullptr;
+        std::size_t bytes = 0;
+
+        Mapping() = default;
+        Mapping(const Mapping&) = delete;
+        Mapping& operator=(const Mapping&) = delete;
+
+        Mapping(Mapping&& other) noexcept
+            : fd(std::move(other.fd)), view(std::exchange(other.view, nullptr)),
+              bytes(std::exchange(other.bytes, 0)) {}
+
+        Mapping& operator=(Mapping&& other) noexcept {
+            if (this != &other) {
+                reset();
+                fd = std::move(other.fd);
+                view = std::exchange(other.view, nullptr);
+                bytes = std::exchange(other.bytes, 0);
+            }
+            return *this;
+        }
+
+        ~Mapping() { reset(); }
+
+        void reset() noexcept {
+            if (view != nullptr && view != MAP_FAILED)
+                ::munmap(view, bytes);
+            view = nullptr;
+            bytes = 0;
+            fd.close();
+        }
+    };
+
+    lipc::Channel channel_;
+    /// Keyed by the canvas id's text. A handful of canvases; the string is what the message
+    /// carries, so nothing is re-encoded to look up.
+    std::vector<std::pair<std::string, Mapping>> mappings_;
+
+    [[nodiscard]] std::expected<PreviewEvent, std::string> decode(lipc::Message message);
+};
+
+/// The renderer's end. Sends hello, then composites every committed snapshot until Quit or
+/// the peer is gone. Returns rather than throws: this is the whole process, and an exception
+/// leaving it would be a crash report with no picture attached.
+[[nodiscard]] std::expected<void, std::string> serve_preview(lipc::Channel channel);
+
+/// Start `libertas-render` with one end of a channel.
+///
+/// `child_end` is handed to the child and closed here. The child inherits that descriptor and
+/// no other — `posix_spawn` with `closefrom`, not `fork`, because the UI is multithreaded and
+/// a fork there can only call async-signal-safe functions. The child's descriptor is 3, named
+/// by `LIBERTAS_CHANNEL_FD`, so it does not depend on which number this process happened to
+/// hold.
+[[nodiscard]] std::expected<pid_t, std::string> spawn_renderer(const std::filesystem::path& exe,
+                                                               lipc::Fd child_end);
+
+/// True when `send` failed because the socket buffer is full rather than because the peer died.
+/// The text is what `lipc` reports; the two are different failures and the caller has to treat
+/// them differently.
+[[nodiscard]] bool send_would_block(const std::string& error);
+
+} // namespace lcomp

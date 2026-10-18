@@ -17,8 +17,11 @@ and says its resolution. ADR-0027 has the reasoning.
 
 ### Still open here
 
-- **Nothing renders in it.** It is a framing guide with thirds and a caption, as before; the
-  render path is not product code yet.
+- **A colour reaches it.** `libertas-render` composites the program scene and the panel shows
+  that frame: a colour, a group of those, and a precomp made of those (ADR-0040). Anything else
+  is left undrawn and the caption says how many. Capture, encode, audio and outputs are still
+  absent, so this is a preview of the document, not a broadcast. The thirds and the framing
+  guide are still there.
 - **The three panels dock as a group of one each.** A canvas's three panels each go beside
   Main's matching one. There is no way to say "give me all of Vertical's panels in one place",
   which is what someone building a second show might actually want.
@@ -79,8 +82,9 @@ check; only the gesture was missing.
 
 ### Still open here
 
-- **Nothing draws it.** The node is in the document and in the Sources panel; the picture waits
-  on the render path, like everything else.
+- **A precomp draws when its contents are things the preview can draw.** A precomp of colours
+  shows those colours. A precomp of anything else leaves a gap and the caption counts it.
+  Capture is still what would put a camera in it.
 - **Deleting a scene that another scene shows says nothing.** `RemoveScene` predates this
   gesture. It should probably warn, the way removing a canvas with scenes refuses.
 - **No way to change which scene a precomp shows** after it is added, and no size control on
@@ -301,9 +305,10 @@ Never at a live key.
   finished.
 - Asset commands.
 - Compound editing beyond `Batch` (the 44th command).
-- **The render path as product code** — `lcapture`, `lcomp` and `lmedia` wired into
-  `libertas-render`. The largest remaining piece of work; its transport foundation (`lipc`,
-  ADR-0026) exists and is tested headless.
+- **The rest of the render path.** `lcomp` draws the program preview and `libertas-render`
+  publishes it (ADR-0040). `lcapture`, `lmedia` and `laudio` are still empty: nothing captures,
+  nothing encodes, nothing mixes audio. The transport underneath (`lipc`, ADR-0026) is the
+  same one the preview already uses.
 
 ## The combined format bump, done on 2026-10-14
 
