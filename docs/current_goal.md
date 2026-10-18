@@ -161,57 +161,124 @@ one run what reasoning had not in several hours. Two practical notes for next ti
 - `timeout 15 perf record ...` SIGKILLs perf before it writes its data, giving "no samples".
   Use `perf record ... -- sleep 10`, which lets perf terminate normally.
 
+## What the CPU path costs, measured 2026-10-18
+
+Run on this machine: RTX 2070, Hyprland, capturing HDMI-A-2 (3840x2160 @ 30 Hz), one screen
+source plus one image source in the program scene.
+
+| | 1080p canvas (4K downscaled) | 4K canvas (1:1) |
+| --- | --- | --- |
+| alloc + clear | 0.78 ms | 3.3 ms |
+| blit | 4.9 ms | 18.4 ms |
+| total walk | 5.3 ms | 21.4 ms |
+| render CPU | 53% | 53% |
+| sustained | comfortable at 30 | **~10 fps** |
+
+A 1080p preview of a 4K screen is fine: 5.3 ms a composite leaves plenty of room at 30 Hz, and
+the CPU figure is the composite running faster than the source produces rather than the blit
+struggling.
+
+Compositing 4K one-to-one is **~10 fps**, and that is the honest ceiling of this path. The blit
+is 18.4 ms for 8.3 million pixels, which is about 2.2 ns a pixel -- memory-bound, no single hot
+instruction left (the post-fix profile is 46% blit with the time spread across the loop rather
+than concentrated). It is not a bug to be found; it is what a single-threaded scalar copy of
+33 MB per frame costs.
+
+The operator's position on this, recorded so it is not relitigated: **4K on an integrated GPU or
+a CPU fallback at 10 fps is acceptable.** This path exists for machines without a usable device
+and for the headless self-check. It is not the path a show runs on.
+
+### What would make the CPU path faster, if it ever needs to be
+
+Not done, and not currently justified. Listed so the options are known rather than rediscovered:
+
+- **Thread the blit by destination rows.** It is embarrassingly parallel and there are 16 cores.
+  Probably 4-6x on this machine.
+- **SIMD the inner copy.** The straight path moves four bytes with a channel swap; that is a
+  shuffle, and at 8.3 million pixels it would matter.
+- **Composite at preview resolution, not canvas resolution.** The Program panel is a few hundred
+  pixels tall. Compositing 4K to show it in a 400px box is most of the cost, and the encode path
+  will want the full-size composite anyway -- so this is really "the preview should ask for the
+  size it will draw".
+
+The third is the one that would help a real show, and it belongs with the GPU work rather than
+before it.
+
 ## The next phase: the GPU path
 
-This is the work after the composite is understood, and it should be chosen on its own merits
-rather than as a fix for the open problem above. The operator's position, stated this session:
-**the GPU route is being built regardless; CPU was never the goal except as the fallback for a
-machine without a GPU — but making the CPU path as good as possible is still worthwhile.**
+**This is the work to start next.** The CPU path is now as good as it needs to be for what it is
+(see the section above), and the GPU path was always the intended one -- the operator's words:
+*the GPU route is being built regardless; CPU was never the goal except as the fallback for a
+machine without a GPU.*
 
-### What is already in place
+### Where to start reading
 
-- `libs/lrhi` owns a Vulkan device: allocation, dmabuf export and import, readback to host
-  memory. Moved from the spikes with its measurements intact (ADR-0011, ADR-0019).
-- `libs/lcapture` captures a screen into a ring of client-allocated dmabufs and can hand back
-  either CPU pixels or — with work — leave them on the device.
-- `libertas-render` already owns the device, which is where ADR-0005 always said the GPU lives.
-- `tools/spike-core` still holds the measured encode half, including the BGRA→NV12 compute
-  shader (ADR-0019), hooked to `lrhi`'s context through `VkCtx::on_destroy`.
+- `docs/adr/0005` — six process roles. `libertas-render` owns the GPU. This is the ADR that
+  settles where the device lives, and it has said so since the start.
+- `docs/adr/0006` — the composite-to-encode handoff: scene-linear RGBA16F on a `VkDevice`.
+- `docs/adr/0040` — why the preview is a separate process, and its last consequence, which is
+  the constraint this phase has to respect.
+- `docs/adr/0011`, `0019` — what was measured about capture and dual-GPU encode. The code those
+  numbers describe is now in `libs/lrhi` and `libs/lcapture`, moved rather than rewritten.
 
-### What the GPU phase has to decide
+### What is already built and working
 
-These are ADR questions, and ADR-0042 is the next number.
+- `libs/lrhi` owns a Vulkan device: instance and device creation, dmabuf export and import,
+  readback to host memory, and a BGRA→NV12 compute pass hooked in from the encode spike.
+- `libs/lcapture` captures a named screen into a ring of client-allocated dmabufs, on its own
+  thread, blocking until the compositor delivers. Verified: 3840x2160 AR24 on an RTX 2070.
+- `libertas-render` already opens the device, lazily, on the first screen source.
+- `libs/lcomp` walks the scene and composites on the CPU, which is the fallback and the thing
+  the headless self-check drives.
 
-1. **Where the scene walk lives when there are two compositors.** ADR-0040's last consequence
-   is explicit: "the software picture must not grow into a second compositor that disagrees with
-   the GPU one. When `lrhi` exists, the scene walk is the part worth sharing." A blend mode, a
-   rotation or a capture implemented in only one of them is that disagreement. The walk should
-   produce a description of what to draw, with the CPU and GPU backends consuming it, rather
-   than two walks that happen to agree today.
-2. **What the CPU path is for, once the GPU path exists.** It is the fallback for a machine with
-   no usable device, and it is also what the headless self-check drives — the check runs
-   offscreen on a box that may have no GPU at all, and ADR-0040 made that a requirement. Both
-   paths must therefore stay correct, which is the argument for one walk.
-3. **Whether the preview and the encode share a composite.** ADR-0006 puts the encode target at
-   scene-linear RGBA16F on a `VkDevice`; the preview is a panel-sized sRGB8 view. They are not
-   the same buffer and should not pretend to be, but they may well be the same walk at different
-   resolutions.
-4. **Where the captured frame stops being a dmabuf.** Today it is read back to host memory for
+### The constraint that shapes everything
+
+ADR-0040's last consequence, verbatim:
+
+> The software picture must not grow into a second compositor that disagrees with the GPU one.
+> When `lrhi` exists, the scene walk is the part worth sharing. A blend mode, a rotation or a
+> capture implemented only here would be the disagreement.
+
+`lrhi` now exists. So the first real decision is **not** "how do we draw on the GPU" but **"what
+do the two backends share"**. The likely shape: the walk produces a list of draw operations --
+source, rect, opacity, quarter turn, flips -- and the CPU and GPU backends each consume that
+list. Two walks that happen to agree today will not agree in six months.
+
+### The decisions ADR-0042 has to make
+
+1. **The shared walk.** What the walk emits, and what a backend is. This constrains everything
+   after it, so it comes first.
+2. **Where the captured frame stops being a dmabuf.** Today it is read back to host memory for
    the CPU walk. On the GPU path it should stay on the device from capture through composite to
-   encode, and the readback should happen only for the preview, at preview size, if at all.
-5. **The dual-GPU case.** This machine has an Intel UHD 630 and the RTX 2070, which is exactly
+   encode, and the readback should happen only for the preview, at preview size.
+3. **Preview size versus canvas size.** The Program panel is a few hundred pixels tall and the
+   composite is currently full canvas resolution. The encode path wants full size; the preview
+   does not. Deciding this well is most of the CPU path's remaining cost too.
+4. **What happens with no usable device.** The CPU path stays, because the self-check runs
+   offscreen and some machines have no GPU. Both paths must stay correct, which is the argument
+   for one walk.
+5. **The dual-GPU case.** This machine has an Intel UHD 630 alongside the RTX 2070 — exactly
    ADR-0019's subject. `vk_create_exportable` already carries a `host_memory` flag for the
    system-RAM round trip a second GPU needs. None of the current capture path is tested across
    two devices.
 
-### The order that probably makes sense
+### A suggested order
 
-1. ~~Understand the 35 ms first.~~ Done: it was integer division in the sampler, fixed, and the
-   CPU composite is now 5.3 ms. Nothing about it implicates the GPU path.
-2. Write ADR-0042 for the shared scene walk, because it constrains everything after it.
-3. Keep the frame on the device: capture → composite → preview readback, with the encode path
-   still absent.
-4. Only then the encode half, which already has measured code waiting in `tools/spike-core`.
+1. Write ADR-0042 for the shared walk. Code after, per the repo rule.
+2. Keep the frame on the device: capture → GPU composite → readback at preview size only.
+3. Then the encode half, which has measured code waiting in `tools/spike-core`.
+
+### Before writing any code, read this
+
+The repo rules that bit hardest this session:
+
+- **Model changes need an ADR before code.** ADR-0042 is next.
+- **Non-trivial behaviour gets a self-check assertion that drives the real thing**, not the
+  function behind it. The GPU path cannot be driven by the offscreen check, which is exactly why
+  the CPU path has to stay correct and checked.
+- **Builds are warning-free under `-Werror` and the suite is green before a commit.**
+- **Measure before changing.** Six reasoned hypotheses about the composite were all wrong this
+  session; one `perf` run found the answer. `perf` is installed now.
 
 ## Things deliberately left undone, with reasons
 
@@ -228,3 +295,9 @@ These are ADR questions, and ADR-0042 is the next number.
   `output` in from the picker's `mapping_id`.
 - **What happens when a named connector is gone** is undecided (ADR-0041). It is a running-show
   failure and belongs with a supervisor that does not exist yet.
+- **"Fit to screen" bakes a layout box at the canvas size it was used on.** Changing the canvas
+  afterwards leaves the node drawing at the old size, because `fit: natural` then resolves
+  against the stored box rather than the source. Hit while benchmarking: a canvas changed to 4K
+  kept compositing its source at 1920x1080, which looked like a bug in the canvas resize and was
+  not. Whether a fit should re-resolve when the canvas changes is a real question and nobody has
+  answered it.
