@@ -8,6 +8,10 @@
 #include "lcomp/composite.hpp"
 #include "ldoc/command.hpp"
 
+#include <lcapture/screen.hpp>
+#include <lcore/log.hpp>
+
+#include <QElapsedTimer>
 #include <QImageReader>
 
 #include <algorithm>
@@ -416,6 +420,21 @@ const ldoc::Scene* program_scene(const ldoc::Project& project, const ldoc::Id& c
     return nullptr;
 }
 
+/// Types whose picture changes without the document changing.
+///
+/// Stated as a list of the live ones rather than of the still ones so an unknown type -- a
+/// project from a later build (ADR-0004) -- answers "not live". The cost of being wrong that way
+/// is a preview that does not move until something is edited; the other way it is a timer
+/// recompositing a still picture for ever.
+bool is_live_source(std::string_view type) {
+    return type == "source.screen" || type == "source.window" || type == "source.v4l2" ||
+           type == "source.browser" || type == "source.media";
+}
+
+/// Defined with the other screen helpers, further down beside the settings schema that also
+/// needs the monitor list.
+bool screen_size(const ldoc::Source& src, double& width, double& height);
+
 /// Natural size for a kind the compositor actually paints. Anything else has no rectangle.
 bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, const ldoc::Node& node,
                   double& width, double& height) {
@@ -447,6 +466,8 @@ bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, cons
             height = size->height();
             return true;
         }
+        if (src->type == "source.screen")
+            return screen_size(*src, width, height);
         return false;
     }
     if (const auto* pre = std::get_if<ldoc::PrecompData>(&node.data)) {
@@ -508,9 +529,13 @@ std::optional<QVariantMap> placed_map(const ldoc::Project& project, const ldoc::
     // placed from its box alone, which is what the compositor does.
     if (const auto* source = std::get_if<ldoc::SourceData>(&node.data)) {
         const ldoc::Source* src = source->source ? project.source(*source->source) : nullptr;
-        if (src && src->type == "source.image" && !have)
-            return std::nullopt;
-        if (src && src->type != "source.color" && src->type != "source.image")
+        // A rectangle on the canvas is a question about size, not about type. Anything with a
+        // natural size can be selected, dragged, resized and given the transform menu; a colour
+        // is the exception that can be placed from its box alone, which is what the compositor
+        // does with it. Listing the drawable types here instead was what kept a screen source
+        // from being selectable at all even while its picture was on the canvas -- the overlay
+        // and the compositor disagreed about what was on screen.
+        if (src && src->type != "source.color" && !have)
             return std::nullopt;
     }
     lcomp::GapReason why = lcomp::GapReason::NoSize;
@@ -1486,10 +1511,14 @@ constexpr FieldSpec kScreen[] = {
     // The note this replaces said a Wayland client cannot choose a screen for itself. That was
     // true when the portal was the only backend; ADR-0011 then measured both and made
     // ext-image-copy-capture-v1 primary, and it names an output directly with no picker.
-    {"", "The connector the screen is plugged into, as the compositor spells it -- \"DP-1\". "
-         "Named directly on the compositor path, and filled in from the picker's answer on the "
-         "portal path (ADR-0041). Empty captures the first screen.", "note"},
-    {"output", "Connector", "text"},
+    {"", "Which monitor to capture. The list is what the compositor says is connected right "
+         "now, so unplugging one changes it; a project naming a screen that has gone keeps the "
+         "name and reports the source as not drawn rather than quietly capturing another "
+         "(ADR-0041).", "note"},
+    // Filled at runtime by screen_choices(): the options are monitors, which no compile-time
+    // table can know. The stored value stays the bare connector ("DP-1") rather than the label
+    // shown here, because that is what the capture path resolves and what survives a restart.
+    {"output", "Screen", "choice"},
     {"showCursor", "Show the cursor", "bool", "", true},
     {"pauseWhenHidden", "Stop capturing while the source is not on screen", "bool", "", true},
 };
@@ -1542,6 +1571,63 @@ constexpr FieldSpec kAudioOutput[] = {
     {"channels", "Channels", "choice", "Stereo", false, 0, "Mono|Stereo"},
     {"useDeviceTiming", "Timestamp from the device rather than the clock", "bool", "", true},
 };
+
+/// Connector names for every monitor the compositor currently advertises, in its own order.
+///
+/// The bare connector ("DP-1") rather than a decorated label, because this is both what the
+/// dropdown shows and what gets stored: a label with a resolution in it would become wrong the
+/// moment the mode changed, and would not resolve on the capture side (ADR-0041).
+/// The monitor list, re-read at most every half second.
+///
+/// `natural_size` below needs a screen's resolution to give the node a rectangle, and it runs for
+/// every node every time the overlay is laid out. Opening a Wayland connection at that rate would
+/// be absurd, and caching for ever would miss a monitor being plugged in. Half a second is slower
+/// than any repaint and faster than anyone can plug a cable and reach for the mouse.
+const std::vector<libertas::capture::WlOutputInfo>& screens_now() {
+    static std::vector<libertas::capture::WlOutputInfo> cached;
+    static QElapsedTimer age;
+    if (age.isValid() && age.elapsed() < 500)
+        return cached;
+    std::string error;
+    cached = libertas::capture::list_screens(error);
+    if (cached.empty() && !error.empty())
+        lc::warn("cannot list screens: {}", error);
+    age.start();
+    return cached;
+}
+
+QStringList screen_connectors() {
+    QStringList out;
+    for (const libertas::capture::WlOutputInfo& o : screens_now())
+        out.append(QString::fromStdString(o.name));
+    return out;
+}
+
+/// The size of the screen a source names, or of the first one when it names none (ADR-0041).
+///
+/// Nothing when that connector is not connected: the source then has no rectangle, which is the
+/// same answer an image with no readable file gives, and the picture reports it as not drawn
+/// rather than inventing a size for a monitor that is gone.
+bool screen_size(const ldoc::Source& src, double& width, double& height) {
+    const auto it = src.settings.find("output");
+    const auto* wanted = it == src.settings.end() ? nullptr : std::get_if<std::string>(&it->second);
+    const std::vector<libertas::capture::WlOutputInfo>& all = screens_now();
+    if (all.empty())
+        return false;
+    const libertas::capture::WlOutputInfo* chosen = nullptr;
+    if (wanted == nullptr || wanted->empty()) {
+        chosen = &all.front();
+    } else {
+        for (const libertas::capture::WlOutputInfo& o : all)
+            if (o.name == *wanted)
+                chosen = &o;
+    }
+    if (chosen == nullptr || chosen->width <= 0 || chosen->height <= 0)
+        return false;
+    width = chosen->width;
+    height = chosen->height;
+    return true;
+}
 
 std::span<const FieldSpec> schema_for(std::string_view type) {
     if (type == "source.media")        return kMedia;
@@ -1800,6 +1886,63 @@ QVariantList Document::recentSources(int limit) const {
 // ---- a source's own settings ------------------------------------------------------------
 
 
+QVariantMap Document::screenDetails(const QString& connector) const {
+    QVariantMap out;
+    const std::string wanted = to_std(connector);
+    const std::vector<libertas::capture::WlOutputInfo>& all = screens_now();
+    if (all.empty())
+        return out;
+    const libertas::capture::WlOutputInfo* chosen = nullptr;
+    // Empty means the first screen, the same rule the capture path follows (ADR-0041), so the
+    // dialog shows what would actually be captured rather than a blank.
+    if (wanted.empty()) {
+        chosen = &all.front();
+    } else {
+        for (const libertas::capture::WlOutputInfo& o : all)
+            if (o.name == wanted)
+                chosen = &o;
+    }
+    if (chosen == nullptr)
+        return out;
+    out["name"] = QString::fromStdString(chosen->name);
+    out["description"] = QString::fromStdString(chosen->description);
+    out["width"] = chosen->width;
+    out["height"] = chosen->height;
+    out["hz"] = chosen->refresh_mhz / 1000.0;
+    return out;
+}
+
+bool Document::hasLiveSource() const {
+    const ldoc::Project& project = session_->project();
+    // Walks every canvas's program scene, because any canvas being live is enough to keep the
+    // preview republishing -- the renderer composites all of them on one commit.
+    for (const ldoc::Canvas& canvas : project.canvases) {
+        const ldoc::Scene* scene = program_scene(project, canvas.id);
+        if (scene == nullptr)
+            continue;
+        bool live = false;
+        const auto walk = [&](const auto& self, const ldoc::Node& node) -> void {
+            if (live || !node.visible)
+                return;
+            if (const auto* kids = node.children()) {
+                for (const ldoc::Node& child : *kids)
+                    self(self, child);
+                return;
+            }
+            const auto* source = std::get_if<ldoc::SourceData>(&node.data);
+            const ldoc::Source* src =
+                source && source->source ? project.source(*source->source) : nullptr;
+            if (src && is_live_source(src->type))
+                live = true;
+        };
+        for (const ldoc::Node& root : scene->roots)
+            walk(walk, root);
+        if (live)
+            return true;
+    }
+    return false;
+}
+
 QVariantList Document::sourceSettingsSchema(const QString& type) const {
     QVariantList out;
     for (const FieldSpec& f : schema_for(to_std(type))) {
@@ -1810,7 +1953,20 @@ QVariantList Document::sourceSettingsSchema(const QString& type) const {
         m["value"] = is_note(f) ? QVariant{QString{}} : default_of(f);
         m["suffix"] = QString::fromLatin1(f.suffix);
         const QString choices = QString::fromLatin1(f.choices);
-        m["choices"] = choices.isEmpty() ? QStringList{} : choices.split(QLatin1Char('|'));
+        QStringList options = choices.isEmpty() ? QStringList{} : choices.split(QLatin1Char('|'));
+        // The screen field's options are monitors, which no compile-time table can know. Asked
+        // when the dialog is opened rather than cached, because a monitor can be plugged in
+        // between one opening and the next and a stale list would offer a screen that is gone.
+        if (std::string_view{f.key} == "output" && type == QLatin1String("source.screen")) {
+            options.clear();
+            for (const QString& name : screen_connectors())
+                options.append(name);
+            // Nothing connected, or a compositor with no capture protocol. An empty dropdown
+            // with the note above it reads as "none to choose", which is the truth; inventing a
+            // placeholder row would offer a screen that cannot be captured.
+            m["value"] = options.isEmpty() ? QString{} : options.front();
+        }
+        m["choices"] = options;
         out.append(m);
     }
     return out;

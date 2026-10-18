@@ -9,6 +9,7 @@
 #include <QQuickImageProvider>
 #include <QSocketNotifier>
 #include <QTimer>
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -184,7 +185,42 @@ QString Preview::caption(const QString& canvasId) const {
     return QStringLiteral("too large to preview");
 }
 
+void Preview::setLive(bool live, ldoc::Fps rate) {
+    if (!live) {
+        if (live_ != nullptr)
+            live_->stop();
+        return;
+    }
+    if (live_ == nullptr) {
+        live_ = new QTimer(this);
+        QObject::connect(live_, &QTimer::timeout, this, [this] { tick(); });
+    }
+    // Rounded to whole milliseconds because QTimer has nothing finer, which is a rounding of
+    // when a *preview* is asked to redraw and not of the rate itself: the canvas keeps the exact
+    // rational, and the encode path that cares about drift reads that rather than this timer.
+    const double hz = rate.valid() ? rate.hz() : 60.0;
+    const int interval = hz > 0.0 ? std::max(1, static_cast<int>(1000.0 / hz + 0.5)) : 16;
+    if (!live_->isActive() || live_->interval() != interval)
+        live_->start(interval);
+}
+
+/// Republish the document we already have, so the renderer composites it against whatever its
+/// capture has since received.
+///
+/// Nothing is marked dirty and no command runs: this is the same snapshot going round again. If
+/// one is already in flight the normal in-flight rule applies and this tick is dropped rather
+/// than queued -- a preview that fell behind should skip to the newest frame, not play catch-up.
+void Preview::tick() {
+    if (!link_ || !link_->alive || link_->in_flight)
+        return;
+    if (latest_.canvases.empty())
+        return;
+    publish(latest_);
+}
+
+
 void Preview::publish(const ldoc::Project& project) {
+    latest_ = project;
     if (!link_ || !link_->alive)
         return;
     link_->pending = project;

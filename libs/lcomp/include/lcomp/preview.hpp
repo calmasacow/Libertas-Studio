@@ -150,8 +150,18 @@ class PreviewLink {
 /// test, or a build of this process that has not opened one. This library never opens a device
 /// itself: ADR-0005 puts the GPU in `libertas-render`, and taking the frame source as a parameter
 /// is what keeps `lcomp` free of Vulkan while the process that links it is not.
+/// Called when a composite has finished with every frame it borrowed, so the supplier can let
+/// its capture threads move on. Empty when there is nothing to release.
+using FramesDone = std::function<void()>;
+
+/// Whether any capture has a frame that no composite has drawn yet. Empty means "always draw",
+/// which is what a caller with no capture wants.
+using FramesFresh = std::function<bool()>;
+
 [[nodiscard]] std::expected<void, std::string> serve_preview(lipc::Channel channel,
-                                                             FrameSource frames = {});
+                                                             FrameSource frames = {},
+                                                             FramesDone done = {},
+                                                             FramesFresh fresh = {});
 
 /// Start `libertas-render` with one end of a channel.
 ///

@@ -16,21 +16,24 @@
 #include <lcore/log.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <format>
 
 namespace libertas::capture {
 
 namespace {
 
-/// BGRA as the compositor delivers it, RGBA as `lcomp` samples it. One swap over the buffer,
-/// in place: the alternative is teaching the scene walk a second pixel order, and a preview
-/// that disagrees with itself about channel order is a bug that looks like a colour decision.
-void bgra_to_rgba(std::vector<std::uint8_t>& pixels) {
-    for (std::size_t i = 0; i + 3 < pixels.size(); i += 4)
-        std::swap(pixels[i], pixels[i + 2]);
-}
-
 } // namespace
+
+std::vector<WlOutputInfo> list_screens(std::string& error) {
+    WlCapPtr cap = wlcap_open(error);
+    if (!cap)
+        return {};
+    // Copied out before the connection closes: the list is owned by the connection, and the
+    // caller wants an answer rather than a handle to keep alive.
+    return wlcap_outputs(*cap);
+}
 
 struct ScreenCapture::Impl {
     rhi::VkCtx* device = nullptr;
@@ -39,6 +42,8 @@ struct ScreenCapture::Impl {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t slot = 0;
+    std::thread thread;
+    std::atomic<bool> running{false};
 
     ~Impl() {
         // The wl_buffers go with the connection; the images are ours.
@@ -49,7 +54,9 @@ struct ScreenCapture::Impl {
 };
 
 ScreenCapture::ScreenCapture() : impl_(std::make_unique<Impl>()) {}
-ScreenCapture::~ScreenCapture() = default;
+ScreenCapture::~ScreenCapture() {
+    stop();
+}
 
 std::uint32_t ScreenCapture::width() const { return impl_->width; }
 std::uint32_t ScreenCapture::height() const { return impl_->height; }
@@ -113,25 +120,57 @@ std::unique_ptr<ScreenCapture> ScreenCapture::open(rhi::VkCtx& device, const std
     return nullptr;
 }
 
-bool ScreenCapture::read_frame(std::vector<std::uint8_t>& out, std::uint32_t timeout_ms, bool& idle,
-                               std::string& error) {
-    idle = false;
+bool ScreenCapture::read_frame(std::vector<std::uint8_t>& out, std::string& error) {
     if (impl_->ring.empty()) {
         error = "capture has no buffers";
         return false;
     }
     const std::size_t index = impl_->slot % impl_->ring.size();
-    if (!wlcap_capture_slot(*impl_->cap, index, impl_->width, impl_->height, nullptr, error,
-                            timeout_ms, &idle))
+    // 0 is "wait": see the header, and ADR-0013 Consequence 4 before reaching for a number here.
+    if (!wlcap_capture_slot(*impl_->cap, index, impl_->width, impl_->height, nullptr, error, 0,
+                            nullptr))
         return false;
     impl_->slot = (impl_->slot + 1) % static_cast<std::uint32_t>(impl_->ring.size());
 
     // `true`: the compositor wrote these pixels, not us, so the barrier has to acquire queue
     // ownership. Getting this wrong reads a correct-looking buffer of stale content.
-    if (!rhi::vk_readback_exported(*impl_->device, impl_->ring[index], true, out, error))
-        return false;
-    bgra_to_rgba(out);
-    return true;
+    // Left in the compositor's own BGRA. See the header: converting here is a full pass over a
+    // buffer most of which is about to be scaled away.
+    return rhi::vk_readback_exported(*impl_->device, impl_->ring[index], true, out, error);
+}
+
+void ScreenCapture::start(std::function<void(std::vector<std::uint8_t>&&)> on_frame) {
+    if (impl_->thread.joinable())
+        return;
+    impl_->running = true;
+    impl_->thread = std::thread([this, on_frame = std::move(on_frame)] {
+        std::string error;
+        while (impl_->running) {
+            std::vector<std::uint8_t> pixels;
+            if (!read_frame(pixels, error)) {
+                if (!impl_->running)
+                    break;
+                // A failed capture is not a reason to spin: the session is usually gone (the
+                // output unplugged, the compositor restarted) and retrying at speed would turn
+                // one fault into a busy loop. Said once, then the thread stops; the caption
+                // reports the source as not drawn, which is the honest outcome.
+                lc::warn("capture stopped: {}", error);
+                break;
+            }
+            on_frame(std::move(pixels));
+        }
+    });
+}
+
+void ScreenCapture::stop() {
+    impl_->running = false;
+    if (impl_->thread.joinable()) {
+        // The thread is parked in wl_display_dispatch waiting for a frame that may never come on
+        // a still screen, so asking it to stop is not enough to wake it. Closing the display's
+        // descriptor is what ends that wait.
+        wlcap_wake(*impl_->cap);
+        impl_->thread.join();
+    }
 }
 
 } // namespace libertas::capture

@@ -247,9 +247,53 @@ Item {
                         ? dialog.localFileUrl(dialog.pendingFile) : ""
             }
 
+            // A screen cannot be shown as pixels here without opening a second capture session
+            // for a source that may still be cancelled, so the card says which monitor and how
+            // big instead. That is what is being chosen, which is the rule the colour and the
+            // image in this card already follow.
+            Column {
+                readonly property var screen: dialog.typeId === "source.screen"
+                    ? Document.screenDetails(String(dialog.pending["output"] === undefined
+                                                    ? "" : dialog.pending["output"]))
+                    : ({})
+                readonly property bool known: screen && screen.name !== undefined
+
+                anchors.centerIn: parent
+                visible: dialog.typeId === "source.screen"
+                spacing: 3
+
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: parent.known ? parent.screen.name : qsTr("no screen found")
+                    font.pixelSize: 15
+                    color: Theme.c.text
+                }
+
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    visible: parent.known
+                    text: parent.known
+                          ? parent.screen.width + " \u00d7 " + parent.screen.height +
+                            "  \u00b7  " + parent.screen.hz.toFixed(2) + " Hz"
+                          : ""
+                    font.pixelSize: 11
+                    color: Theme.c.textMuted
+                }
+
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    visible: parent.known && parent.screen.description !== ""
+                    text: parent.known ? parent.screen.description : ""
+                    font.pixelSize: 10
+                    color: Theme.c.textMuted
+                    opacity: 0.7
+                }
+            }
+
             Column {
                 anchors.centerIn: parent
-                visible: dialog.typeId !== "source.color" && !still.visible
+                visible: dialog.typeId !== "source.color" && dialog.typeId !== "source.screen" &&
+                         !still.visible
                 spacing: 4
 
                 Text {

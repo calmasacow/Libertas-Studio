@@ -109,6 +109,13 @@ bool wlcap_capture_slot(WlCap& cap, std::size_t index, std::uint32_t width, std:
                         std::uint64_t* out_presented_ns, std::string& error,
                         std::uint32_t idle_timeout_ms = 0, bool* out_idle = nullptr);
 
+/// Interrupts a blocking capture wait, so a thread parked on a still screen can be stopped.
+///
+/// Safe to call from another thread, and from any state: it writes one byte to a pipe the wait
+/// polls alongside the display. The interrupted call returns false with an error saying capture
+/// was stopped, which is a shutdown and not a fault.
+void wlcap_wake(WlCap& cap);
+
 /// The explanation for a wait that ran out with no frame. One wording for every tool, because the
 /// point of it is that the cause - a still screen, not a fault - reads the same wherever it shows up.
 std::string wlcap_idle_reason(std::uint32_t idle_timeout_ms);

@@ -20,6 +20,8 @@
 #include <lcore/log.hpp>
 
 #include <map>
+#include <mutex>
+#include <vector>
 #include <memory>
 #include <string>
 #include <vector>
@@ -59,59 +61,79 @@ public:
         auto it = sessions_.find(connector);
         if (it == sessions_.end())
             it = sessions_.emplace(connector, open(connector)).first;
-        Session& session = it->second;
+        Session& session = *it->second;
         if (!session.capture)
             return {};
 
-        bool idle = false;
-        std::string error;
-        // Two different waits, because the first frame and the rest are different problems.
-        //
-        // The first one has the whole session start-up behind it -- the compositor building its
-        // capture path, the driver's first submission on buffers nobody has touched, and on a
-        // slower machine or a weaker GPU than the one this was written on, all of that before a
-        // single pixel is copied. A budget tuned on a fast box becomes "capture is broken" on a
-        // slow one, with the panel saying "not drawn" over a session that was merely still
-        // warming up. So the first frame gets a wait measured in seconds and every later one gets
-        // a short budget, since by then the path is hot and a long wait only means the screen is
-        // not changing.
-        //
-        // A first attempt passed 1 ms for everything, which was wrong twice over: no frame can
-        // arrive in that window, so every capture reported idle and the source was never drawn.
-        // ADR-0013 also records that abandoning a pending frame makes the compositor answer the
-        // *next* request at once with unchanged content, so a tight poll invents frames the
-        // screen never drew. Each wait here happens once, properly.
-        constexpr std::uint32_t kFirstFrameMs = 3000;
-        constexpr std::uint32_t kLaterFrameMs = 120;
-        const std::uint32_t budget = session.last.empty() ? kFirstFrameMs : kLaterFrameMs;
-        std::vector<std::uint8_t> pixels;
-        if (session.capture->read_frame(pixels, budget, idle, error)) {
-            session.last = std::move(pixels);
-        } else if (!idle && !error.empty() && error != session.last_error) {
-            lc::warn("capture on {}: {}", connector.empty() ? "the first screen" : connector, error);
-            session.last_error = error;
-        }
+        // Locked for the whole composite, not just for the handover: the picture that comes
+        // back points into `last`, so the capture thread must not swap it mid-blit. The lock is
+        // released in `done()` once the walk has finished with every frame it borrowed.
+        session.mu.lock();
+        held_.push_back(&session);
         if (session.last.empty())
             return {};
 
         lcomp::CapturedPicture out;
         out.width = static_cast<std::int32_t>(session.capture->width());
         out.height = static_cast<std::int32_t>(session.capture->height());
-        out.pixels = session.last;
+        out.pixels = session.last.data();
+        out.size = session.last.size();
         return out;
     }
+
+    /// Releases every frame the last composite borrowed. Called when the walk is finished.
+    void done() {
+        for (Session* s : held_)
+            s->mu.unlock();
+        held_.clear();
+    }
+
+    /// Whether any capture has produced a frame that no composite has drawn yet.
+    ///
+    /// The preview is asked to republish at the canvas's rate, but a 30 Hz screen on a 60 fps
+    /// canvas has nothing new half the time, and compositing it again burns a full scale and
+    /// blit to produce an identical picture. Asked before the walk rather than diffed after it.
+    [[nodiscard]] bool anything_new() const {
+        for (const auto& [name, session] : sessions_) {
+            std::lock_guard<std::mutex> lock(session->mu);
+            if (session->fresh)
+                return true;
+        }
+        return false;
+    }
+
+    /// Marks every frame as drawn. Called once a composite has used them.
+    void mark_drawn() {
+        for (auto& [name, session] : sessions_) {
+            std::lock_guard<std::mutex> lock(session->mu);
+            session->fresh = false;
+        }
+    }
+
+    [[nodiscard]] bool capturing() const { return !sessions_.empty(); }
 
 private:
     struct Session {
         std::unique_ptr<libertas::capture::ScreenCapture> capture;
-        /// The last frame that arrived. Kept because a still screen sends nothing and the preview
-        /// should go on showing what is on it rather than blinking to a gap.
+        /// The newest frame the capture thread has delivered, and the lock that lets the
+        /// compositing thread read it without waiting for one.
+        ///
+        /// This replaces a synchronous read with a deadline, which ADR-0013 Consequence 4 says
+        /// outright must not be done: a bounded wait that is re-requested makes the compositor
+        /// answer at once with unchanged content, so the preview was measuring its own 120 ms
+        /// timeout and calling it a frame rate. Every tick waited the full budget and returned
+        /// nothing, which is the 8fps ceiling the operator saw.
+        ///
+        /// Only the newest frame is kept. A preview that fell behind should skip to what is on
+        /// the screen now, not work through a queue of what used to be.
+        mutable std::mutex mu;
         std::vector<std::uint8_t> last;
-        std::string last_error;
+        /// Set when the capture thread writes a frame, cleared when a composite draws it.
+        bool fresh = false;
     };
 
-    Session open(const std::string& connector) {
-        Session session;
+    std::unique_ptr<Session> open(const std::string& connector) {
+        auto session = std::make_unique<Session>();
         std::string error;
         if (device_ == nullptr && !device_failed_) {
             // Empty: let the device be chosen the way vk_init chooses it. Naming a DRM node here
@@ -129,18 +151,35 @@ private:
         if (device_ == nullptr)
             return session;
 
-        session.capture =
+        session->capture =
             libertas::capture::ScreenCapture::open(*device_, connector, true, error);
-        if (!session.capture)
+        if (!session->capture) {
             lc::warn("cannot capture {}: {}", connector.empty() ? "the first screen" : connector,
                      error);
+            return session;
+        }
+        // The thread blocks until the screen changes, which is what the protocol is built for:
+        // a still desktop costs nothing, and a busy one delivers as fast as it redraws. The
+        // composite never waits on it -- it takes whatever was last put here.
+        Session* raw = session.get();
+        session->capture->start([raw](std::vector<std::uint8_t>&& pixels) {
+            std::lock_guard<std::mutex> lock(raw->mu);
+            // Moved, not copied: 33 MB a frame at 4K, which measured 2.6 ms against 1.6 ms for
+            // the scaling it feeds. The thread allocates the next one.
+            raw->last = std::move(pixels);
+            raw->fresh = true;
+        });
         return session;
     }
 
     libertas::rhi::VkCtxPtr owned_device_;
     libertas::rhi::VkCtx* device_ = nullptr;
     bool device_failed_ = false;
-    std::map<std::string, Session> sessions_;
+    // unique_ptr because a Session owns a mutex and a running thread that holds a pointer to
+    // it: the map must not move one once a capture has started.
+    std::map<std::string, std::unique_ptr<Session>> sessions_;
+    /// Sessions whose lock the current composite is holding, released together in done().
+    std::vector<Session*> held_;
 };
 
 } // namespace
@@ -153,10 +192,14 @@ int main() {
     }
 
     Screens screens;
-    auto served = lcomp::serve_preview(lipc::Channel{lipc::Fd{fd}},
-                                       [&screens](const std::string& connector) {
-                                           return screens.frame(connector);
-                                       });
+    auto served = lcomp::serve_preview(
+        lipc::Channel{lipc::Fd{fd}},
+        [&screens](const std::string& connector) { return screens.frame(connector); },
+        [&screens] {
+            screens.done();
+            screens.mark_drawn();
+        },
+        [&screens] { return screens.anything_new(); });
     if (!served) {
         std::fprintf(stderr, "libertas-render: %s\n", served.error().c_str());
         return 1;

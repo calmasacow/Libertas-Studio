@@ -10,12 +10,18 @@ import Libertas
 ///
 /// The rectangle is the one the compositor paints, for whichever source is selected. A handle
 /// changes scale, and position so the opposite edge stays put, unless Alt is held: then the
-/// center stays and both sides move. Shift keeps the aspect ratio. Alt and Shift together do
-/// both. The layout box is a different control. The whole press is one undo step.
+/// center stays and both sides move. The aspect ratio is kept unless Shift is held, which frees
+/// it -- a source has a shape of its own and distorting it is the gesture to ask for, not the
+/// one to get by default. Alt and Shift together do both. The layout box is a different control.
+/// The whole press is one undo step.
 Item {
     id: overlay
 
     required property string canvasId
+    /// How close, in screen pixels, an edge has to come before it snaps. Screen pixels rather
+    /// than canvas units so the feel does not change with the canvas size or the panel's zoom.
+    property real snapPx: 12
+
     required property real canvasWidth
     required property real canvasHeight
 
@@ -133,8 +139,15 @@ Item {
     }
 
     /// The rectangle a handle drag wants, from the press and the keys held now.
-    /// Recomputed from the press every move, so letting Shift go returns to the free shape.
-    function resized(start, edges, dx, dy, shift, alt) {
+    /// Recomputed from the press every move, so letting Shift go returns to the locked shape.
+    /// `free` is the Shift key: aspect is locked unless it is held.
+    ///
+    /// That is the inverse of the first version, which followed the drawing-tool convention where
+    /// a drag is free and Shift constrains. A source is a picture with a shape of its own, and the
+    /// common case is resizing it without distorting it -- a stretched camera or a squashed screen
+    /// is almost never what was wanted, and noticing it later costs a take. So the default is the
+    /// safe one and the destructive one is the gesture you have to ask for. Alt is unchanged.
+    function resized(start, edges, dx, dy, free, alt) {
         const min = 8;
         const aspect = start.height > 0 ? start.width / start.height : 1;
         const dragX = edges.indexOf("l") >= 0 || edges.indexOf("r") >= 0;
@@ -155,7 +168,7 @@ Item {
         }
         let nw = dragX ? Math.max(min, start.width + growX) : start.width;
         let nh = dragY ? Math.max(min, start.height + growY) : start.height;
-        if (shift && aspect > 0) {
+        if (!free && aspect > 0) {
             if (dragX && dragY) {
                 const rx = Math.abs(nw - start.width) / start.width;
                 const ry = Math.abs(nh - start.height) / start.height;
@@ -179,8 +192,13 @@ Item {
         let nx = start.x;
         let ny = start.y;
         if (alt) {
-            nx = (dragX || shift) ? cx - nw / 2 : start.x;
-            ny = (dragY || shift) ? cy - nh / 2 : start.y;
+            // Alt means the centre stays put, on both axes, whatever the size became. Deciding
+            // per axis -- as an earlier version did, recentring only the dragged one -- lets the
+            // rectangle drift whenever the other axis changed for any other reason: a corner
+            // handle, or the aspect lock resizing it. The centre is the whole promise of the
+            // modifier, so it is held unconditionally and the sizes are hung off it.
+            nx = cx - nw / 2;
+            ny = cy - nh / 2;
         } else {
             if (edges.indexOf("r") >= 0)
                 nx = start.x;
@@ -195,7 +213,94 @@ Item {
             else
                 ny = start.y + (start.height - nh) / 2;
         }
-        return {x: nx, y: ny, w: nw, h: nh};
+        return overlay.snapped({x: nx, y: ny, w: nw, h: nh}, edges, free, aspect, alt);
+    }
+
+    /// Pulls an edge that came within `snapPx` of a canvas edge or the canvas centre onto it.
+    ///
+    /// The threshold is in screen pixels, not canvas units, so it feels the same distance to the
+    /// hand whatever the canvas is and however far the preview is zoomed out -- a 12px tolerance
+    /// on a 4K canvas shown in a small panel would otherwise be a quarter of an inch of mouse
+    /// travel on one and a hair on another.
+    ///
+    /// Only the dragged edges snap. Snapping an edge nobody is moving would shift the rectangle
+    /// under a gesture that did not ask to move it.
+    ///
+    /// With the aspect locked the snap still applies, and the other axis is recomputed from the
+    /// ratio afterwards so the shape is kept. Only one axis can snap in that case -- the one with
+    /// a dragged edge -- because the other is no longer free to land anywhere.
+    function snapped(box, edges, free, aspect, alt) {
+        if (overlay.canvasWidth <= 0 || overlay.canvasHeight <= 0 || overlay.width <= 0)
+            return box;
+        const perPx = overlay.canvasWidth / overlay.width; // canvas units per screen pixel
+        const tol = overlay.snapPx * perPx;
+        const lines = [0, overlay.canvasWidth / 2, overlay.canvasWidth];
+        const rows = [0, overlay.canvasHeight / 2, overlay.canvasHeight];
+        let x = box.x;
+        let y = box.y;
+        let w = box.w;
+        let h = box.h;
+        const near = (v, to) => Math.abs(v - to) <= tol;
+
+        if (edges.indexOf("l") >= 0) {
+            for (const line of lines)
+                if (near(x, line)) { w += x - line; x = line; break; }
+        } else if (edges.indexOf("r") >= 0) {
+            for (const line of lines)
+                if (near(x + w, line)) { w = line - x; break; }
+        }
+        if (edges.indexOf("t") >= 0) {
+            for (const row of rows)
+                if (near(y, row)) { h += y - row; y = row; break; }
+        } else if (edges.indexOf("b") >= 0) {
+            for (const row of rows)
+                if (near(y + h, row)) { h = row - y; break; }
+        }
+        // Alt means the centre is the fixed point, so an edge that snapped has to take its
+        // opposite number with it -- otherwise the snap silently undoes the modifier, which is
+        // what made a centred resize drift 11px off centre the moment an edge came near 1080.
+        if (alt) {
+            if (Math.abs(w - box.w) > 1e-9 || Math.abs(x - box.x) > 1e-9) {
+                const cx = box.x + box.w / 2;
+                w = 2 * Math.max(Math.abs(cx - x), Math.abs((x + w) - cx));
+                x = cx - w / 2;
+            }
+            if (Math.abs(h - box.h) > 1e-9 || Math.abs(y - box.y) > 1e-9) {
+                const cy = box.y + box.h / 2;
+                h = 2 * Math.max(Math.abs(cy - y), Math.abs((y + h) - cy));
+                y = cy - h / 2;
+            }
+        }
+        // With the aspect locked, restore the ratio from whichever axis the snap moved, then put
+        // the rectangle back against the edge the drag is anchored to. Without this the snap
+        // would quietly distort the source -- the exact thing the locked mode exists to prevent.
+        if (!free && aspect > 0) {
+            const movedX = Math.abs(w - box.w) > 1e-9;
+            const movedY = Math.abs(h - box.h) > 1e-9;
+            if (movedX && !movedY) {
+                h = w / aspect;
+            } else if (movedY && !movedX) {
+                w = h * aspect;
+            } else if (movedX && movedY) {
+                // Both edges found a line. Keep the horizontal one and let the vertical follow,
+                // rather than landing on neither.
+                h = w / aspect;
+            }
+            if (alt) {
+                x = box.x + box.w / 2 - w / 2;
+                y = box.y + box.h / 2 - h / 2;
+            } else {
+                if (edges.indexOf("l") >= 0)
+                    x = box.x + box.w - w;
+                if (edges.indexOf("t") >= 0)
+                    y = box.y + box.h - h;
+            }
+        }
+        // A snap that collapsed the rectangle is not a snap. Dropped rather than clamped, so the
+        // drag carries on from where it was instead of jumping to a minimum.
+        if (w < 8 || h < 8)
+            return box;
+        return {x: x, y: y, w: w, h: h};
     }
 
     function press(x, y) {
@@ -241,9 +346,9 @@ Item {
                                   true);
             return;
         }
-        const shift = (modifiers & Qt.ShiftModifier) !== 0;
+        const free = (modifiers & Qt.ShiftModifier) !== 0;
         const alt = (modifiers & Qt.AltModifier) !== 0;
-        const box = overlay.resized(start, overlay.edges, dx, dy, shift, alt);
+        const box = overlay.resized(start, overlay.edges, dx, dy, free, alt);
         overlay.liveX = box.x;
         overlay.liveY = box.y;
         overlay.liveW = box.w;

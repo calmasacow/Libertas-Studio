@@ -100,7 +100,12 @@ qt_add_qml_module(libertas-ui
 
 target_link_libraries(libertas-ui PRIVATE
     libertas::flags
+    # Listing monitors is a Wayland registry read, not a capture: no GPU, no session, no device.
+    # The UI asks directly rather than through the render process so the dropdown is right before
+    # anything has started capturing (ADR-0041).
+    libertas::lcapture
     libertas::lcomp
+    libertas::lcore
     libertas::llayout
     libertas::lsession
     libertas::ltheme

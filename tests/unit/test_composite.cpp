@@ -75,18 +75,31 @@ ldoc::Source screen_source(std::string connector) {
     return source;
 }
 
-/// A captured frame of one flat colour, the shape the readback hands over: sRGB8, RGBA, packed.
-lcomp::CapturedPicture flat_frame(int w, int h, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+/// Backing store for a captured frame. `CapturedPicture` borrows rather than owns -- a 4K frame
+/// is 33 MB and copying it per composite cost more than the scaling -- so the test holds the
+/// buffer alive for as long as the walk is reading it.
+using FrameBuffer = std::vector<std::uint8_t>;
+
+/// One flat colour in the order the compositor actually delivers: **BGRA**. Written that way on
+/// purpose. The scaler swaps as it samples, and a test that handed it RGBA would pass whether or
+/// not the swap happened.
+FrameBuffer flat_bgra(int w, int h, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    FrameBuffer px(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4u);
+    for (std::size_t i = 0; i < px.size(); i += 4) {
+        px[i] = b;
+        px[i + 1] = g;
+        px[i + 2] = r;
+        px[i + 3] = 255;
+    }
+    return px;
+}
+
+lcomp::CapturedPicture view_of(const FrameBuffer& px, int w, int h) {
     lcomp::CapturedPicture frame;
     frame.width = w;
     frame.height = h;
-    frame.pixels.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4u);
-    for (std::size_t i = 0; i < frame.pixels.size(); i += 4) {
-        frame.pixels[i] = r;
-        frame.pixels[i + 1] = g;
-        frame.pixels[i + 2] = b;
-        frame.pixels[i + 3] = 255;
-    }
+    frame.pixels = px.data();
+    frame.size = px.size();
     return frame;
 }
 
@@ -450,9 +463,10 @@ LTEST_CASE(a_screen_source_draws_the_frame_it_is_handed) {
     const ldoc::Project project = show(4, scene, {screen});
 
     std::string asked_for = "<never asked>";
+    const FrameBuffer green = flat_bgra(4, 4, 0, 200, 0);
     const lcomp::FrameSource frames = [&](const std::string& connector) {
         asked_for = connector;
-        return flat_frame(4, 4, 0, 200, 0);
+        return view_of(green, 4, 4);
     };
 
     const Picture picture =
@@ -507,9 +521,10 @@ LTEST_CASE(an_empty_connector_is_passed_through_as_empty) {
     const ldoc::Project project = show(4, scene, {screen});
 
     std::string asked_for = "<never asked>";
+    const FrameBuffer any = flat_bgra(4, 4, 10, 20, 30);
     const lcomp::FrameSource frames = [&](const std::string& connector) {
         asked_for = connector;
-        return flat_frame(4, 4, 10, 20, 30);
+        return view_of(any, 4, 4);
     };
     const Picture picture = lcomp::composite_canvas(project, project.canvases[0].id, frames);
     CHECK_EQ(picture.status, PictureStatus::Complete);
@@ -524,10 +539,10 @@ LTEST_CASE(a_frame_shorter_than_it_claims_is_refused_rather_than_read_past) {
     scene.roots = {bound_to(screen)};
     const ldoc::Project project = show(4, scene, {screen});
 
-    const lcomp::FrameSource lying = [](const std::string&) {
-        lcomp::CapturedPicture frame = flat_frame(4, 4, 255, 0, 0);
-        frame.pixels.resize(8); // claims 4x4, carries two pixels
-        return frame;
+    const FrameBuffer two_pixels = flat_bgra(1, 2, 255, 0, 0);
+    const lcomp::FrameSource lying = [&](const std::string&) {
+        // Claims 4x4, carries two pixels.
+        return view_of(two_pixels, 4, 4);
     };
     const Picture picture = lcomp::composite_canvas(project, project.canvases[0].id, lying);
     CHECK_EQ(picture.status, PictureStatus::Partial);

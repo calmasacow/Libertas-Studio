@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <filesystem>
 #include <cstdio>
 #include <cmath>
@@ -333,10 +332,6 @@ const std::array<double, 256>& srgb_table() {
 /// Convert one already-byte channel. The only form the blit needs.
 double srgb_byte(std::uint8_t v) { return srgb_table()[v]; }
 
-double g_image_ms = 0;
-double g_screen_ms = 0;
-double g_fetch_ms = 0;
-double g_blit_ms = 0;
 
 bool audio_only(std::string_view type) {
     return type == "source.audio-input" || type == "source.audio-output";
@@ -675,11 +670,8 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
     // it is the half that knows what the compositor advertised.
     const auto it = src.settings.find("output");
     const auto* connector = it == src.settings.end() ? nullptr : std::get_if<std::string>(&it->second);
-    const auto fa = std::chrono::steady_clock::now();
     const CapturedPicture frame =
         (*target.frames)(connector == nullptr ? std::string{} : *connector);
-    const auto fb = std::chrono::steady_clock::now();
-    g_fetch_ms += std::chrono::duration<double, std::milli>(fb - fa).count();
     if (frame.empty() || frame.width <= 0 || frame.height <= 0) {
         refuse(target.picture, node, GapReason::NoFrame);
         return;
@@ -707,28 +699,9 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
     sampled.stride = static_cast<std::uint32_t>(frame.width) * 4u;
     sampled.borrowed = frame.pixels;
     target.drew = true;
-    {
-        static int once = 0;
-        if (once++ % 120 == 0) {
-            const std::uint8_t* px = sampled.read_from();
-            std::fprintf(stderr, "DIAG alpha0=%d alpha_mid=%d\n", px != nullptr ? px[3] : -1,
-                         px != nullptr
-                             ? px[(static_cast<std::size_t>(sampled.width) *
-                                   static_cast<std::size_t>(sampled.height) / 2) * 4 + 3]
-                             : -1);
-        }
-        if (once % 120 == 1)
-            std::fprintf(stderr, "DIAG blit src %dx%d -> rect %d,%d..%d,%d (%dx%d) op=%g q=%d\n",
-                         sampled.width, sampled.height, rect->x0, rect->y0, rect->x1, rect->y1,
-                         rect->x1 - rect->x0, rect->y1 - rect->y0, opacity,
-                         quarter_turn(node.transform.rotation_deg).value_or(0));
-    }
-    const auto ba = std::chrono::steady_clock::now();
     blit(target.picture, *rect, sampled, opacity,
          quarter_turn(node.transform.rotation_deg).value_or(0), node.transform.scale.x < 0.0,
          node.transform.scale.y < 0.0, /*swap_rb=*/true);
-    const auto bb = std::chrono::steady_clock::now();
-    g_blit_ms += std::chrono::duration<double, std::milli>(bb - ba).count();
 }
 
 void paint_node(const ldoc::Project& project, const ldoc::Node& node, double parent_opacity,
@@ -780,17 +753,11 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         if (audio_only(src->type))
             return;
         if (src->type == "source.image") {
-            const auto a = std::chrono::steady_clock::now();
             paint_image(*src, node, opacity, target);
-            const auto b = std::chrono::steady_clock::now();
-            g_image_ms += std::chrono::duration<double, std::milli>(b - a).count();
             return;
         }
         if (src->type == "source.screen") {
-            const auto a = std::chrono::steady_clock::now();
             paint_screen(*src, node, opacity, target);
-            const auto b = std::chrono::steady_clock::now();
-            g_screen_ms += std::chrono::duration<double, std::milli>(b - a).count();
             return;
         }
         if (src->type != "source.color") {
@@ -904,10 +871,6 @@ Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id
 
 Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id,
                          const FrameSource& frames) {
-    const auto dt0 = std::chrono::steady_clock::now();
-    struct Phase { const char* what; double ms; };
-    static double alloc_ms = 0, walk_ms = 0;
-    static int diag_n = 0;
     Picture picture;
     const ldoc::Canvas* canvas = project.canvas(canvas_id);
     if (!canvas) {
@@ -932,7 +895,6 @@ Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id
     picture.stride = static_cast<std::uint32_t>(canvas->width) * 4u;
     picture.pixels.assign(static_cast<std::size_t>(bytes), 0);
     fill_opaque_black(picture);
-    const auto dt1 = std::chrono::steady_clock::now();
 
     const ldoc::Deck* deck = nullptr;
     for (const ldoc::Deck& candidate : project.decks) {
@@ -956,19 +918,6 @@ Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id
     stack.push_back(scene->id);
     CanvasTarget target{picture, drew, stack, &frames};
     paint_scene(project, *scene, 1.0, target);
-    const auto dt2 = std::chrono::steady_clock::now();
-    alloc_ms += std::chrono::duration<double, std::milli>(dt1 - dt0).count();
-    walk_ms += std::chrono::duration<double, std::milli>(dt2 - dt1).count();
-    if (++diag_n % 60 == 0) {
-        std::fprintf(stderr, "DIAG alloc+clear %.2f  walk %.2f  (image %.2f screen %.2f fetch %.2f blit %.2f)\n",
-                     alloc_ms / 60, walk_ms / 60, g_image_ms / 60, g_screen_ms / 60, g_fetch_ms / 60, g_blit_ms / 60);
-        g_image_ms = 0;
-        g_screen_ms = 0;
-        g_fetch_ms = 0;
-        g_blit_ms = 0;
-        alloc_ms = 0;
-        walk_ms = 0;
-    }
 
     if (!picture.gaps.empty())
         picture.status = PictureStatus::Partial;

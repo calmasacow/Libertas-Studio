@@ -431,7 +431,11 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
     return event;
 }
 
-std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSource frames) {
+std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSource frames,
+                                              FramesDone done, FramesFresh fresh) {
+    // Set whenever a project or scene message lands, so the first commit after an edit always
+    // composites even if no screen has redrawn since.
+    bool document_changed = true;
     std::vector<std::byte> hello;
     hello.push_back(static_cast<std::byte>(Kind::Hello));
     append_u16(hello, kPreviewProtocol);
@@ -477,6 +481,7 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
                     assembly.error = text.error();
                     continue;
                 }
+                document_changed = true;
                 if (kind == Kind::Project) {
                     assembly.reset();
                     auto parsed = ldoc::project_from_json(*text);
@@ -507,8 +512,24 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
                 continue;
             }
 
+            // A commit with no document change behind it and no new captured frame would
+            // composite to exactly the picture already on screen. The UI republishes at the
+            // canvas rate, which is faster than a 30 Hz screen produces, so skipping here is
+            // what stops a full scale and blit per duplicate. A document change always draws:
+            // the project may have moved something even if no frame arrived.
+            if (!document_changed && fresh && !fresh()) {
+                if (auto sent = send_ack(channel); !sent)
+                    return sent;
+                continue;
+            }
+            document_changed = false;
             for (const ldoc::Canvas& canvas : assembly.project->canvases) {
                 const Picture picture = composite_canvas(*assembly.project, canvas.id, frames);
+                // Released before the frame is sent, not after: a captured frame is borrowed for
+                // the length of the walk, and holding a capture thread's lock across an IPC write
+                // would stall it on whatever the socket is doing.
+                if (done)
+                    done();
                 if (auto sent = send_frame(channel, canvas.id, picture, slots); !sent)
                     return sent;
             }

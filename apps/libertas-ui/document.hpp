@@ -349,6 +349,16 @@ public:
     /// the field it is about. They are in the schema rather than looked up separately so that
     /// a note sits where it belongs instead of all of them piling up at the top.
     Q_INVOKABLE [[nodiscard]] QVariantList sourceSettingsSchema(const QString& type) const;
+
+    /// What the compositor says about one monitor: name, description, size and refresh. Empty
+    /// when that connector is not connected, which is what the settings dialog shows instead of
+    /// a preview it cannot draw. An empty connector means the first screen (ADR-0041).
+    Q_INVOKABLE [[nodiscard]] QVariantMap screenDetails(const QString& connector) const;
+
+    /// Whether any canvas's program scene holds a source whose picture changes on its own -- a
+    /// screen, a window, a camera, a browser, a playing file. The preview republishes on a timer
+    /// only while this is true (ADR-0024 keeps the document the only other reason to republish).
+    [[nodiscard]] bool hasLiveSource() const;
     /// Everything the settings dialog needs: the tile fields plus `settings`, which is the
     /// stored values with the type's defaults showing through wherever a key is absent.
     Q_INVOKABLE [[nodiscard]] QVariantMap sourceDetails(const QString& id) const;

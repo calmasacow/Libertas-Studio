@@ -5,6 +5,7 @@
 #include "ldoc/document.hpp"
 
 #include <QObject>
+#include <QTimer>
 #include <QString>
 #include <QtQml/qqmlregistration.h>
 #include <filesystem>
@@ -55,6 +56,18 @@ class Preview : public QObject {
     /// sent twice: the newest one goes when the renderer acknowledges.
     void publish(const ldoc::Project& project);
 
+    /// Keeps the picture moving while something on it is live.
+    ///
+    /// The preview is otherwise published only when the document changes (ADR-0024), which is
+    /// right for a scene made of colours and stills: nothing moves until someone moves it. A
+    /// screen source breaks that assumption -- the picture changes because the desktop changed,
+    /// not because the project did -- so a canvas holding one republishes on a timer.
+    ///
+    /// The rate is the canvas's own `fps`, not the monitor's and not a constant. A 30fps show
+    /// previewed at 60 would be showing something the programme will never be, and the canvas
+    /// already carries the exact rational to use (ADR-0013 on why it is never a double).
+    void setLive(bool live, ldoc::Fps rate);
+
     friend class ProgramImageProvider;
 
   signals:
@@ -67,6 +80,7 @@ class Preview : public QObject {
     struct Link;
 
     void start();
+    void tick();
     void try_send();
     void on_readable();
     void on_writable();
@@ -79,6 +93,8 @@ class Preview : public QObject {
     std::shared_ptr<State> state_;
     QString first_canvas_;
     std::unique_ptr<Link> link_;
+    QTimer* live_ = nullptr;
+    ldoc::Project latest_;
 };
 
 } // namespace libertas::ui

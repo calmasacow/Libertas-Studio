@@ -5,6 +5,7 @@
 #include <lcapture/wlcap.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,6 +15,16 @@ struct VkCtx;
 }
 
 namespace libertas::capture {
+
+/// The monitors the compositor says are connected, right now.
+///
+/// Opens a connection, reads the output list, closes it. No GPU, no capture session, no device:
+/// enumerating outputs is a registry read, which is why the UI can call this directly rather than
+/// asking the render process for a list it would then have to keep fresh.
+///
+/// Empty with `error` set when the compositor has no capture protocol -- which is the honest
+/// answer for "which screens can I capture", since on such a compositor the answer is none.
+[[nodiscard]] std::vector<WlOutputInfo> list_screens(std::string& error);
 
 /// Captures one screen and hands back the last frame as CPU pixels.
 ///
@@ -47,17 +58,37 @@ public:
     [[nodiscard]] std::uint32_t width() const;
     [[nodiscard]] std::uint32_t height() const;
 
-    /// Waits up to `timeout_ms` for a frame and reads it back as RGBA8.
+    /// Waits for the next frame and reads it back as BGRA8. Blocks until one arrives.
     ///
-    /// Returns false and leaves `out` alone when no frame arrived. That is the ordinary case on a
-    /// screen nobody is touching -- capture is damage-driven (ADR-0013) -- and `idle` says so, to
-    /// distinguish it from a real fault without parsing `error`.
+    /// Unbounded on purpose. ADR-0013 Consequence 4: a bounded wait must never be used to sample,
+    /// because destroying a pending frame makes the compositor answer the next request at once
+    /// with unchanged content -- so a caller that times out and re-asks measures its own timeout
+    /// and calls it a frame rate. The only honest shapes are "wait" and "give up", and a preview
+    /// that wants both needs a thread, not a timeout.
     ///
-    /// A timeout is not a way to poll: ADR-0013 records that abandoning a pending frame and asking
-    /// again makes the compositor answer at once with unchanged content, which invents a frame per
-    /// timeout that the screen never drew. A caller wanting the next real frame waits again.
-    bool read_frame(std::vector<std::uint8_t>& out, std::uint32_t timeout_ms, bool& idle,
-                    std::string& error);
+    /// Call this from `start()`'s thread rather than from anything holding a frame deadline.
+    bool read_frame(std::vector<std::uint8_t>& out, std::string& error);
+
+    /// Runs the capture in its own thread, calling `on_frame` with each one as it arrives.
+    ///
+    /// This is the shape the protocol wants. The compositor delivers when the screen changes
+    /// (ADR-0013 again: capture is damage-driven), so the thread blocks on that and a still
+    /// screen simply costs nothing until it moves. Whoever is drawing reads the latest frame
+    /// whenever it happens to need one, and the two rates stop being the same number.
+    ///
+    /// `on_frame` runs on the capture thread, and is handed the buffer to take rather than to
+    /// copy: it may move from it. The thread allocates a fresh one for the next frame, which
+    /// costs an allocation instead of a 33 MB memcpy at 4K.
+    ///
+    /// The pixels are **BGRA**, as the compositor delivered them. Deliberately not converted
+    /// here: a separate pass over the whole buffer measured 5.1 ms a frame at 4K, more than the
+    /// composite it was feeding, and whoever samples the frame is already touching every pixel
+    /// it will actually use. Converting on the way in means converting pixels that are about to
+    /// be scaled away.
+    void start(std::function<void(std::vector<std::uint8_t>&&)> on_frame);
+
+    /// Stops the thread and waits for it. Called by the destructor; safe to call twice.
+    void stop();
 
 private:
     ScreenCapture();

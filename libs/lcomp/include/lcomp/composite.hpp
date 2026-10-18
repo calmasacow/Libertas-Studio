@@ -82,6 +82,15 @@ struct Picture {
     std::uint32_t stride = 0;
     /// `stride * height` bytes, R, G, B, A in that order. Empty when `status` is Unsupported.
     std::vector<std::uint8_t> pixels;
+    /// When set, the pixels to read are these rather than `pixels` -- a buffer owned by someone
+    /// else for the length of one call. Used for a captured frame, which is 33 MB at 4K and must
+    /// not be copied into the walk just to be sampled down to a canvas.
+    const std::uint8_t* borrowed = nullptr;
+
+    /// Where to read from: the borrowed buffer when there is one, otherwise our own.
+    [[nodiscard]] const std::uint8_t* read_from() const {
+        return borrowed != nullptr ? borrowed : pixels.data();
+    }
     PictureStatus status = PictureStatus::NoProgram;
     std::vector<Gap> gaps;
 };
@@ -148,8 +157,16 @@ struct SolvedFrame {
 struct CapturedPicture {
     std::int32_t width = 0;
     std::int32_t height = 0;
-    /// `width * height * 4` bytes, R, G, B, A. Empty means "no frame for that screen right now".
-    std::vector<std::uint8_t> pixels;
+    /// `width * height * 4` bytes, **B, G, R, A** -- the order the compositor delivers.
+    ///
+    /// Borrowed, not owned: it points at the buffer the capture thread last wrote, and is valid
+    /// only for the call that was handed it. Owning it meant copying 33 MB per frame at 4K --
+    /// 2.6 ms, against 1.6 ms to do the actual scaling -- and then copying it again out of the
+    /// session. The scaler reads each pixel it needs straight from here instead.
+    const std::uint8_t* pixels = nullptr;
+    std::size_t size = 0;
+
+    [[nodiscard]] bool empty() const { return pixels == nullptr || size == 0; }
 };
 
 /// Asked for the latest frame of the screen a source names, by connector ("DP-1", or empty for

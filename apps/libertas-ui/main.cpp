@@ -205,10 +205,26 @@ int main(int argc, char** argv) {
 
     // From the notification, not from a command's return (ADR-0024). The first one is the
     // document the shell opened on; nothing has emitted `changed` since this connection existed.
-    QObject::connect(&document, &libertas::ui::Document::changed, &app, [&preview, &document] {
-        preview.publish(document.projectForBindings());
-    });
+    //
+    // A document change also decides whether the preview has to keep republishing on its own. A
+    // scene of colours and stills does not: nothing in it moves unless a command moves it, and a
+    // timer there would recomposite a picture that cannot have changed. A scene holding a screen
+    // does, because its picture changes when the desktop does and the document never hears about
+    // it. Asked of the document rather than tracked here, so adding the next live type is one
+    // answer in one place.
+    const auto follow_live = [&preview, &document] {
+        const ldoc::Project& project = document.projectForBindings();
+        preview.setLive(document.hasLiveSource(), project.canvases.empty()
+                                                      ? ldoc::Fps{}
+                                                      : project.canvases.front().fps);
+    };
+    QObject::connect(&document, &libertas::ui::Document::changed, &app,
+                     [&preview, &document, follow_live] {
+                         preview.publish(document.projectForBindings());
+                         follow_live();
+                     });
     preview.publish(document.projectForBindings());
+    follow_live();
 
     engine.load(QUrl(QStringLiteral("qrc:/qt/qml/Libertas/qml/Main.qml")));
 
@@ -1407,7 +1423,10 @@ int main(int argc, char** argv) {
                 };
                 const QPointF uneven = frame->mapToScene(
                     QPointF(frame->width() - 1.0 - 70.0, frame->height() - 1.0 - 12.0));
-                drag_handle(uneven, Qt::ShiftModifier);
+                // No modifier: the aspect holds. A drag that pulls further in one axis than the
+                // other still comes back square, because distorting a source is the gesture you
+                // ask for rather than the one you get.
+                drag_handle(uneven, Qt::NoModifier);
                 const QVariantMap locked_aspect = document.nodeProperties();
                 const double locked_x = locked_aspect.value(QStringLiteral("scaleX")).toDouble();
                 const double locked_y = locked_aspect.value(QStringLiteral("scaleY")).toDouble();
@@ -1415,7 +1434,19 @@ int main(int argc, char** argv) {
                 report(std::abs(locked_x - locked_y) < 0.02 && locked_x < 0.98 && locked_x > 0.05 &&
                            std::abs(locked_rect.value(QStringLiteral("x")).toDouble()) < 1.5 &&
                            std::abs(locked_rect.value(QStringLiteral("y")).toDouble()) < 1.5,
-                       "shift locks the aspect ratio while resizing");
+                       "a plain resize keeps the aspect ratio");
+                document.undo();
+                settle();
+
+                // Shift is the opt-out, and the same drag must now distort. Asserted as well as
+                // the lock above, because a resized() that ignored the flag entirely would pass
+                // the locked case on its own.
+                drag_handle(uneven, Qt::ShiftModifier);
+                const QVariantMap freed = document.nodeProperties();
+                const double free_x = freed.value(QStringLiteral("scaleX")).toDouble();
+                const double free_y = freed.value(QStringLiteral("scaleY")).toDouble();
+                report(std::abs(free_x - free_y) > 0.02,
+                       "and shift frees it, so the same drag distorts");
                 document.undo();
                 settle();
 
@@ -1434,6 +1465,33 @@ int main(int argc, char** argv) {
                 document.undo();
                 settle();
 
+                // An edge let go within 12 screen pixels of the canvas edge lands exactly on it.
+                // Driven through the real drag rather than by calling snapped(): the threshold is
+                // in screen pixels and the conversion to canvas units is the part that can be
+                // wrong, and a test that did the conversion itself would agree with a bug.
+                {
+                    const QVariantMap before = document.placedRect(QString{}, card);
+                    const double scale = frame->width() / before.value(QStringLiteral("width")).toDouble();
+                    // Aim the right edge 6 screen pixels short of the canvas edge: inside the
+                    // 12px tolerance, far enough out that landing exactly is not luck.
+                    const double short_by_canvas = 6.0 / scale;
+                    const QPointF near_edge = frame->mapToScene(QPointF(
+                        frame->width() - 1.0 - 6.0, frame->height() / 2.0));
+                    drag_handle(near_edge, Qt::ShiftModifier);
+                    const QVariantMap snapped = document.placedRect(QString{}, card);
+                    const double right = snapped.value(QStringLiteral("x")).toDouble() +
+                                         snapped.value(QStringLiteral("width")).toDouble();
+                    report(std::abs(right - 1920.0) < 0.5,
+                           "an edge dropped near the canvas edge snaps onto it");
+                    (void)short_by_canvas;
+                    document.undo();
+                    settle();
+                }
+
+                // Alt holds the centre and Shift frees the aspect, so together they do both: the
+                // rectangle stays put and distorts. The old assertion here wanted a locked aspect
+                // from this combination, which was right when Shift meant "lock" and is the
+                // opposite of what it means now.
                 drag_handle(uneven, Qt::AltModifier | Qt::ShiftModifier);
                 const QVariantMap both = document.nodeProperties();
                 const QVariantMap both_rect = document.placedRect(QString{}, card);
@@ -1441,11 +1499,15 @@ int main(int argc, char** argv) {
                 const double both_y = both_rect.value(QStringLiteral("y")).toDouble();
                 const double both_w = both_rect.value(QStringLiteral("width")).toDouble();
                 const double both_h = both_rect.value(QStringLiteral("height")).toDouble();
+                std::fprintf(stderr, "       (alt+shift sx=%g sy=%g rect %gx%g at %g,%g)\n",
+                             both.value(QStringLiteral("scaleX")).toDouble(),
+                             both.value(QStringLiteral("scaleY")).toDouble(), both_w, both_h,
+                             both_x, both_y);
                 report(std::abs(both.value(QStringLiteral("scaleX")).toDouble() -
-                                both.value(QStringLiteral("scaleY")).toDouble()) < 0.02 &&
+                                both.value(QStringLiteral("scaleY")).toDouble()) > 0.02 &&
                            std::abs((both_x + both_w / 2.0) - 960.0) < 2.0 &&
                            std::abs((both_y + both_h / 2.0) - 540.0) < 2.0 && both_w < 1900.0,
-                       "alt and shift together lock the aspect and resize in place");
+                       "alt and shift together free the aspect and resize in place");
                 document.undo();
                 settle();
 

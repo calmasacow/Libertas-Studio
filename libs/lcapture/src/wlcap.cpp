@@ -23,6 +23,7 @@
 #include <cstring>
 #include <format>
 
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
@@ -56,6 +57,11 @@ struct WlCap {
     std::vector<wl_buffer*> slots;
 
     // Per-frame state.
+    /// Written to by wlcap_wake() to break a blocking wait. Without it a thread parked on a
+    /// still screen cannot be stopped: the compositor is correct to send nothing, so there is no
+    /// event coming to notice a shutdown flag with.
+    int wake_r = -1;
+    int wake_w = -1;
     bool frame_ready = false;
     bool frame_failed = false;
     std::uint32_t frame_failure_reason = 0;
@@ -243,6 +249,16 @@ constexpr wl_registry_listener kRegistryListener = {
 
 } // namespace
 
+void wlcap_wake(WlCap& cap) {
+    if (cap.wake_w < 0)
+        return;
+    const char byte = 1;
+    // Deliberately unchecked: the only failures are "the pipe is full", which means a wake is
+    // already pending and a second one would change nothing, and a closed pipe during teardown.
+    const ssize_t ignored = ::write(cap.wake_w, &byte, 1);
+    (void)ignored;
+}
+
 std::string wlcap_idle_reason(std::uint32_t idle_timeout_ms) {
     return std::format(
         "no new frame in {:.1f} s. The screen has not changed: capture is damage-driven "
@@ -258,7 +274,18 @@ std::string wlcap_device_str(std::uint64_t dev) {
 }
 
 WlCapPtr wlcap_open(std::string& error) {
+    // The wake pipe is made before anything can block on the display, so a capture stopped
+    // immediately after opening still has a way to interrupt its own wait.
     WlCapPtr cap(new WlCap());
+    {
+        int fds[2] = {-1, -1};
+        if (::pipe2(fds, O_CLOEXEC | O_NONBLOCK) == 0) {
+            cap->wake_r = fds[0];
+            cap->wake_w = fds[1];
+        }
+        // A failed pipe is not fatal: capture still works, and only the ability to interrupt a
+        // wait on a still screen is lost. Worth not failing the whole open over.
+    }
 
     cap->display = wl_display_connect(nullptr);
     if (cap->display == nullptr) {
@@ -431,7 +458,7 @@ bool wlcap_add_slot(WlCap& cap, const DmabufImage& img, std::uint32_t drm_format
 
 namespace {
 
-enum class Dispatch { Progress, TimedOut, Failed };
+enum class Dispatch { Progress, TimedOut, Failed, Woken };
 
 /// One round of event dispatch that gives up at `deadline` instead of blocking for ever.
 ///
@@ -439,6 +466,37 @@ enum class Dispatch { Progress, TimedOut, Failed };
 /// libwayland documents for exactly this purpose. A prepare_read that fails means events are
 /// already queued; dispatching them is progress, and the caller re-checks its condition before
 /// waiting again, so an event that was already here never costs a timeout.
+/// Waits for an event with no deadline, but stays interruptible.
+///
+/// The plain `wl_display_dispatch` cannot be unblocked, which is fine for a tool that exits when
+/// it is done and wrong for a capture that has to stop when its source is removed. Polling the
+/// display's descriptor alongside a wake pipe keeps the wait unbounded -- ADR-0013 Consequence 4
+/// is about not re-requesting, not about never returning -- while leaving a way out.
+Dispatch dispatch_forever(wl_display* display, int wake_fd) {
+    if (wl_display_prepare_read(display) != 0)
+        return wl_display_dispatch_pending(display) < 0 ? Dispatch::Failed : Dispatch::Progress;
+    wl_display_flush(display);
+    for (;;) {
+        pollfd fds[2] = {{wl_display_get_fd(display), POLLIN, 0}, {wake_fd, POLLIN, 0}};
+        const int r = ::poll(fds, wake_fd >= 0 ? 2 : 1, -1);
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r < 0) {
+            wl_display_cancel_read(display);
+            return Dispatch::Failed;
+        }
+        if (wake_fd >= 0 && (fds[1].revents & POLLIN) != 0) {
+            wl_display_cancel_read(display);
+            return Dispatch::Woken;
+        }
+        if ((fds[0].revents & POLLIN) == 0)
+            continue;
+        if (wl_display_read_events(display) < 0)
+            return Dispatch::Failed;
+        return wl_display_dispatch_pending(display) < 0 ? Dispatch::Failed : Dispatch::Progress;
+    }
+}
+
 Dispatch dispatch_until(wl_display* display, std::chrono::steady_clock::time_point deadline) {
     if (wl_display_prepare_read(display) != 0)
         return wl_display_dispatch_pending(display) < 0 ? Dispatch::Failed : Dispatch::Progress;
@@ -495,9 +553,13 @@ bool wlcap_capture_slot(WlCap& cap, std::size_t index, std::uint32_t width, std:
         std::chrono::steady_clock::now() + std::chrono::milliseconds(idle_timeout_ms);
     while (!cap.frame_ready && !cap.frame_failed) {
         const Dispatch d = idle_timeout_ms == 0
-                               ? (wl_display_dispatch(cap.display) < 0 ? Dispatch::Failed
-                                                                       : Dispatch::Progress)
+                               ? dispatch_forever(cap.display, cap.wake_r)
                                : dispatch_until(cap.display, deadline);
+        if (d == Dispatch::Woken) {
+            error = "capture was stopped";
+            ok = false;
+            break;
+        }
         if (d == Dispatch::Failed) {
             error = "wl_display_dispatch failed while waiting for the frame";
             ok = false;
@@ -527,6 +589,10 @@ bool wlcap_capture_slot(WlCap& cap, std::size_t index, std::uint32_t width, std:
 void wlcap_close(WlCap* cap) {
     if (cap == nullptr)
         return;
+    if (cap->wake_r >= 0)
+        ::close(cap->wake_r);
+    if (cap->wake_w >= 0)
+        ::close(cap->wake_w);
     for (wl_buffer* b : cap->slots)
         wl_buffer_destroy(b);
     if (cap->session != nullptr)
