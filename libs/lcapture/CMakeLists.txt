@@ -17,6 +17,7 @@ pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
 
 add_library(lcapture STATIC
     src/dmabuf.cpp
+    src/screen.cpp
     src/wlcap.cpp
 )
 add_library(libertas::lcapture ALIAS lcapture)
@@ -31,6 +32,6 @@ libertas_wayland_protocol(lcapture stable/linux-dmabuf/linux-dmabuf-v1.xml)
 
 target_include_directories(lcapture PUBLIC include)
 target_link_libraries(lcapture
-    PUBLIC libertas::flags libertas::lcore
+    PUBLIC libertas::flags libertas::lcore libertas::lrhi
     PRIVATE PkgConfig::WAYLAND
 )

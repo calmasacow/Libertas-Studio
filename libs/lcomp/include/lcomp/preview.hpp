@@ -145,7 +145,13 @@ class PreviewLink {
 /// The renderer's end. Sends hello, then composites every committed snapshot until Quit or
 /// the peer is gone. Returns rather than throws: this is the whole process, and an exception
 /// leaving it would be a crash report with no picture attached.
-[[nodiscard]] std::expected<void, std::string> serve_preview(lipc::Channel channel);
+///
+/// `frames` is where captured screens come from, and is empty for a caller with no device -- a
+/// test, or a build of this process that has not opened one. This library never opens a device
+/// itself: ADR-0005 puts the GPU in `libertas-render`, and taking the frame source as a parameter
+/// is what keeps `lcomp` free of Vulkan while the process that links it is not.
+[[nodiscard]] std::expected<void, std::string> serve_preview(lipc::Channel channel,
+                                                             FrameSource frames = {});
 
 /// Start `libertas-render` with one end of a channel.
 ///

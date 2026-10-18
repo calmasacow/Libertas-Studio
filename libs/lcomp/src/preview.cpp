@@ -431,7 +431,7 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
     return event;
 }
 
-std::expected<void, std::string> serve_preview(lipc::Channel channel) {
+std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSource frames) {
     std::vector<std::byte> hello;
     hello.push_back(static_cast<std::byte>(Kind::Hello));
     append_u16(hello, kPreviewProtocol);
@@ -508,7 +508,7 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel) {
             }
 
             for (const ldoc::Canvas& canvas : assembly.project->canvases) {
-                const Picture picture = composite_canvas(*assembly.project, canvas.id);
+                const Picture picture = composite_canvas(*assembly.project, canvas.id, frames);
                 if (auto sent = send_frame(channel, canvas.id, picture, slots); !sent)
                     return sent;
             }

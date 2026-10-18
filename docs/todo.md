@@ -17,6 +17,11 @@ and says its resolution. ADR-0027 has the reasoning.
 
 ### Still open here
 
+- **A screen reaches it, on this machine.** `libertas-render` opens the GPU when a document
+  names a screen source and captures it through `lcapture` + `lrhi`, read back to CPU pixels for
+  the scene walk. Verified 2026-10-18 on an RTX 2070 under Hyprland: the Program panel shows
+  HDMI-A-1 at 2560x1440, captured live. Not yet verified on a second GPU, where ADR-0019's
+  system-RAM round trip applies and `host_memory` would have to be set.
 - **A colour or an image reaches it.** `libertas-render` composites the program scene and the
   panel shows that frame: a colour, an image (PNG, JPEG or WebP, decoded in the compositor), a
   group of those, and a precomp made of those (ADR-0040). Quarter turns and flips are drawn. A
@@ -303,9 +308,19 @@ that works headless.
 
 ### Still open here
 
-- **Nothing draws a captured frame.** `lcomp` is untouched; a screen source is still a gap in the
-  program picture, counted in the caption. That commit needs a machine with a display to prove,
-  which is why it is not this one.
+- ~~**Nothing draws a captured frame.**~~ Built on 2026-10-18. `composite_canvas` takes a
+  `FrameSource`, `libertas-render` supplies one, and a screen source draws. The device opens
+  lazily on the first screen source, so a document without one still runs where there is no GPU
+  and the headless self-check is unaffected.
+- **Capture waits up to 120 ms per composite on an idle screen.** The composite is driven by
+  document commits, and a still desktop sends nothing (ADR-0013), so that wait is paid whenever
+  a screen source is in the scene and the screen has not changed. It wants a capture thread with
+  its own cadence rather than a wait inside the composite, which is also what encode will need.
+- **Only one frame is kept per screen, and it is copied twice** -- readback to host memory, then
+  into the picture. Fine for a preview, not for encode (ADR-0006 keeps those frames on the
+  device).
+- **`pauseWhenHidden` and `showCursor` are stored and ignored.** The cursor is always captured;
+  nothing stops capturing when the source is off screen.
 - **`wlcap_capture_frame` still waits without bound.** Moved into `libs/` unfixed, with no
   callers, as recorded below. Moving code is not the commit to change its behaviour in.
 - **No portal backend here yet.** `libs/lcapture/linux-portal/` is still the empty directory it
