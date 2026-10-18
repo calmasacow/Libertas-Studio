@@ -9,10 +9,10 @@ and then went looking for why it is slow. Read this before picking the work up e
 
 ## The state of the tree right now
 
-`main` is at `6c54750`, pushed. **There are uncommitted changes in the working tree** — about
-eighteen files. They build warning-free and the suite is 24/24, but they are not committed
-because the thing they were meant to fix is not fixed. See "The open problem" below before
-deciding what to do with them.
+`main` is at `b8e15c3`, pushed. **There are uncommitted changes in the working tree** — about
+eighteen files. They build warning-free and the suite is 24/24. They were held back while the
+composite was still slow for an unexplained reason; that reason is now found and fixed (see
+below), so they are ready to commit once the `DIAG` instrumentation is stripped.
 
 Two files still carry temporary `DIAG` instrumentation that must not be committed as-is:
 
@@ -82,78 +82,84 @@ build defaults to still.
 | BGRA→RGBA folded into the sampler (`swap_rb`) | A separate pass over the whole buffer measured 5.1 ms a frame at 4K, converting pixels that were about to be scaled away |
 | `srgb_to_linear` replaced by an exact 256-entry table | `std::pow` per channel per pixel measured 110 ms on a 1080p frame. Exact, not approximate — the table is filled from the same function |
 | Decoded images cached on path + mtime + size | A still was re-decoded every composite. Fine when composites only happened on edit; not at 60 fps |
+| `sample_axis` precomputed per axis instead of per pixel | Two `idiv` instructions were 68% of the blit. 35 ms composite to 5.3 ms. See below |
 | Composites skipped when no new frame and no document change | A 30 Hz screen on a 60 fps canvas has nothing new half the time |
 
-## The open problem
+## The problem that was open, and its answer
 
-**The composite takes ~35 ms and I cannot explain it.**
+**It was integer division, and `perf` named it in one run.**
 
-With `DIAG` instrumentation in place, on a 1920x1080 canvas drawing a 3840x2160 screen capture
-plus one image source:
+The composite took ~35 ms, of which the blit was 33 ms, while a faithful standalone
+reproduction of the same blit ran in 1.16 ms. Six hypotheses had been advanced and eliminated
+before a profiler was available. The profile settled it immediately:
 
 ```
-DIAG alloc+clear 0.79  walk 35.10  (image 2.11  screen 32.99  fetch 0.00  blit 32.98)
+93.75%  libertas-render  [.] lcomp::blit(...)
 ```
 
-So: allocation and clear are 0.8 ms, the image source is 2.1 ms, fetching the captured frame is
-free, and **the blit is 33 ms**.
+and annotating that symbol:
 
-That blit is `blit()` in `libs/lcomp/src/composite.cpp`, scaling 3840x2160 down to 1920x1080
-with `swap_rb` on. Its geometry was logged to be certain: `src 3840x2160 -> rect 0,0..1920,1080
-(1920x1080) op=1 q=0`, and the source alpha was probed and is 255, so it takes the opaque fast
-path and never touches the blend.
-
-**A faithful standalone reproduction of that same loop runs in 1.16 ms.** Same dimensions, same
-`-O2` (confirmed from `build-make/libs/lcomp/CMakeFiles/lcomp.dir/flags.make`), same
-`sample_axis` with its clamp, same borrowed-pointer indirection, same channel swap, alpha 255
-throughout. The benchmark source is `/tmp/b6.cpp` if it survives; it is small enough to rewrite.
-
-A 28× gap, unexplained.
-
-### Hypotheses already tested and eliminated
-
-Do not spend time re-testing these.
-
-- **Memory copying.** Removed both 33 MB copies. No change.
-- **`std::pow` in the colour conversion.** Replaced with an exact lookup table. No change —
-  and the probe showing alpha 255 explains why: the blend path was never being entered.
-- **Re-decoding the PNG every frame.** Cached. Saved about 2 ms, which shows in the `image
-  2.11` figure, but did not touch the 33 ms.
-- **Cold GPU memory.** `vk_readback_exported` memcpys into an ordinary `std::vector`, so the
-  buffer the blit reads is normal heap memory, not mapped device memory.
-- **Optimisation flags.** `-O2 -g -DNDEBUG`, same as the benchmark.
-- **The wrong `blit` being called.** There is only one; the other function at a similar line
-  number is `fill_rect`.
-
-### What to do next
-
-`perf` has now been installed, which is what this needed all along. One profile of
-`libertas-render` under load should name the function:
-
-```sh
-# with the app running and a screen source on the canvas
-perf record -F 299 -g -p "$(pgrep -f libertas-render | head -1)" -o /tmp/r.data -- sleep 8
-perf report -i /tmp/r.data --stdio --no-children | head -40
+```
+36.87 :  2f680:  idiv   %rbx
+31.09 :  2f648:  idiv   %r9
+ 7.70 :  2f6b3:  movzbl 0x3(%r9),%eax
 ```
 
-The build already carries `-g` and `-fno-omit-frame-pointer`, so the stacks should be readable
-without rebuilding.
+**Two `idiv` instructions, 68% of all samples.** `sample_axis` does a 64-bit integer division,
+and the blit called it once per axis per pixel: at 1920x1080 that is 4.1 million divisions a
+frame. 64-bit `idiv` is 20-40 cycles on this core and does not pipeline, so it dominated
+everything else in the loop.
 
-Treat the 1.16 ms benchmark as the thing to explain, not as proof the code is fine. The
-difference is real and reproducible; the explanation is simply not yet found.
+Why the standalone benchmark did not show it: the benchmark's inner loop was simple enough that
+the compiler hoisted the `y` division out of it. The real blit could not, because the branch
+choosing between the straight path and the rotate/flip cases kept both divisions inside.
+**That is the lesson worth keeping — the benchmark was not wrong about the code, it was wrong
+about the loop the compiler would build.**
 
-### A caution for whoever picks this up
+### The fix
 
-Four hypotheses were advanced confidently in this session and all four were wrong. Two readings
-of which process was hot were also reported backwards, because `ps` snapshots were trusted over
-`/proc` deltas. Measure before changing anything, and prefer:
+`axis_map()` in `libs/lcomp/src/composite.cpp` precomputes the source index for every
+destination row and column, once per blit, using `sample_axis` itself so the arithmetic is
+identical and the picture does not change. A 4K-to-1080p blit now does about 3000 divisions
+instead of 4.1 million.
 
-```sh
-read a b < <(awk '{print $14, $15}' /proc/PID/stat); sleep 5
-read c d < <(awk '{print $14, $15}' /proc/PID/stat); echo $(( ((c+d)-(a+b))*100/500 ))%
-```
+Built only for the straight path. A quarter turn reads the other axis of the source for each
+destination axis, so its four cases would each need their own pair; they are left on the
+per-pixel path until a profile says otherwise.
 
-over a `ps %cpu` snapshot, which reports a lifetime average.
+### What it bought, measured
+
+| | before | after |
+| --- | --- | --- |
+| composite (walk) | 35.1 ms | 5.3 ms |
+| of which blit | 33.0 ms | 4.9 ms |
+| of which image source | 2.1 ms | 0.4 ms |
+| render process CPU | 78% | 53% |
+
+The image source got faster too, because it goes through the same blit.
+
+### What is left, and whether it matters
+
+A re-profile after the fix shows no single hotspot: the time is spread across the pixel loop
+(the heaviest instruction is a 12% load of the source alpha byte), which is what a memory-bound
+blit is supposed to look like. There is no second `idiv`-shaped mistake hiding behind the first.
+
+53% CPU for 5.3 ms of work per composite is the composite running at the canvas's 60 fps while
+the captured screen only produces 30. The freshness skip added this session should cover that
+and does not appear to be firing as often as it should — **that is the next thing to look at,
+and it is cheap**: `Screens::anything_new()` in `apps/libertas-render/main.cpp` and the
+`document_changed` flag in `libs/lcomp/src/preview.cpp`.
+
+### Method note
+
+The six earlier hypotheses (memory copying, `std::pow`, image decode, cold GPU memory,
+optimisation flags, the wrong `blit`) were all reasonable and all wrong. A profiler answered in
+one run what reasoning had not in several hours. Two practical notes for next time:
+
+- `pgrep -f libertas-render` matches the shell wrappers as well as the process. Use
+  `pgrep -f 'build-make/apps/libertas-render'`, and check the pid is stable before recording.
+- `timeout 15 perf record ...` SIGKILLs perf before it writes its data, giving "no samples".
+  Use `perf record ... -- sleep 10`, which lets perf terminate normally.
 
 ## The next phase: the GPU path
 
@@ -200,8 +206,8 @@ These are ADR questions, and ADR-0042 is the next number.
 
 ### The order that probably makes sense
 
-1. Understand the 35 ms first. If the CPU blit is pathological for a reason that also affects a
-   GPU upload path, it is better known now.
+1. ~~Understand the 35 ms first.~~ Done: it was integer division in the sampler, fixed, and the
+   CPU composite is now 5.3 ms. Nothing about it implicates the GPU path.
 2. Write ADR-0042 for the shared scene walk, because it constrains everything after it.
 3. Keep the frame on the device: capture → composite → preview readback, with the encode path
    still absent.
