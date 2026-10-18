@@ -5,6 +5,7 @@
 #include "ldoc/document.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -41,6 +42,12 @@ enum class GapReason : std::uint8_t {
     /// An image whose file is empty, missing, unreadable, not a PNG, JPEG, or WebP, or larger
     /// than the preview will allocate. Nothing is invented in its place.
     Unreadable,
+    /// A screen source with no frame yet: capture has not started, or the screen has not been
+    /// touched since it did (ADR-0013, capture is damage-driven). Distinct from
+    /// `UnsupportedType`, which means this picture cannot draw the thing at all -- here it can,
+    /// and there is simply nothing to draw yet. The caption reads differently for a reason: one
+    /// is a limit of the preview and the other resolves itself the moment the screen redraws.
+    NoFrame,
 };
 
 /// What the picture is, as a whole, rather than node by node.
@@ -130,6 +137,30 @@ struct SolvedFrame {
                                                           double x, double y, double width,
                                                           double height);
 
+/// A captured frame, as the compositor rendered it and the capture path read it back.
+///
+/// Straight sRGB8 like `Picture`, because that is what the preview draws and what `blit` samples.
+/// Deliberately a plain buffer and not a handle: `lcomp` owns no device (ADR-0005 puts the GPU in
+/// `libertas-render`, ADR-0040 kept it out of this library), so whoever has the device reads the
+/// frame back and hands the pixels in. That keeps one scene walk rather than a second one on the
+/// GPU that has to agree with this one -- which is the disagreement ADR-0040's last consequence
+/// warns about.
+struct CapturedPicture {
+    std::int32_t width = 0;
+    std::int32_t height = 0;
+    /// `width * height * 4` bytes, R, G, B, A. Empty means "no frame for that screen right now".
+    std::vector<std::uint8_t> pixels;
+};
+
+/// Asked for the latest frame of the screen a source names, by connector ("DP-1", or empty for
+/// the first screen -- ADR-0041).
+///
+/// Returning an empty picture is the normal answer, not an error: capture is damage-driven
+/// (ADR-0013), so a screen nobody has touched has sent nothing, and a source whose capture has
+/// not started yet has nothing either. Both are gaps in the picture, counted in the caption, for
+/// the same reason an unreadable image is -- the alternative is inventing a frame.
+using FrameSource = std::function<CapturedPicture(const std::string& connector)>;
+
 /// Draw the program scene of `canvas` into a new picture.
 ///
 /// `roots[0]` is the topmost node and is drawn last, which is the order the Sources panel
@@ -138,5 +169,13 @@ struct SolvedFrame {
 /// the same fit as a colour. Audio-only sources are skipped: they have no picture to fail at,
 /// and counting them would make a microphone a permanent "not drawn".
 [[nodiscard]] Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas);
+
+/// The same walk, with somewhere to get captured frames from.
+///
+/// A screen source draws when `frames` returns pixels for its connector, and is a gap when it
+/// does not. The overload above is this one with no frame source, which is what every caller that
+/// has no device wants -- a screen source is then the `UnsupportedType` gap it has always been.
+[[nodiscard]] Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas,
+                                       const FrameSource& frames);
 
 } // namespace lcomp

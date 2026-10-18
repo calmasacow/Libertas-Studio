@@ -66,6 +66,30 @@ std::filesystem::path image_fixture(const char* name) {
     return std::filesystem::path{LIBERTAS_IMAGE_FIXTURES} / name;
 }
 
+ldoc::Source screen_source(std::string connector) {
+    ldoc::Source source;
+    source.id = ldoc::Id::generate();
+    source.name = "Screen";
+    source.type = "source.screen";
+    source.settings["output"] = std::move(connector);
+    return source;
+}
+
+/// A captured frame of one flat colour, the shape the readback hands over: sRGB8, RGBA, packed.
+lcomp::CapturedPicture flat_frame(int w, int h, std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    lcomp::CapturedPicture frame;
+    frame.width = w;
+    frame.height = h;
+    frame.pixels.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4u);
+    for (std::size_t i = 0; i < frame.pixels.size(); i += 4) {
+        frame.pixels[i] = r;
+        frame.pixels[i + 1] = g;
+        frame.pixels[i + 2] = b;
+        frame.pixels[i + 3] = 255;
+    }
+    return frame;
+}
+
 std::tuple<int, int, int, int> pixel(const Picture& picture, int x, int y) {
     const std::size_t i =
         static_cast<std::size_t>(y) * picture.stride + static_cast<std::size_t>(x) * 4u;
@@ -415,6 +439,100 @@ LTEST_CASE(a_quarter_turn_and_a_flip_are_drawn_and_a_slant_is_not) {
     CHECK(std::abs(frame->y) < 1e-6);
     CHECK(std::abs(frame->width - 2.0) < 1e-6);
     CHECK(std::abs(frame->height - 1.0) < 1e-6);
+}
+
+LTEST_CASE(a_screen_source_draws_the_frame_it_is_handed) {
+    // The whole point of the commit: a captured frame reaches the picture. Green, because black
+    // is what an undrawn canvas already is and a test that cannot tell those apart proves nothing.
+    const ldoc::Source screen = screen_source("DP-1");
+    ldoc::Scene scene = scene_named("program");
+    scene.roots = {bound_to(screen)};
+    const ldoc::Project project = show(4, scene, {screen});
+
+    std::string asked_for = "<never asked>";
+    const lcomp::FrameSource frames = [&](const std::string& connector) {
+        asked_for = connector;
+        return flat_frame(4, 4, 0, 200, 0);
+    };
+
+    const Picture picture =
+        lcomp::composite_canvas(project, project.canvases[0].id, frames);
+    CHECK_EQ(picture.status, PictureStatus::Complete);
+    CHECK(picture.gaps.empty());
+    // It asked for the connector the source names, not for whatever was first.
+    CHECK_EQ(asked_for, std::string{"DP-1"});
+    const auto [r, g, b, a] = pixel(picture, 2, 2);
+    CHECK_EQ(r, 0);
+    CHECK_EQ(g, 200);
+    CHECK_EQ(b, 0);
+    CHECK_EQ(a, 255);
+}
+
+LTEST_CASE(a_screen_with_no_frame_yet_is_a_gap_and_not_a_black_rectangle) {
+    // ADR-0013: capture is damage-driven, so a still screen sends nothing and that is correct
+    // behaviour rather than a fault. ADR-0040: an absence belongs in the caption, not the pixels.
+    const ldoc::Source screen = screen_source("DP-1");
+    ldoc::Scene scene = scene_named("program");
+    scene.roots = {bound_to(screen)};
+    const ldoc::Project project = show(4, scene, {screen});
+
+    const lcomp::FrameSource none = [](const std::string&) { return lcomp::CapturedPicture{}; };
+    const Picture picture = lcomp::composite_canvas(project, project.canvases[0].id, none);
+    CHECK_EQ(picture.status, PictureStatus::Partial);
+    REQUIRE(!picture.gaps.empty());
+    CHECK_EQ(picture.gaps.front().reason, GapReason::NoFrame);
+}
+
+LTEST_CASE(a_screen_is_still_an_unsupported_type_when_the_caller_has_no_device) {
+    // The overload with no frame source is what every deviceless caller uses, and a screen source
+    // has to stay the gap it has always been there -- not NoFrame, which would promise a frame is
+    // coming when nothing is capturing at all.
+    const ldoc::Source screen = screen_source("DP-1");
+    ldoc::Scene scene = scene_named("program");
+    scene.roots = {bound_to(screen)};
+    const ldoc::Project project = show(4, scene, {screen});
+
+    const Picture picture = lcomp::composite_canvas(project, project.canvases[0].id);
+    CHECK_EQ(picture.status, PictureStatus::Partial);
+    REQUIRE(!picture.gaps.empty());
+    CHECK_EQ(picture.gaps.front().reason, GapReason::UnsupportedType);
+}
+
+LTEST_CASE(an_empty_connector_is_passed_through_as_empty) {
+    // ADR-0041 puts "empty means the first screen" in the frame source, which is the half that
+    // knows what the compositor advertised. The walk must not invent a connector on the way.
+    const ldoc::Source screen = screen_source("");
+    ldoc::Scene scene = scene_named("program");
+    scene.roots = {bound_to(screen)};
+    const ldoc::Project project = show(4, scene, {screen});
+
+    std::string asked_for = "<never asked>";
+    const lcomp::FrameSource frames = [&](const std::string& connector) {
+        asked_for = connector;
+        return flat_frame(4, 4, 10, 20, 30);
+    };
+    const Picture picture = lcomp::composite_canvas(project, project.canvases[0].id, frames);
+    CHECK_EQ(picture.status, PictureStatus::Complete);
+    CHECK_EQ(asked_for, std::string{""});
+}
+
+LTEST_CASE(a_frame_shorter_than_it_claims_is_refused_rather_than_read_past) {
+    // A buffer that does not hold the pixels its header promises is a bug on the device side.
+    // Drawing from it would read off the end, so it is refused like any other missing frame.
+    const ldoc::Source screen = screen_source("DP-1");
+    ldoc::Scene scene = scene_named("program");
+    scene.roots = {bound_to(screen)};
+    const ldoc::Project project = show(4, scene, {screen});
+
+    const lcomp::FrameSource lying = [](const std::string&) {
+        lcomp::CapturedPicture frame = flat_frame(4, 4, 255, 0, 0);
+        frame.pixels.resize(8); // claims 4x4, carries two pixels
+        return frame;
+    };
+    const Picture picture = lcomp::composite_canvas(project, project.canvases[0].id, lying);
+    CHECK_EQ(picture.status, PictureStatus::Partial);
+    REQUIRE(!picture.gaps.empty());
+    CHECK_EQ(picture.gaps.front().reason, GapReason::NoFrame);
 }
 
 LTEST_MAIN("composite")

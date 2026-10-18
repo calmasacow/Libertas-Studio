@@ -508,6 +508,9 @@ struct CanvasTarget {
     bool& drew;
     /// Scenes currently being drawn. A precomp that names one of them is a cycle, not a loop.
     std::vector<ldoc::Id>& stack;
+    /// Where captured frames come from, or empty when this caller has no device. A screen source
+    /// is a gap either way; with a frame source it is a gap only until a frame arrives.
+    const FrameSource* frames = nullptr;
 };
 
 void paint_scene(const ldoc::Project& project, const ldoc::Scene& scene, double opacity,
@@ -542,6 +545,53 @@ void paint_image(const ldoc::Source& src, const ldoc::Node& node, double opacity
     sampled.pixels = std::move(image->pixels);
     target.drew = true;
     // One blend, the same one a colour uses. `alphaLinear` would be a second blend.
+    blit(target.picture, *rect, sampled, opacity,
+         quarter_turn(node.transform.rotation_deg).value_or(0), node.transform.scale.x < 0.0,
+         node.transform.scale.y < 0.0);
+}
+
+/// The latest frame of the screen this source names, placed with the same fit as an image.
+///
+/// No frame is a gap, not an error and not a black rectangle: ADR-0013 makes capture
+/// damage-driven, so a screen nobody has touched legitimately sends nothing, and ADR-0040's rule
+/// is that an absence belongs in the caption rather than in the pixels.
+void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacity,
+                  CanvasTarget& target) {
+    if (target.frames == nullptr || !*target.frames) {
+        // No device behind this walk at all -- a unit test, or the UI's own stand-in. The type is
+        // drawable in principle, but not by this caller, which is what UnsupportedType means.
+        refuse(target.picture, node, GapReason::UnsupportedType);
+        return;
+    }
+    // Empty connector means the first screen (ADR-0041), and the frame source resolves that --
+    // it is the half that knows what the compositor advertised.
+    const auto it = src.settings.find("output");
+    const auto* connector = it == src.settings.end() ? nullptr : std::get_if<std::string>(&it->second);
+    CapturedPicture frame = (*target.frames)(connector == nullptr ? std::string{} : *connector);
+    if (frame.pixels.empty() || frame.width <= 0 || frame.height <= 0) {
+        refuse(target.picture, node, GapReason::NoFrame);
+        return;
+    }
+    // A buffer that does not hold the pixels it claims is a bug on the device side, and drawing
+    // from it would read past the end. Refused as NoFrame rather than trusted.
+    const auto need = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height) * 4u;
+    if (frame.pixels.size() < need) {
+        refuse(target.picture, node, GapReason::NoFrame);
+        return;
+    }
+    GapReason why = GapReason::NoSize;
+    const std::optional<Px> rect = place(node, static_cast<double>(frame.width),
+                                         static_cast<double>(frame.height), true, why);
+    if (!rect) {
+        refuse(target.picture, node, why);
+        return;
+    }
+    Picture sampled;
+    sampled.width = frame.width;
+    sampled.height = frame.height;
+    sampled.stride = static_cast<std::uint32_t>(frame.width) * 4u;
+    sampled.pixels = std::move(frame.pixels);
+    target.drew = true;
     blit(target.picture, *rect, sampled, opacity,
          quarter_turn(node.transform.rotation_deg).value_or(0), node.transform.scale.x < 0.0,
          node.transform.scale.y < 0.0);
@@ -597,6 +647,10 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
             return;
         if (src->type == "source.image") {
             paint_image(*src, node, opacity, target);
+            return;
+        }
+        if (src->type == "source.screen") {
+            paint_screen(*src, node, opacity, target);
             return;
         }
         if (src->type != "source.color") {
@@ -705,6 +759,11 @@ void fill_opaque_black(Picture& picture) {
 } // namespace
 
 Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id) {
+    return composite_canvas(project, canvas_id, FrameSource{});
+}
+
+Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id,
+                         const FrameSource& frames) {
     Picture picture;
     const ldoc::Canvas* canvas = project.canvas(canvas_id);
     if (!canvas) {
@@ -750,7 +809,7 @@ Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id
     bool drew = false;
     std::vector<ldoc::Id> stack;
     stack.push_back(scene->id);
-    CanvasTarget target{picture, drew, stack};
+    CanvasTarget target{picture, drew, stack, &frames};
     paint_scene(project, *scene, 1.0, target);
 
     if (!picture.gaps.empty())
