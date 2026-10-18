@@ -17,14 +17,43 @@ and says its resolution. ADR-0027 has the reasoning.
 
 ### Still open here
 
-- **A colour reaches it.** `libertas-render` composites the program scene and the panel shows
-  that frame: a colour, a group of those, and a precomp made of those (ADR-0040). Anything else
-  is left undrawn and the caption says how many. Capture, encode, audio and outputs are still
-  absent, so this is a preview of the document, not a broadcast. The thirds and the framing
-  guide are still there.
+- **A colour or an image reaches it.** `libertas-render` composites the program scene and the
+  panel shows that frame: a colour, an image (PNG, JPEG or WebP, decoded in the compositor), a
+  group of those, and a precomp made of those (ADR-0040). Quarter turns and flips are drawn. A
+  slant, a skew and a group's own transform are still gaps, and the caption counts whatever is
+  left undrawn. Capture, encode, audio and outputs are still absent, so this is a preview of the
+  document, not a broadcast. The thirds and the framing guide are still there.
 - **The three panels dock as a group of one each.** A canvas's three panels each go beside
   Main's matching one. There is no way to say "give me all of Vertical's panels in one place",
   which is what someone building a second show might actually want.
+
+## Setting a source, and moving it on the canvas, built on 2026-10-17
+
+A source created from the add dialog opens its settings; placing one that already exists does
+not. The colour field opens Qt's own colour dialog, whose custom-colour slots live in QSettings
+and are shared by every colour field rather than stored on the project. An image source draws
+the file it names, and Browse asks the desktop's file chooser through the portal, holding the
+path in the dialog until OK — a half-edited source is never published just to fill a rectangle.
+
+On the canvas a selected colour, image or precomp drags, and its handles resize the rectangle
+the compositor actually paints. Shift locks the aspect of the rectangle that was pressed, Alt
+resizes from the centre, Alt and Shift do both, and letting a modifier go recomputes from the
+press. One gesture is one undo. Right-click opens Order and Transform: stacking, reset, quarter
+turns, flips, fit, stretch and centre.
+
+### Still open here
+
+- **A slant, a skew, and a group's own transform are not drawn.** The commands exist and the
+  model carries them; the blit cannot do them, and painting an approximation would be a lie.
+  The caption counts what was left out.
+- **Nothing automated opens the Transform flyout.** Two assertions used to click the row and
+  look inside the submenu; they were deleted on 2026-10-18, not fixed. A parent row opens its
+  flyout on hover as well as on click, the menu appears under the cursor, and `--check` posts
+  events with no pointer behind them — so a stale hover replaced the submenu the click had
+  opened and the check went red on two runs in five. The operator confirmed the menu by hand a
+  dozen times over. The commands behind the rows are covered by `test_command`; the hover is
+  not covered by anything, and a synthesized click cannot cover it. `main.cpp:1460` says what
+  it would take to bring the check back honestly.
 
 ## No drag-scroll, 2026-10-17
 
@@ -303,6 +332,13 @@ Never at a live key.
   the back burner as not yet finalised. Nothing is known about what the tweaks are, so there
   is nothing to guess at here — this entry exists only so the panel is not mistaken for
   finished.
+- **The self-check reads the scene graph before Qt has sized it.** On this box (Qt 6.11.2,
+  offscreen) the single `processEvents()` at `main.cpp:242` returns with `contentItem` still
+  0x0, so every panel frame measures 0x0 and six geometry assertions fail for one reason that
+  has nothing to do with the shell. Pumping the loop until the window has a size clears all
+  six. It was enough on OmaDevCom and is not here, which makes it a timing assumption rather
+  than a fix; worth replacing with a wait on the condition the assertions actually describe.
+  Not done yet: the six failures are still there on this box.
 - Asset commands.
 - Compound editing beyond `Batch` (the 44th command).
 - **The rest of the render path.** `lcomp` draws the program preview and `libertas-render`
