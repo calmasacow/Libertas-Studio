@@ -10,7 +10,7 @@
 #include "portal.hpp"
 #include "stream.hpp"
 #include "vk_import.hpp"
-#include "wlcap.hpp"
+#include <lcapture/wlcap.hpp>
 #include "v4l2cap.hpp"
 
 #include <linux/videodev2.h>
@@ -541,19 +541,19 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
                         const std::string& second_node, std::uint32_t scale_w,
                         std::uint32_t scale_h, std::uint32_t slots, std::uint32_t idle_timeout_ms) {
     std::string err;
-    libertas::spike::WlCapPtr cap = libertas::spike::wlcap_open(err);
+    libertas::capture::WlCapPtr cap = libertas::capture::wlcap_open(err);
     if (!cap) {
         lc::error("ext-image-copy-capture unavailable: {}", err);
         return 2;
     }
 
     std::printf("\n=== outputs (no picker needed) ===\n");
-    for (const auto& o : libertas::spike::wlcap_outputs(*cap))
+    for (const auto& o : libertas::capture::wlcap_outputs(*cap))
         std::printf("  %-10s %5dx%-5d @ %.3f Hz  %s\n", o.name.c_str(), o.width, o.height,
                     o.refresh_mhz / 1000.0, o.description.c_str());
 
-    libertas::spike::WlCapCaps caps;
-    if (!libertas::spike::wlcap_begin_session(*cap, output_name, want_cursor_set && with_cursor,
+    libertas::capture::WlCapCaps caps;
+    if (!libertas::capture::wlcap_begin_session(*cap, output_name, want_cursor_set && with_cursor,
                                               caps, err)) {
         lc::error("session failed: {}", err);
         return 3;
@@ -562,7 +562,7 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
     std::printf("\n=== what the COMPOSITOR itself offers ===\n");
     std::printf("  buffer size   : %ux%u\n", caps.width, caps.height);
     std::printf("  dmabuf device : %s\n",
-                libertas::spike::wlcap_device_str(caps.dmabuf_device).c_str());
+                libertas::capture::wlcap_device_str(caps.dmabuf_device).c_str());
     for (const auto& f : caps.formats) {
         std::printf("  format %s (%zu modifiers)\n",
                     libertas::spike::fourcc_str(f.drm_format).c_str(), f.modifiers.size());
@@ -608,7 +608,7 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
                 alloc_ok = false;
                 break;
             }
-            if (!libertas::spike::wlcap_add_slot(*cap, ring[si], f.drm_format, err)) {
+            if (!libertas::capture::wlcap_add_slot(*cap, ring[si], f.drm_format, err)) {
                 lc::warn("could not register buffer slot {}: {}", si, err);
                 alloc_ok = false;
                 break;
@@ -637,7 +637,7 @@ int run_wayland_backend(const std::string& output_name, bool with_cursor, bool w
         for (std::uint32_t i = 0; i < frames; ++i) {
             std::uint64_t presented = 0;
             bool idle = false;
-            if (!libertas::spike::wlcap_capture_slot(*cap, i % slots, caps.width, caps.height,
+            if (!libertas::capture::wlcap_capture_slot(*cap, i % slots, caps.width, caps.height,
                                                      &presented, err, idle_timeout_ms, &idle)) {
                 if (idle) {
                     // Not a capture fault, so it must not fall into the paths below: a failure

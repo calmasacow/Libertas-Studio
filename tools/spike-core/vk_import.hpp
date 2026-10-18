@@ -4,6 +4,8 @@
 
 #include "stream.hpp"
 
+#include <lcapture/dmabuf.hpp>
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -40,17 +42,12 @@ std::string vk_device_name(VkCtx& ctx);
 /// This is the inverse of the import path and it is the better arrangement: when *we* allocate,
 /// we choose the modifier from the intersection up front, so the accept-then-fail trap of
 /// ADR-0010 cannot occur - there is nothing to accept.
-struct VkExportedImage {
-    void* image = nullptr;  ///< VkImage
-    void* memory = nullptr; ///< VkDeviceMemory
-    int dmabuf_fd = -1;     ///< owned by the caller; close() or hand to a wl_buffer
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::uint64_t modifier = 0; ///< the modifier the driver actually chose
-    std::uint32_t n_planes = 0;
-    std::uint32_t offsets[4] = {};
-    std::uint32_t strides[4] = {};
-};
+///
+/// The description itself now lives in `libs/lcapture` (ADR-0041), because the capture backend
+/// moved there and a library cannot depend on a spike. This alias keeps the spike's own name: the
+/// allocator is still here, and renaming it across fourteen call sites would put unrelated churn
+/// in the commit that moved the backend.
+using VkExportedImage = libertas::capture::DmabufImage;
 
 /// Creates an image the compositor can render into, picking from `allowed` (most preferred first).
 ///

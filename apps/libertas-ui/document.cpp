@@ -1483,8 +1483,13 @@ constexpr FieldSpec kColour[] = {
 // (ADR-0003). That is a property of the platform, not a gap in this build, so it is stated as
 // such rather than left as an empty dropdown.
 constexpr FieldSpec kScreen[] = {
-    {"", "Which screen is chosen in the portal's own picker when capture starts. A Wayland "
-         "client cannot enumerate or choose one for itself (ADR-0003).", "note"},
+    // The note this replaces said a Wayland client cannot choose a screen for itself. That was
+    // true when the portal was the only backend; ADR-0011 then measured both and made
+    // ext-image-copy-capture-v1 primary, and it names an output directly with no picker.
+    {"", "The connector the screen is plugged into, as the compositor spells it -- \"DP-1\". "
+         "Named directly on the compositor path, and filled in from the picker's answer on the "
+         "portal path (ADR-0041). Empty captures the first screen.", "note"},
+    {"output", "Connector", "text"},
     {"showCursor", "Show the cursor", "bool", "", true},
     {"pauseWhenHidden", "Stop capturing while the source is not on screen", "bool", "", true},
 };

@@ -289,6 +289,31 @@ as a single command. An outputs version is that file with a different schema beh
 
 Related and also deferred: tearing a panel out to float as its own toplevel (ADR-0015 rule 3).
 
+## Capture, as far as it goes without a screen, 2026-10-18
+
+`libs/lcapture/` holds the `ext-image-copy-capture-v1` backend that `capture-spike` measured,
+moved rather than rewritten so ADR-0011's numbers still describe it. A screen source stores the
+connector it captures (`output`, e.g. `DP-1`), which is the identifier both backends share and
+the one that survives a restart (ADR-0041). An empty connector means the first screen.
+
+The library stops at the protocol: it wraps a buffer somebody else allocated, described by
+`DmabufImage`, so the allocator stays outside and can move from a spike's Vulkan context to
+`lrhi` without this header changing. `test_capture` covers choosing the screen, which is the half
+that works headless.
+
+### Still open here
+
+- **Nothing draws a captured frame.** `lcomp` is untouched; a screen source is still a gap in the
+  program picture, counted in the caption. That commit needs a machine with a display to prove,
+  which is why it is not this one.
+- **`wlcap_capture_frame` still waits without bound.** Moved into `libs/` unfixed, with no
+  callers, as recorded below. Moving code is not the commit to change its behaviour in.
+- **No portal backend here yet.** `libs/lcapture/linux-portal/` is still the empty directory it
+  was; the portal code is in `tools/spike-core/portal.cpp` and `stream.cpp`. It stays the
+  fallback (ADR-0011), and it is what fills `output` in from the picker's `mapping_id`.
+- **What happens when the named connector is gone** is deliberately undecided (ADR-0041). It is a
+  running-show failure and belongs with a supervisor that does not exist yet.
+
 ## Needs the operator, or one of their machines
 
 Not blocked on design — blocked on something only the operator can approve or power on.
@@ -342,9 +367,11 @@ Never at a live key.
 - Asset commands.
 - Compound editing beyond `Batch` (the 44th command).
 - **The rest of the render path.** `lcomp` draws the program preview and `libertas-render`
-  publishes it (ADR-0040). `lcapture`, `lmedia` and `laudio` are still empty: nothing captures,
-  nothing encodes, nothing mixes audio. The transport underneath (`lipc`, ADR-0026) is the
-  same one the preview already uses.
+  publishes it (ADR-0040). `lcapture` now holds the `ext-image-copy-capture-v1` backend, moved
+  from `tools/spike-core` on 2026-10-18 (ADR-0041), and a screen source names its connector --
+  but nothing draws a captured frame yet: `lcomp` is untouched and a screen source is still a
+  gap in the picture. `lmedia` and `laudio` are still empty: nothing encodes, nothing mixes
+  audio. The transport underneath (`lipc`, ADR-0026) is the same one the preview already uses.
 
 ## The combined format bump, done on 2026-10-14
 

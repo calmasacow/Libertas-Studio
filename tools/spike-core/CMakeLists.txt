@@ -18,7 +18,6 @@ add_library(spike-core STATIC
     stream.cpp
     vk_import.cpp
     vk_convert.cpp
-    wlcap.cpp
     v4l2cap.cpp
 )
 
@@ -42,6 +41,7 @@ target_include_directories(spike-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(spike-core PUBLIC
     libertas::flags
     libertas::lcore
+    libertas::lcapture
     PkgConfig::GIO_UNIX
     PkgConfig::PIPEWIRE
     PkgConfig::LIBDRM

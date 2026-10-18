@@ -15,6 +15,7 @@ function(libertas_unit_test name)
 endfunction()
 
 libertas_unit_test(test_actions          libertas::lsession)
+libertas_unit_test(test_capture          libertas::lcapture)
 libertas_unit_test(test_command          libertas::ldoc)
 libertas_unit_test(test_composite        libertas::lcomp)
 target_compile_definitions(test_composite PRIVATE

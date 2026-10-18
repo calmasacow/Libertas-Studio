@@ -14,7 +14,7 @@
 
 #include <vk_convert.hpp>
 #include <vk_import.hpp>
-#include <wlcap.hpp>
+#include <lcapture/wlcap.hpp>
 
 #include <lcore/log.hpp>
 
@@ -154,13 +154,13 @@ int main(int argc, char** argv) {
     std::string err;
 
     // --- capture (ADR-0011: ext-image-copy-capture-v1, no portal, no picker) ---
-    libertas::spike::WlCapPtr cap = libertas::spike::wlcap_open(err);
+    libertas::capture::WlCapPtr cap = libertas::capture::wlcap_open(err);
     if (!cap) {
         lc::error("ext-image-copy-capture unavailable: {}", err);
         return 2;
     }
-    libertas::spike::WlCapCaps caps;
-    if (!libertas::spike::wlcap_begin_session(*cap, output_name, false, caps, err)) {
+    libertas::capture::WlCapCaps caps;
+    if (!libertas::capture::wlcap_begin_session(*cap, output_name, false, caps, err)) {
         lc::error("capture session failed: {}", err);
         return 2;
     }
@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
         for (std::uint32_t s = 0; s < slots; ++s) {
             if (!libertas::spike::vk_create_exportable(*vk, caps.width, caps.height, f.drm_format,
                                                        common, false, ring[s], err) ||
-                !libertas::spike::wlcap_add_slot(*cap, ring[s], f.drm_format, err)) {
+                !libertas::capture::wlcap_add_slot(*cap, ring[s], f.drm_format, err)) {
                 ok = false;
                 break;
             }
@@ -303,7 +303,7 @@ int main(int argc, char** argv) {
             // does, and the difference is the part nobody thought to time.
             const auto iteration_begin = std::chrono::steady_clock::now();
             auto t = iteration_begin;
-            if (!libertas::spike::wlcap_capture_slot(*cap, slot, caps.width, caps.height,
+            if (!libertas::capture::wlcap_capture_slot(*cap, slot, caps.width, caps.height,
                                                      &presented_ns, e)) {
                 std::lock_guard<std::mutex> lk(latest.mu);
                 latest.err = e;
@@ -407,7 +407,7 @@ int main(int argc, char** argv) {
             }
             if (idle_timeout_ms != 0 && std::chrono::steady_clock::now() > deadline) {
                 lc::error("gave up with 0 frames captured: {}",
-                          libertas::spike::wlcap_idle_reason(idle_timeout_ms));
+                          libertas::capture::wlcap_idle_reason(idle_timeout_ms));
                 { std::lock_guard<std::mutex> lk(latest.mu); latest.stop = true; }
                 capture_thread.detach();
                 enc.reset();
@@ -485,7 +485,7 @@ int main(int argc, char** argv) {
             ++dry_spells;
             lc::warn("captures have dried up after {} frame(s): {}. Encoding carries on, "
                      "duplicating the last frame",
-                     last_seq, libertas::spike::wlcap_idle_reason(idle_timeout_ms));
+                     last_seq, libertas::capture::wlcap_idle_reason(idle_timeout_ms));
         }
 
         // The pts is the ENCODER's clock, not the compositor's. The output timeline is ours and

@@ -13,7 +13,7 @@
 // a buffer it can only either render into or reject outright. There is no "negotiated but
 // unallocatable" state, which is exactly the trap ADR-0010 documents.
 
-#include "wlcap.hpp"
+#include <lcapture/wlcap.hpp>
 
 #include <lcore/log.hpp>
 
@@ -33,7 +33,7 @@
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "linux-dmabuf-v1-client-protocol.h"
 
-namespace libertas::spike {
+namespace libertas::capture {
 
 struct WlCap {
     wl_display* display = nullptr;
@@ -290,18 +290,38 @@ WlCapPtr wlcap_open(std::string& error) {
 
 const std::vector<WlOutputInfo>& wlcap_outputs(WlCap& cap) { return cap.outputs; }
 
+std::optional<std::size_t> wlcap_select_output(const std::vector<WlOutputInfo>& outputs,
+                                               const std::string& name, std::string& error) {
+    if (outputs.empty()) {
+        error = "no outputs";
+        return std::nullopt;
+    }
+    if (name.empty())
+        return std::size_t{0};
+    const auto it = std::find_if(outputs.begin(), outputs.end(),
+                                 [&](const WlOutputInfo& o) { return o.name == name; });
+    if (it == outputs.end()) {
+        // Names what was asked for and what exists. An operator reading this has a monitor
+        // plugged into something, and the connector they expected is the thing to compare.
+        std::string had;
+        for (const WlOutputInfo& o : outputs) {
+            if (!had.empty())
+                had += ", ";
+            had += o.name;
+        }
+        error = std::format("no output named '{}' (have: {})", name, had);
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(it - outputs.begin());
+}
+
 bool wlcap_begin_session(WlCap& cap, const std::string& output_name, bool with_cursor,
                          WlCapCaps& out, std::string& error) {
-    std::size_t index = 0;
-    if (!output_name.empty()) {
-        const auto it = std::find_if(cap.outputs.begin(), cap.outputs.end(),
-                                     [&](const WlOutputInfo& o) { return o.name == output_name; });
-        if (it == cap.outputs.end()) {
-            error = std::format("no output named '{}'", output_name);
-            return false;
-        }
-        index = static_cast<std::size_t>(it - cap.outputs.begin());
-    }
+    const std::optional<std::size_t> chosen =
+        wlcap_select_output(cap.outputs, output_name, error);
+    if (!chosen)
+        return false;
+    const std::size_t index = *chosen;
     if (cap.output_proxies.empty()) {
         error = "no outputs";
         return false;
@@ -337,7 +357,7 @@ bool wlcap_begin_session(WlCap& cap, const std::string& output_name, bool with_c
     return true;
 }
 
-bool wlcap_capture_frame(WlCap& cap, const VkExportedImage& img, std::uint32_t drm_format,
+bool wlcap_capture_frame(WlCap& cap, const DmabufImage& img, std::uint32_t drm_format,
                          std::string& error) {
     if (cap.session == nullptr) {
         error = "no session";
@@ -390,7 +410,7 @@ bool wlcap_capture_frame(WlCap& cap, const VkExportedImage& img, std::uint32_t d
     return ok;
 }
 
-bool wlcap_add_slot(WlCap& cap, const VkExportedImage& img, std::uint32_t drm_format,
+bool wlcap_add_slot(WlCap& cap, const DmabufImage& img, std::uint32_t drm_format,
                     std::string& error) {
     zwp_linux_buffer_params_v1* params = zwp_linux_dmabuf_v1_create_params(cap.dmabuf);
     for (std::uint32_t i = 0; i < img.n_planes; ++i)
@@ -530,4 +550,4 @@ void wlcap_close(WlCap* cap) {
     delete cap;
 }
 
-} // namespace libertas::spike
+} // namespace libertas::capture
