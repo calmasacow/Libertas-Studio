@@ -65,17 +65,27 @@ public:
 
         bool idle = false;
         std::string error;
-        // Long enough for a screen that is redrawing to deliver, short enough that a still one
-        // does not hold the composite. A first attempt passed 1 ms, which was wrong twice over:
-        // no frame can arrive in that window, so every capture reported idle and the source was
-        // never drawn -- the caption said "1 not drawn" over a working capture session. ADR-0013
-        // also records that abandoning a pending frame makes the compositor answer the *next*
-        // request at once with unchanged content, so a tight poll invents frames the screen never
-        // drew. This waits once, properly, and accepts that a genuinely idle desktop costs that
-        // wait. An idle screen then redraws with its last frame; one that has never drawn is a
-        // gap until it does.
+        // Two different waits, because the first frame and the rest are different problems.
+        //
+        // The first one has the whole session start-up behind it -- the compositor building its
+        // capture path, the driver's first submission on buffers nobody has touched, and on a
+        // slower machine or a weaker GPU than the one this was written on, all of that before a
+        // single pixel is copied. A budget tuned on a fast box becomes "capture is broken" on a
+        // slow one, with the panel saying "not drawn" over a session that was merely still
+        // warming up. So the first frame gets a wait measured in seconds and every later one gets
+        // a short budget, since by then the path is hot and a long wait only means the screen is
+        // not changing.
+        //
+        // A first attempt passed 1 ms for everything, which was wrong twice over: no frame can
+        // arrive in that window, so every capture reported idle and the source was never drawn.
+        // ADR-0013 also records that abandoning a pending frame makes the compositor answer the
+        // *next* request at once with unchanged content, so a tight poll invents frames the
+        // screen never drew. Each wait here happens once, properly.
+        constexpr std::uint32_t kFirstFrameMs = 3000;
+        constexpr std::uint32_t kLaterFrameMs = 120;
+        const std::uint32_t budget = session.last.empty() ? kFirstFrameMs : kLaterFrameMs;
         std::vector<std::uint8_t> pixels;
-        if (session.capture->read_frame(pixels, 120, idle, error)) {
+        if (session.capture->read_frame(pixels, budget, idle, error)) {
             session.last = std::move(pixels);
         } else if (!idle && !error.empty() && error != session.last_error) {
             lc::warn("capture on {}: {}", connector.empty() ? "the first screen" : connector, error);

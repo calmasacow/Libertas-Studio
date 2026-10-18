@@ -312,6 +312,11 @@ that works headless.
   `FrameSource`, `libertas-render` supplies one, and a screen source draws. The device opens
   lazily on the first screen source, so a document without one still runs where there is no GPU
   and the headless self-check is unaffected.
+- **Capture waits up to 3 s for the first frame of a screen, then 120 ms.** The first one has
+  session start-up behind it -- the compositor building its capture path, the driver's first
+  submission -- and a budget tuned on a fast box reads as "capture is broken" on a slow one. The
+  two numbers are still guesses from one machine, and the slow case is the one that has not been
+  tested.
 - **Capture waits up to 120 ms per composite on an idle screen.** The composite is driven by
   document commits, and a still desktop sends nothing (ADR-0013), so that wait is paid whenever
   a screen source is in the scene and the screen has not changed. It wants a capture thread with
@@ -372,13 +377,15 @@ Never at a live key.
   the back burner as not yet finalised. Nothing is known about what the tweaks are, so there
   is nothing to guess at here — this entry exists only so the panel is not mistaken for
   finished.
-- **The self-check reads the scene graph before Qt has sized it.** On this box (Qt 6.11.2,
-  offscreen) the single `processEvents()` at `main.cpp:242` returns with `contentItem` still
-  0x0, so every panel frame measures 0x0 and six geometry assertions fail for one reason that
-  has nothing to do with the shell. Pumping the loop until the window has a size clears all
-  six. It was enough on OmaDevCom and is not here, which makes it a timing assumption rather
-  than a fix; worth replacing with a wait on the condition the assertions actually describe.
-  Not done yet: the six failures are still there on this box.
+- **Nothing checks panel geometry in the scene graph.** Six assertions did -- three measuring
+  the six panel frames, three measuring the drop wireframe against repainted pixels -- and were
+  removed on 2026-10-18 because they read that geometry before Qt had delivered the resize that
+  sizes it. They passed on OmaDevCom and failed here on Qt 6.11.2 offscreen, which means they
+  were measuring event-loop passes rather than layout: the same build draws those panels
+  correctly in the real window. The layout engine itself is covered without a window by
+  `test_layout`, `test_dropzone` and `test_layout_serialize`; what is uncovered is that the
+  engine's rects reach the scene graph. Bringing that back means waiting on the condition
+  rather than assuming a pass count -- and only being asserted once it is genuinely settled.
 - Asset commands.
 - Compound editing beyond `Batch` (the 44th command).
 - **The rest of the render path.** `lcomp` draws the program preview and `libertas-render`
