@@ -6,17 +6,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Libertas
 
-/// The encodes, and the destinations hanging off each one.
-///
-/// Encode-centred on purpose. The outputs panel is a list of destinations, which is the right
-/// shape for "where does this go" and the wrong shape for the question this window answers:
-/// how many times is the GPU being asked to encode, and which destinations are sharing the
-/// result. That is the whole of ADR-0029 -- encode 1440p once for YouTube, encode 1080p once
-/// and send it to Twitch and Kick -- and it is invisible in a list sorted by destination,
-/// because two rows carrying the same bitrate look exactly like two separate encodes.
-///
-/// The count at the top is the same number `libertas inspect` prints. If the two ever disagree,
-/// one of them is wrong about what the GPU is being asked to do.
+/// Output settings and the encodes shared by their destinations.
 Item {
     id: dialog
 
@@ -26,7 +16,28 @@ Item {
     visible: false
     focus: visible
 
+    property string selectedOutputId: ""
+
+    function openOutput(outputId) {
+        open();
+        selectedOutputId = outputId;
+        Qt.callLater(function() {
+            content.forceLayout();
+            for (let i = 0; i < outputEntries.count; ++i) {
+                const entry = outputEntries.itemAt(i);
+                if (entry.outputId === dialog.selectedOutputId) {
+                    scroll.contentY = Math.max(0, Math.min(entry.y,
+                        scroll.contentHeight - scroll.height));
+                    entry.forceActiveFocus();
+                    break;
+                }
+            }
+        });
+    }
+
     function open() {
+        selectedOutputId = "";
+        scroll.contentY = 0;
         dialog.visible = true;
         dialog.forceActiveFocus();
     }
@@ -128,6 +139,236 @@ Item {
 
                 width: scroll.width
                 spacing: 0
+
+                Repeater {
+                    id: outputEntries
+                    model: Document.outputs
+
+                    delegate: Column {
+                        id: output
+                        required property string outputId
+                        required property string name
+                        required property string canvasName
+                        required property string encodeName
+                        required property string resolution
+                        required property var sharedWith
+                        required property string codec
+                        required property string implementation
+                        required property int bitrateKbps
+                        required property string destinationKind
+                        required property string url
+                        required property string credentialRef
+                        required property bool isEnabled
+                        required property bool misconfigured
+
+                        objectName: "managedOutput"
+                        width: content.width - 20
+                        x: 10
+                        spacing: 6
+                        property bool expanded: dialog.selectedOutputId === outputId
+
+                        ToolButton {
+                            width: parent.width
+                            height: 32
+                            label: output.name
+                            tip: qsTr("Settings for %1").arg(output.name)
+                            active: output.expanded
+                            onClicked: dialog.selectedOutputId = output.expanded ? "" : output.outputId
+                        }
+                        CheckLabel {
+                            visible: output.expanded
+                            text: qsTr("Include in output configuration (not running)")
+                            checked: output.isEnabled
+                            onToggled: Document.setOutputEnabled(output.outputId, !output.isEnabled)
+                        }
+                        Text {
+                            visible: output.expanded
+                            width: parent.width
+                            text: output.resolution + " / " + output.bitrateKbps + " kbps" +
+                                  (output.sharedWith.length ? qsTr(" - shared with %1").arg(output.sharedWith.join(", ")) : "")
+                            font.pixelSize: 10
+                            color: Theme.c.textMuted
+                            wrapMode: Text.WordWrap
+                        }
+                        Text {
+                            visible: output.expanded && output.misconfigured
+                            text: qsTr("Enabled with no destination")
+                            color: Theme.c.error
+                            font.pixelSize: 10
+                        }
+
+                        ChoiceField {
+                            width: parent.width
+                            visible: output.expanded
+                            label: qsTr("Encoder")
+                            choices: {
+                                const out = [];
+                                for (const c of Document.codecs)
+                                    out.push(c.title);
+                                return out;
+                            }
+                            value: {
+                                for (const c of Document.codecs) {
+                                    if (c.codec === output.codec &&
+                                        c.implementation === output.implementation)
+                                        return c.title;
+                                }
+                                return output.codec + "/" + output.implementation;
+                            }
+                            onCommitted: (newValue) => {
+                                for (const c of Document.codecs) {
+                                    if (c.title === newValue) {
+                                        Document.setOutputEncoder(output.outputId, c.codec,
+                                                                  c.implementation);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+
+                        NumberField {
+                            width: parent.width
+                            visible: output.expanded
+                            label: qsTr("Bitrate")
+                            decimals: 0
+                            value: output.bitrateKbps
+                            onCommitted: (newValue) => Document.setOutputBitrate(
+                                output.outputId, Math.max(1, Math.round(newValue)))
+                        }
+
+                        ChoiceField {
+                            width: parent.width
+                            visible: output.expanded
+                            label: qsTr("Protocol")
+                            choices: {
+                                const out = [];
+                                for (const k of Document.destinationKinds)
+                                    out.push(k.title);
+                                return out;
+                            }
+                            value: output.destinationKind.toUpperCase()
+                            onCommitted: (newValue) => Document.setOutputDestination(
+                                output.outputId, newValue.toLowerCase(), output.url)
+                        }
+
+                        Item {
+                            width: parent.width
+                            visible: output.expanded
+                            height: 20
+
+                            Text {
+                                id: urlCaption
+
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 54
+                                text: qsTr("URL")
+                                font.pixelSize: 11
+                                color: Theme.c.textMuted
+                            }
+
+                            Rectangle {
+                                anchors.left: urlCaption.right
+                                anchors.leftMargin: 4
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                height: 18
+                                radius: 2
+                                color: Theme.c.window
+                                border.width: 1
+                                border.color: urlInput.activeFocus
+                                    ? Theme.c.accent : Theme.c.border
+
+                                TextInput {
+                                    id: urlInput
+
+                                    objectName: "outputUrl"
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 5
+                                    anchors.rightMargin: 5
+                                    verticalAlignment: Text.AlignVCenter
+                                    font.pixelSize: 11
+                                    color: Theme.c.text
+                                    selectionColor: Theme.c.accent
+                                    selectByMouse: true
+                                    clip: true
+                                    text: output.url
+
+                                    onEditingFinished: {
+                                        if (text !== output.url)
+                                            Document.setOutputDestination(
+                                                output.outputId, output.destinationKind, text);
+                                    }
+                                }
+                            }
+                        }
+
+                        // The *name* of a credential, never the credential. The project format
+                        // has no field that can hold a stream key (ADR-0022), which is why this
+                        // says "reference" and why there is no password box anywhere near it.
+                        Item {
+                            width: parent.width
+                            visible: output.expanded
+                            height: 20
+
+                            Text {
+                                id: credCaption
+
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 54
+                                text: qsTr("Key ref")
+                                font.pixelSize: 11
+                                color: Theme.c.textMuted
+                            }
+
+                            Rectangle {
+                                anchors.left: credCaption.right
+                                anchors.leftMargin: 4
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                height: 18
+                                radius: 2
+                                color: Theme.c.window
+                                border.width: 1
+                                border.color: credInput.activeFocus
+                                    ? Theme.c.accent : Theme.c.border
+
+                                TextInput {
+                                    id: credInput
+
+                                    objectName: "outputCredentialRef"
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 5
+                                    anchors.rightMargin: 5
+                                    verticalAlignment: Text.AlignVCenter
+                                    font.pixelSize: 11
+                                    color: Theme.c.text
+                                    selectionColor: Theme.c.accent
+                                    selectByMouse: true
+                                    clip: true
+                                    text: output.credentialRef
+
+                                    onEditingFinished: {
+                                        if (text !== output.credentialRef)
+                                            Document.setOutputCredentialRef(output.outputId,
+                                                                            text);
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            width: parent.width
+                            visible: output.expanded
+                            text: qsTr("The key itself is never stored in the project.")
+                            font.pixelSize: 9
+                            color: Theme.c.textMuted
+                            opacity: 0.7
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
 
                 Repeater {
                     model: Document.encodes

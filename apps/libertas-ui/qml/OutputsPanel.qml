@@ -83,7 +83,6 @@ Item {
                     objectName: "outputBlock"
                     width: content.width
                     height: outColumn.height + 8
-                    property bool expanded: false
 
                     Rectangle {
                         anchors.fill: parent
@@ -114,12 +113,12 @@ Item {
                                 id: rowMouse
                                 anchors.fill: parent
                                 acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                onDoubleClicked: output.expanded = !output.expanded
+                                onDoubleClicked: managerDialog.openOutput(output.outputId)
                                 onClicked: mouse => {
                                     if (mouse.button !== Qt.RightButton) return;
                                     const at = mapToItem(outputMenu, mouse.x, mouse.y);
                                     outputMenu.popup(at.x, at.y, [
-                                        {text: qsTr("Settings"), action: () => { output.expanded = true; }},
+                                        {text: qsTr("Settings"), action: () => { managerDialog.openOutput(output.outputId); }},
                                         {text: qsTr("Include in output configuration"), checked: output.isEnabled,
                                          action: () => Document.setOutputEnabled(output.outputId, !output.isEnabled)},
                                         {separator: true},
@@ -128,21 +127,16 @@ Item {
                                 }
                             }
 
-                            Rectangle {
+                            ToolButton {
                                 id: badge
-                                width: 24
+                                objectName: "outputIcon"
+                                width: 36
                                 height: 24
                                 anchors.left: parent.left
                                 anchors.verticalCenter: parent.verticalCenter
-                                radius: 5
-                                color: Theme.c.panelHeaderActive
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: output.destinationKind === "file" ? "REC" : "LIVE"
-                                    font.pixelSize: 8
-                                    font.bold: true
-                                    color: output.destinationKind === "file" ? Theme.c.error : Theme.c.accent
-                                }
+                                label: output.destinationKind === "file" ? "REC" : "LIVE"
+                                tip: qsTr("Manage %1").arg(output.name)
+                                onClicked: managerDialog.openOutput(output.outputId)
                             }
                             Row {
                                 anchors.left: badge.right
@@ -174,17 +168,6 @@ Item {
                             }
                             ToolButton {
                                 id: outputAction
-                                objectName: "outputSettingsButton"
-                                anchors.right: parent.right
-                                anchors.rightMargin: 32
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 30
-                                height: 26
-                                label: "\u2699"
-                                tip: qsTr("Settings for %1. Output is not running.").arg(output.name)
-                                onClicked: output.expanded = !output.expanded
-                            }
-                            ToolButton {
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
                                 width: 26
@@ -195,198 +178,7 @@ Item {
                             }
                         }
 
-                        CheckLabel {
-                            visible: output.expanded
-                            text: qsTr("Include in output configuration (not running)")
-                            checked: output.isEnabled
-                            onToggled: Document.setOutputEnabled(output.outputId, !output.isEnabled)
-                        }
-                        Text {
-                            visible: output.expanded
-                            width: parent.width
-                            text: output.resolution + " / " + output.bitrateKbps + " kbps" +
-                                  (output.sharedWith.length ? qsTr(" - shared with %1").arg(output.sharedWith.join(", ")) : "")
-                            font.pixelSize: 10
-                            color: Theme.c.textMuted
-                            wrapMode: Text.WordWrap
-                        }
-                        Text {
-                            visible: output.expanded && output.misconfigured
-                            text: qsTr("Enabled with no destination")
-                            color: Theme.c.error
-                            font.pixelSize: 10
-                        }
 
-                        ChoiceField {
-                            width: parent.width
-                            visible: output.expanded
-                            label: qsTr("Encoder")
-                            choices: {
-                                const out = [];
-                                for (const c of Document.codecs)
-                                    out.push(c.title);
-                                return out;
-                            }
-                            value: {
-                                for (const c of Document.codecs) {
-                                    if (c.codec === output.codec &&
-                                        c.implementation === output.implementation)
-                                        return c.title;
-                                }
-                                return output.codec + "/" + output.implementation;
-                            }
-                            onCommitted: (newValue) => {
-                                for (const c of Document.codecs) {
-                                    if (c.title === newValue) {
-                                        Document.setOutputEncoder(output.outputId, c.codec,
-                                                                  c.implementation);
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-
-                        NumberField {
-                            width: parent.width
-                            visible: output.expanded
-                            label: qsTr("Bitrate")
-                            decimals: 0
-                            value: output.bitrateKbps
-                            onCommitted: (newValue) => Document.setOutputBitrate(
-                                output.outputId, Math.max(1, Math.round(newValue)))
-                        }
-
-                        ChoiceField {
-                            width: parent.width
-                            visible: output.expanded
-                            label: qsTr("Protocol")
-                            choices: {
-                                const out = [];
-                                for (const k of Document.destinationKinds)
-                                    out.push(k.title);
-                                return out;
-                            }
-                            value: output.destinationKind.toUpperCase()
-                            onCommitted: (newValue) => Document.setOutputDestination(
-                                output.outputId, newValue.toLowerCase(), output.url)
-                        }
-
-                        Item {
-                            width: parent.width
-                            visible: output.expanded
-                            height: 20
-
-                            Text {
-                                id: urlCaption
-
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 54
-                                text: qsTr("URL")
-                                font.pixelSize: 11
-                                color: Theme.c.textMuted
-                            }
-
-                            Rectangle {
-                                anchors.left: urlCaption.right
-                                anchors.leftMargin: 4
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: 18
-                                radius: 2
-                                color: Theme.c.window
-                                border.width: 1
-                                border.color: urlInput.activeFocus
-                                    ? Theme.c.accent : Theme.c.border
-
-                                TextInput {
-                                    id: urlInput
-
-                                    objectName: "outputUrl"
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 5
-                                    anchors.rightMargin: 5
-                                    verticalAlignment: Text.AlignVCenter
-                                    font.pixelSize: 11
-                                    color: Theme.c.text
-                                    selectionColor: Theme.c.accent
-                                    selectByMouse: true
-                                    clip: true
-                                    text: output.url
-
-                                    onEditingFinished: {
-                                        if (text !== output.url)
-                                            Document.setOutputDestination(
-                                                output.outputId, output.destinationKind, text);
-                                    }
-                                }
-                            }
-                        }
-
-                        // The *name* of a credential, never the credential. The project format
-                        // has no field that can hold a stream key (ADR-0022), which is why this
-                        // says "reference" and why there is no password box anywhere near it.
-                        Item {
-                            width: parent.width
-                            visible: output.expanded
-                            height: 20
-
-                            Text {
-                                id: credCaption
-
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 54
-                                text: qsTr("Key ref")
-                                font.pixelSize: 11
-                                color: Theme.c.textMuted
-                            }
-
-                            Rectangle {
-                                anchors.left: credCaption.right
-                                anchors.leftMargin: 4
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: 18
-                                radius: 2
-                                color: Theme.c.window
-                                border.width: 1
-                                border.color: credInput.activeFocus
-                                    ? Theme.c.accent : Theme.c.border
-
-                                TextInput {
-                                    id: credInput
-
-                                    objectName: "outputCredentialRef"
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 5
-                                    anchors.rightMargin: 5
-                                    verticalAlignment: Text.AlignVCenter
-                                    font.pixelSize: 11
-                                    color: Theme.c.text
-                                    selectionColor: Theme.c.accent
-                                    selectByMouse: true
-                                    clip: true
-                                    text: output.credentialRef
-
-                                    onEditingFinished: {
-                                        if (text !== output.credentialRef)
-                                            Document.setOutputCredentialRef(output.outputId,
-                                                                            text);
-                                    }
-                                }
-                            }
-                        }
-
-                        Text {
-                            width: parent.width
-                            visible: output.expanded
-                            text: qsTr("The key itself is never stored in the project.")
-                            font.pixelSize: 9
-                            color: Theme.c.textMuted
-                            opacity: 0.7
-                            wrapMode: Text.WordWrap
-                        }
                     }
                 }
             }

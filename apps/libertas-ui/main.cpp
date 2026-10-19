@@ -2978,20 +2978,39 @@ int main(int argc, char** argv) {
 
         {
             const auto rows = collect(window->contentItem(), QStringLiteral("outputBlock"));
-            const auto buttons = collect(window->contentItem(), QStringLiteral("outputSettingsButton"));
+            const auto icons = collect(window->contentItem(), QStringLiteral("outputIcon"));
+            const auto managers = collect(window->contentItem(), QStringLiteral("outputsManagerDialog"));
+            const auto gears = collect(window->contentItem(), QStringLiteral("manageOutputs"));
             const auto start = collect(window->contentItem(), QStringLiteral("startAllOutputs"));
             report(!start.isEmpty() && !start.front()->isEnabled(),
                    "Start All cannot pretend to encode before an output engine exists");
-            if (!rows.isEmpty() && !buttons.isEmpty()) {
-                report(!rows.front()->property("expanded").toBool(), "output settings start collapsed");
-                auto* button = buttons.front();
-                const auto at = button->mapToScene(QPointF(button->width() / 2, button->height() / 2));
-                post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
-                post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
-                settle();
-                report(rows.front()->property("expanded").toBool(),
-                       "the output settings button opens its actual editor");
-                rows.front()->setProperty("expanded", false);
+            report(collect(window->contentItem(), QStringLiteral("outputSettingsButton")).isEmpty(),
+                   "output rows have no settings gear");
+            report(!icons.isEmpty() && !managers.isEmpty() && !gears.isEmpty(),
+                   "output icons and manager controls exist");
+            if (!rows.isEmpty() && !icons.isEmpty() && !managers.isEmpty() && !gears.isEmpty()) {
+                auto click = [&](QQuickItem* button) {
+                    const auto at = button->mapToScene(QPointF(button->width() / 2, button->height() / 2));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                };
+                auto* manager = managers.front();
+                click(icons.front());
+                const auto selected = rows.front()->property("outputId").toString();
+                report(manager->isVisible() && manager->property("selectedOutputId").toString() == selected,
+                       "clicking an output icon opens the manager at that output");
+                bool expanded = false;
+                for (auto* entry : collect(manager, QStringLiteral("managedOutput"))) {
+                    if (entry->property("outputId").toString() == selected)
+                        expanded = entry->property("expanded").toBool();
+                }
+                report(expanded, "the selected output editor expands in the manager");
+                QMetaObject::invokeMethod(manager, "close");
+                click(gears.front());
+                report(manager->isVisible() && manager->property("selectedOutputId").toString().isEmpty(),
+                       "the footer gear opens the manager without selecting an output");
+                QMetaObject::invokeMethod(manager, "close");
             }
         }
 
