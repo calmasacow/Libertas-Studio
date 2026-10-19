@@ -498,14 +498,26 @@ Item {
                                     value: Number(option.value) || 0
                                     onCommitted: value => option.commit(Math.round(value))
                                 }
-                                CheckLabel {
+                                Row {
                                     width: parent.width
                                     height: 20
                                     visible: typeof option.modelData.value === "boolean"
-                                    objectName: "encoderFlag_" + option.modelData.key
-                                    text: option.modelData.label
-                                    checked: Boolean(option.value)
-                                    onToggled: option.commit(!checked)
+                                    spacing: 4
+                                    Text {
+                                        width: 150
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: option.modelData.label
+                                        color: Theme.c.textMuted
+                                        font.pixelSize: 11
+                                    }
+                                    CheckLabel {
+                                        width: parent.width - 154
+                                        height: parent.height
+                                        objectName: "encoderFlag_" + option.modelData.key
+                                        Accessible.name: option.modelData.label
+                                        checked: Boolean(option.value)
+                                        onToggled: option.commit(!checked)
+                                    }
                                 }
                                 SettingText {
                                     width: parent.width
