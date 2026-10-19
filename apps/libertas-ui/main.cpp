@@ -29,6 +29,8 @@
 #include <QQuickWindow>
 #include <QThread>
 #include <QTimer>
+#include <QTemporaryDir>
+#include <QFile>
 #include <QUrl>
 
 #include <algorithm>
@@ -3006,6 +3008,118 @@ int main(int argc, char** argv) {
                         expanded = entry->property("expanded").toBool();
                 }
                 report(expanded, "the selected output editor expands in the manager");
+                auto visibleControl = [&](const char* name) -> QQuickItem* {
+                    for (auto* item : collect(manager, QString::fromLatin1(name))) {
+                        if (item->isVisible())
+                            return item;
+                    }
+                    return nullptr;
+                };
+                auto reveal = [&](QQuickItem* item) {
+                    for (auto* parent = item->parentItem(); parent; parent = parent->parentItem()) {
+                        if (parent->property("contentY").isValid()) {
+                            const auto y = item->mapToItem(parent, QPointF{}).y();
+                            const auto limit = std::max(0.0, parent->property("contentHeight").toDouble() - parent->height());
+                            parent->setProperty("contentY", std::clamp(
+                                parent->property("contentY").toDouble() + y - 40, 0.0, limit));
+                            settle();
+                            break;
+                        }
+                    }
+                };
+                auto editText = [&](QQuickItem* input, const QString& value) {
+                    reveal(input);
+                    click(input);
+                    input->setProperty("text", value);
+                    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                    QCoreApplication::sendEvent(window, &enter);
+                    settle();
+                };
+                auto* preset = visibleControl("outputPreset");
+                report(preset != nullptr, "selected encode exposes editable preset settings");
+                if (preset) {
+                    const auto previous = document.outputEncoderSettings(selected).value("preset").toString();
+                    editText(preset, QStringLiteral("fast"));
+                    report(document.outputEncoderSettings(selected).value("preset").toString() == "fast",
+                           "editing the preset field updates the actual shared encode");
+                    editText(preset, previous);
+                }
+                auto* rate = visibleControl("outputRateControl");
+                report(rate != nullptr && visibleControl("outputEncodeChoice") != nullptr,
+                       "output manager exposes encoder selection and rate control");
+                if (rate) {
+                    reveal(rate);
+                    click(rate);
+                    QList<QQuickItem*> pending{window->contentItem()};
+                    QQuickItem* option = nullptr;
+                    while (!pending.isEmpty()) {
+                        auto* item = pending.takeLast();
+                        if (item->isVisible() && item->property("text").toString() == "vbr") {
+                            option = item;
+                            break;
+                        }
+                        pending.append(item->childItems());
+                    }
+                    report(option != nullptr, "rate control dropdown offers VBR");
+                    if (option) click(option);
+                    report(document.outputEncoderSettings(selected).value("rateControl").toString() == "vbr",
+                           "clicking VBR changes the selected encoder settings");
+                }
+                auto* destination = visibleControl("destinationSettings");
+                report(destination != nullptr, "destination settings have a clickable entry");
+                if (destination) {
+                    reveal(destination);
+                    click(destination);
+                    auto* name = visibleControl("outputDestinationName");
+                    auto* url = visibleControl("outputUrl");
+                    auto* key = visibleControl("outputKey");
+                    report(name && url && key, "destination click exposes Name, URL, and Key fields");
+                    if (name && url && key) {
+                        const auto oldName = name->property("text").toString();
+                        editText(name, QStringLiteral("Destination editor check"));
+                        report(rows.front()->property("name").toString() == "Destination editor check",
+                               "destination Name edits the output");
+                        editText(name, oldName);
+                        const auto oldUrl = url->property("text").toString();
+                        editText(url, QStringLiteral("rtmps://example.test/live"));
+                        report(rows.front()->property("url").toString() == "rtmps://example.test/live",
+                               "destination URL edits the output");
+                        editText(url, oldUrl);
+                        report(key->property("echoMode").toInt() == 2,
+                               "stream keys are password masked");
+                        QTemporaryDir store;
+                        QFile helper(store.filePath(QStringLiteral("secret-tool")));
+                        const bool helperReady = helper.open(QIODevice::WriteOnly);
+                        if (helperReady) {
+                            helper.write("#!/bin/sh\ncat > \"$LIBERTAS_TEST_KEY_FILE\"\n");
+                            helper.close();
+                            helper.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+                        }
+                        report(helperReady, "credential helper fixture is writable");
+                        if (helperReady) {
+                            const auto oldPath = qgetenv("PATH");
+                            const auto oldFile = qgetenv("LIBERTAS_TEST_KEY_FILE");
+                            qputenv("PATH", store.path().toUtf8() + ":" + oldPath);
+                            qputenv("LIBERTAS_TEST_KEY_FILE", store.filePath("secret").toUtf8());
+                            key->setProperty("text", QStringLiteral("self-check-only-key"));
+                            auto* save = visibleControl("saveOutputKey");
+                            if (save) {
+                                reveal(save);
+                                click(save);
+                            }
+                            settle();
+                            qputenv("PATH", oldPath);
+                            if (oldFile.isNull()) qunsetenv("LIBERTAS_TEST_KEY_FILE");
+                            else qputenv("LIBERTAS_TEST_KEY_FILE", oldFile);
+                            QFile secret(store.filePath("secret"));
+                            report(secret.open(QIODevice::ReadOnly) && secret.readAll() == "self-check-only-key" &&
+                                       !rows.front()->property("credentialRef").toString().isEmpty(),
+                                   "Save key sends the secret through stdin and stores only a reference");
+                            report(key->property("text").toString().isEmpty(),
+                                   "saving clears the key from the editor");
+                        }
+                    }
+                }
                 QMetaObject::invokeMethod(manager, "close");
                 click(gears.front());
                 report(manager->isVisible() && manager->property("selectedOutputId").toString().isEmpty(),

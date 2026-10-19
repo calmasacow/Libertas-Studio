@@ -4,6 +4,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls as Controls
 import Libertas
 
 /// Output settings and the encodes shared by their destinations.
@@ -17,6 +18,52 @@ Item {
     focus: visible
 
     property string selectedOutputId: ""
+    property string selectedDestinationId: ""
+    property int revision: 0
+    property var encodeOptions: { revision; return Document.encodeChoices(); }
+    Connections {
+        target: Document
+        function onChanged() { dialog.revision++; }
+    }
+
+    component SettingText: Row {
+        id: field
+        required property string label
+        property alias text: input.text
+        property alias inputName: input.objectName
+        property alias echoMode: input.echoMode
+        property alias placeholderText: input.placeholderText
+        signal committed(string value)
+        spacing: 4
+        height: 28
+        Text {
+            width: 100
+            anchors.verticalCenter: parent.verticalCenter
+            text: field.label
+            color: Theme.c.textMuted
+            font.pixelSize: 11
+        }
+        Controls.TextField {
+            id: input
+            width: parent.width - 104
+            height: 28
+            color: Theme.c.text
+            font.pixelSize: 11
+            selectByMouse: true
+            Accessible.name: field.label
+            onEditingFinished: field.committed(text)
+            background: Rectangle {
+                color: Theme.c.window
+                border.color: input.activeFocus ? Theme.c.accent : Theme.c.border
+                radius: 2
+            }
+        }
+    }
+
+    function openDestination(outputId) {
+        openOutput(outputId);
+        selectedDestinationId = outputId;
+    }
 
     function openOutput(outputId) {
         open();
@@ -37,6 +84,7 @@ Item {
 
     function open() {
         selectedOutputId = "";
+        selectedDestinationId = "";
         scroll.contentY = 0;
         dialog.visible = true;
         dialog.forceActiveFocus();
@@ -166,6 +214,13 @@ Item {
                         x: 10
                         spacing: 6
                         property bool expanded: dialog.selectedOutputId === outputId
+                        property var settings: {
+                            dialog.revision;
+                            return Document.outputEncoderSettings(outputId);
+                        }
+                        function saveOptions(rate, preset, keyframeMs) {
+                            Document.setOutputEncodingOptions(outputId, rate, preset, keyframeMs);
+                        }
 
                         ToolButton {
                             width: parent.width
@@ -198,9 +253,26 @@ Item {
                         }
 
                         ChoiceField {
+                            objectName: "outputEncodeChoice"
                             width: parent.width
                             visible: output.expanded
-                            label: qsTr("Encoder")
+                            label: qsTr("Use encode")
+                            labelWidth: 100
+                            choices: dialog.encodeOptions.map(e => e.id)
+                            choiceLabels: {
+                                const labels = {};
+                                for (const e of dialog.encodeOptions) labels[e.id] = e.name;
+                                return labels;
+                            }
+                            value: output.settings.id || ""
+                            onCommitted: value => Document.setOutputEncode(output.outputId, value)
+                        }
+                        ChoiceField {
+                            width: parent.width
+                            visible: output.expanded
+                            objectName: "outputEncoderChoice"
+                            labelWidth: 100
+                            label: qsTr("Video encoder")
                             choices: {
                                 const out = [];
                                 for (const c of Document.codecs)
@@ -229,7 +301,9 @@ Item {
                         NumberField {
                             width: parent.width
                             visible: output.expanded
-                            label: qsTr("Bitrate")
+                            objectName: "outputBitrate"
+                            labelWidth: 100
+                            label: qsTr("Bitrate (kbps)")
                             decimals: 0
                             value: output.bitrateKbps
                             onCommitted: (newValue) => Document.setOutputBitrate(
@@ -237,136 +311,102 @@ Item {
                         }
 
                         ChoiceField {
+                            objectName: "outputRateControl"
                             width: parent.width
                             visible: output.expanded
-                            label: qsTr("Protocol")
-                            choices: {
-                                const out = [];
-                                for (const k of Document.destinationKinds)
-                                    out.push(k.title);
-                                return out;
-                            }
-                            value: output.destinationKind.toUpperCase()
-                            onCommitted: (newValue) => Document.setOutputDestination(
-                                output.outputId, newValue.toLowerCase(), output.url)
+                            label: qsTr("Rate control")
+                            labelWidth: 100
+                            choices: ["cbr", "vbr", "cqp", "crf"]
+                            value: output.settings.rateControl || "cbr"
+                            onCommitted: value => output.saveOptions(value, output.settings.preset,
+                                                                      output.settings.keyframeMs)
                         }
-
-                        Item {
+                        NumberField {
+                            objectName: "outputKeyframes"
                             width: parent.width
                             visible: output.expanded
-                            height: 20
-
-                            Text {
-                                id: urlCaption
-
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 54
-                                text: qsTr("URL")
-                                font.pixelSize: 11
-                                color: Theme.c.textMuted
+                            label: qsTr("Keyframe (s)")
+                            labelWidth: 100
+                            value: (output.settings.keyframeMs || 0) / 1000
+                            onCommitted: value => output.saveOptions(output.settings.rateControl,
+                                output.settings.preset, Math.round(value * 1000))
+                        }
+                        SettingText {
+                            width: parent.width
+                            visible: output.expanded
+                            label: qsTr("Preset")
+                            inputName: "outputPreset"
+                            text: output.settings.preset || ""
+                            placeholderText: qsTr("Encoder default")
+                            onCommitted: value => output.saveOptions(output.settings.rateControl,
+                                value, output.settings.keyframeMs)
+                        }
+                        ToolButton {
+                            objectName: "destinationSettings"
+                            width: parent.width
+                            height: 30
+                            visible: output.expanded
+                            label: qsTr("Destination: %1  \u2699").arg(output.name)
+                            tip: qsTr("Edit destination name, URL, and key")
+                            onClicked: dialog.selectedDestinationId =
+                                dialog.selectedDestinationId === output.outputId ? "" : output.outputId
+                        }
+                        Column {
+                            width: parent.width
+                            spacing: 6
+                            visible: output.expanded && dialog.selectedDestinationId === output.outputId
+                            SettingText {
+                                width: parent.width
+                                label: qsTr("Name")
+                                inputName: "outputDestinationName"
+                                text: output.name
+                                onCommitted: value => Document.renameOutput(output.outputId, value)
                             }
-
-                            Rectangle {
-                                anchors.left: urlCaption.right
-                                anchors.leftMargin: 4
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: 18
-                                radius: 2
-                                color: Theme.c.window
-                                border.width: 1
-                                border.color: urlInput.activeFocus
-                                    ? Theme.c.accent : Theme.c.border
-
-                                TextInput {
-                                    id: urlInput
-
-                                    objectName: "outputUrl"
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 5
-                                    anchors.rightMargin: 5
-                                    verticalAlignment: Text.AlignVCenter
-                                    font.pixelSize: 11
-                                    color: Theme.c.text
-                                    selectionColor: Theme.c.accent
-                                    selectByMouse: true
-                                    clip: true
-                                    text: output.url
-
-                                    onEditingFinished: {
-                                        if (text !== output.url)
-                                            Document.setOutputDestination(
-                                                output.outputId, output.destinationKind, text);
-                                    }
+                            ChoiceField {
+                                width: parent.width
+                                label: qsTr("Protocol")
+                                labelWidth: 100
+                                choices: Document.destinationKinds.map(k => k.title)
+                                value: output.destinationKind.toUpperCase()
+                                onCommitted: value => Document.setOutputDestination(
+                                    output.outputId, value.toLowerCase(), output.url)
+                            }
+                            SettingText {
+                                width: parent.width
+                                label: qsTr("URL")
+                                inputName: "outputUrl"
+                                text: output.url
+                                onCommitted: value => Document.setOutputDestination(
+                                    output.outputId, output.destinationKind, value)
+                            }
+                            SettingText {
+                                id: keyField
+                                onVisibleChanged: if (!visible) text = ""
+                                width: parent.width
+                                label: qsTr("Key")
+                                inputName: "outputKey"
+                                echoMode: TextInput.Password
+                                placeholderText: output.credentialRef
+                                    ? qsTr("Saved reference - enter replacement key") : qsTr("Stream key")
+                            }
+                            DialogButton {
+                                objectName: "saveOutputKey"
+                                text: qsTr("Save key to keyring")
+                                enabled: keyField.text.length > 0
+                                onClicked: {
+                                    Document.saveOutputKey(output.outputId, keyField.text);
+                                    keyField.text = "";
                                 }
                             }
-                        }
-
-                        // The *name* of a credential, never the credential. The project format
-                        // has no field that can hold a stream key (ADR-0022), which is why this
-                        // says "reference" and why there is no password box anywhere near it.
-                        Item {
-                            width: parent.width
-                            visible: output.expanded
-                            height: 20
-
                             Text {
-                                id: credCaption
-
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 54
-                                text: qsTr("Key ref")
-                                font.pixelSize: 11
+                                width: parent.width
+                                text: qsTr("Key stored in system keyring, never in project. Encoder changes affect every destination sharing this encode.")
+                                wrapMode: Text.WordWrap
                                 color: Theme.c.textMuted
-                            }
-
-                            Rectangle {
-                                anchors.left: credCaption.right
-                                anchors.leftMargin: 4
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                height: 18
-                                radius: 2
-                                color: Theme.c.window
-                                border.width: 1
-                                border.color: credInput.activeFocus
-                                    ? Theme.c.accent : Theme.c.border
-
-                                TextInput {
-                                    id: credInput
-
-                                    objectName: "outputCredentialRef"
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 5
-                                    anchors.rightMargin: 5
-                                    verticalAlignment: Text.AlignVCenter
-                                    font.pixelSize: 11
-                                    color: Theme.c.text
-                                    selectionColor: Theme.c.accent
-                                    selectByMouse: true
-                                    clip: true
-                                    text: output.credentialRef
-
-                                    onEditingFinished: {
-                                        if (text !== output.credentialRef)
-                                            Document.setOutputCredentialRef(output.outputId,
-                                                                            text);
-                                    }
-                                }
+                                font.pixelSize: 10
                             }
                         }
 
-                        Text {
-                            width: parent.width
-                            visible: output.expanded
-                            text: qsTr("The key itself is never stored in the project.")
-                            font.pixelSize: 9
-                            color: Theme.c.textMuted
-                            opacity: 0.7
-                            wrapMode: Text.WordWrap
-                        }
                     }
                 }
 
@@ -462,24 +502,18 @@ Item {
                         // this window exists to make visible -- one pass of the GPU, several
                         // places it goes.
                         Repeater {
-                            model: encodeBlock.destinations
-
-                            delegate: Item {
-                                id: destRow
-
-                                required property string modelData
-
-                                width: content.width
-                                height: 20
-
-                                Text {
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: 24
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: "└ " + destRow.modelData
-                                    font.pixelSize: 10
-                                    color: Theme.c.text
-                                }
+                            model: {
+                                const encode = dialog.encodeOptions.find(e => e.id === encodeBlock.encodeId);
+                                return encode ? encode.destinations : [];
+                            }
+                            delegate: ToolButton {
+                                required property var modelData
+                                width: content.width - 24
+                                x: 12
+                                height: 28
+                                label: modelData.name + "  \u2699"
+                                tip: qsTr("Edit destination")
+                                onClicked: dialog.openDestination(modelData.id)
                             }
                         }
 

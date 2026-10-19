@@ -14,6 +14,8 @@
 #include <lcore/log.hpp>
 
 #include <QElapsedTimer>
+#include <QProcess>
+#include <QStandardPaths>
 #include <QTransform>
 #include <QImageReader>
 
@@ -3195,6 +3197,105 @@ void Document::setOutputDestination(const QString& id, const QString& kind, cons
             o.destination.kind = *parsed_kind;
         o.destination.url = to_std(url);
     });
+}
+
+QVariantList Document::encodeChoices() const {
+    QVariantList choices;
+    for (const auto& e : session_->project().encodes) {
+        QVariantList destinations;
+        for (const auto& o : session_->project().outputs) {
+            if (o.encode == e.id)
+                destinations.append(QVariantMap{{"id", id_str(o.id)}, {"name", qstr(o.name)}});
+        }
+        choices.append(QVariantMap{{"id", id_str(e.id)}, {"name", qstr(e.name)},
+                                   {"destinations", destinations}});
+    }
+    return choices;
+}
+
+QVariantMap Document::outputEncoderSettings(const QString& id) const {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return {};
+    for (const auto& o : session_->project().outputs) {
+        if (o.id != *parsed)
+            continue;
+        if (const auto* e = session_->project().encode(o.encode))
+            return {{"id", id_str(e->id)}, {"rateControl", qstr(e->encoder.rate_control)},
+                    {"preset", qstr(e->encoder.preset)},
+                    {"keyframeMs", e->encoder.keyframe_interval_ms}};
+    }
+    return {};
+}
+
+void Document::setOutputEncodingOptions(const QString& id, const QString& rateControl,
+                                        const QString& preset, int keyframeMs) {
+    if ((rateControl != "cbr" && rateControl != "vbr" && rateControl != "cqp" &&
+         rateControl != "crf") || keyframeMs < 0 || keyframeMs > 600000 ||
+        preset.size() > 128 || preset.contains(QChar::Null)) {
+        emit notice(QStringLiteral("Invalid encoder settings."));
+        return;
+    }
+    edit_encode_of(id, [&](ldoc::Encode& e) {
+        e.encoder.rate_control = to_std(rateControl);
+        e.encoder.preset = to_std(preset.trimmed());
+        e.encoder.keyframe_interval_ms = keyframeMs;
+    });
+}
+
+void Document::saveOutputKey(const QString& id, const QString& key) {
+    const auto parsed = parse_id(id);
+    if (!parsed || key.isEmpty() || key.size() > 16384 || key.contains(QChar::Null)) {
+        emit notice(QStringLiteral("Enter a nonempty stream key (at most 16384 characters)."));
+        return;
+    }
+    QString ref;
+    bool found = false;
+    for (const auto& o : session_->project().outputs) {
+        if (o.id == *parsed) {
+            ref = qstr(o.destination.credential_ref);
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+        return;
+    if (ref.isEmpty())
+        ref = QStringLiteral("libertas-output-%1").arg(id_str(ldoc::Id::generate()));
+    const auto helper = QStandardPaths::findExecutable(QStringLiteral("secret-tool"));
+    if (helper.isEmpty()) {
+        emit notice(QStringLiteral("Install secret-tool and unlock a Secret Service keyring to save keys."));
+        return;
+    }
+    auto* process = new QProcess(this);
+    auto* timeout = new QTimer(process);
+    timeout->setSingleShot(true);
+    const auto projectId = session_->project().id;
+    connect(timeout, &QTimer::timeout, process, [process] { process->kill(); });
+    connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) {
+            emit notice(QStringLiteral("Could not start the stream key store."));
+            process->deleteLater();
+        }
+    });
+    connect(process, &QProcess::finished, this,
+            [this, process, timeout, id, ref, projectId](int code, QProcess::ExitStatus status) {
+        timeout->stop();
+        if (status == QProcess::NormalExit && code == 0) {
+            if (session_->project().id == projectId)
+                setOutputCredentialRef(id, ref);
+            emit notice(QStringLiteral("Stream key saved in the system keyring."));
+        } else {
+            emit notice(QStringLiteral("Stream key was not saved. Check that the Secret Service keyring is unlocked."));
+        }
+        process->deleteLater();
+    });
+    process->start(helper, {QStringLiteral("store"), QStringLiteral("--label=Libertas Studio stream key"),
+                            QStringLiteral("application"), QStringLiteral("libertas-studio"),
+                            QStringLiteral("credential"), ref});
+    process->write(key.toUtf8());
+    process->closeWriteChannel();
+    timeout->start(30000);
 }
 
 void Document::setOutputCredentialRef(const QString& id, const QString& ref) {

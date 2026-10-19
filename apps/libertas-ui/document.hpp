@@ -474,10 +474,14 @@ public:
     Q_INVOKABLE void setOutputBitrate(const QString& id, int kbps);
     Q_INVOKABLE void setOutputEncoder(const QString& id, const QString& codec,
                                       const QString& implementation);
-    /// The destination's kind and URL. There is deliberately no setter for a credential here:
-    /// the project file has no field that can hold one (ADR-0022), only a name for one.
+    /// Destination kind and URL. Keys go to Secret Service, never the project (ADR-0049).
     Q_INVOKABLE void setOutputDestination(const QString& id, const QString& kind,
                                           const QString& url);
+    Q_INVOKABLE QVariantList encodeChoices() const;
+    Q_INVOKABLE QVariantMap outputEncoderSettings(const QString& id) const;
+    Q_INVOKABLE void setOutputEncodingOptions(const QString& id, const QString& rateControl,
+                                             const QString& preset, int keyframeMs);
+    Q_INVOKABLE void saveOutputKey(const QString& id, const QString& key);
     Q_INVOKABLE void setOutputCredentialRef(const QString& id, const QString& ref);
     /// Point an output at an encode that already exists -- the Aitum case: encode 1080p once,
     /// send it to Twitch and Kick (ADR-0029). The outputs manager window is where this lives.
