@@ -78,17 +78,18 @@ the first six months will feel worse than OBS.
 ## Building
 
 Requires a C++23 compiler, CMake 3.28+, and development headers for Vulkan, libdrm, PipeWire, GIO
-and FFmpeg. On Arch:
+and FFmpeg (including libswscale), plus libpulse for PulseAudio/PipeWire audio. On Arch:
 
 ```sh
 sudo pacman -S --needed base-devel cmake ninja vulkan-headers vulkan-icd-loader \
-                        libdrm pipewire glib2 ffmpeg
+                        libdrm pipewire libpulse glib2 ffmpeg
 ```
 
-Plus Qt 6.5+, jsoncpp and tomlplusplus for the shell and the document model:
+Plus Qt 6.8+, Qt Multimedia/WebEngine, jsoncpp and tomlplusplus:
 
 ```sh
-sudo pacman -S --needed qt6-base qt6-declarative qt6-wayland jsoncpp tomlplusplus
+sudo pacman -S --needed qt6-base qt6-declarative qt6-wayland qt6-multimedia qt6-webengine \
+                        jsoncpp tomlplusplus
 ```
 
 ```sh
@@ -111,6 +112,21 @@ ninja, so this path is kept working.
 Without `--project` the shell opens an unsaved document. `--check` drives the whole shell
 headlessly — loading the real QML, running the real gestures, grabbing frames and asserting what
 was drawn — and forces the offscreen platform, so it cannot reach a display even by accident.
+
+## Importing OBS Scene Collections
+
+```sh
+./build/linux/apps/libertas/libertas import-obs collection.json ~/Shows/Imported.libertas 3840 2160 60 1
+./build/linux/apps/libertas-ui/libertas-ui --project ~/Shows/Imported.libertas
+```
+
+Destination must not exist. Width, height and rational frame rate are required: OBS normally
+stores them in the separate profile, not the scene collection. The importer preserves the input
+as `obs-original.json` and writes `obs-import-report.md`. Review that report before using the show.
+Source identities, scenes, ordering, supported transforms, crops and audio routes are converted;
+OBS groups become nested scenes with saved bounds. Linux capture devices may need reselection.
+Fonts, media dimensions, filters, arbitrary rotations, transitions and plugin-specific behavior
+need review; import does not promise pixel parity. No devices or URLs are opened during import.
 
 ## Testing
 

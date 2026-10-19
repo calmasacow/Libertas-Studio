@@ -4,12 +4,14 @@
 #include "inspect.hpp"
 #include "probe.hpp"
 
-#include <lcore/log.hpp>
-
+#include <QGuiApplication>
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
-#include <filesystem>
 #include <cstring>
+#include <filesystem>
+#include <lcore/log.hpp>
+#include <limport/obs.hpp>
 #include <string_view>
 #include <vector>
 
@@ -21,6 +23,8 @@ void usage() {
 usage:
   libertas probe [--strict]   report this machine's capture/encode/theme environment
   libertas project <dir> [-v] describe a project directory and what is wrong with it
+  libertas import-obs <collection.json> <new-dir> <width> <height> <fps-num> <fps-den>
+                             convert OBS scenes; save original and conversion report
   libertas --version          print version
   libertas --help             this message
 
@@ -59,6 +63,39 @@ int main(int argc, char** argv) {
         const bool verbose = std::find(args.begin(), args.end(), "-v") != args.end() ||
                              std::find(args.begin(), args.end(), "--verbose") != args.end();
         return libertas::inspect_project(std::filesystem::path(std::string{args[1]}), verbose);
+    }
+    if (cmd == "import-obs") {
+        if (args.size() != 7) {
+            std::fputs("import-obs requires collection, new directory, width, height, fps "
+                       "numerator and denominator\n",
+                       stderr);
+            return 2;
+        }
+        limport::ObsOptions options;
+        int* fields[] = {&options.width, &options.height, &options.fps.num, &options.fps.den};
+        for (std::size_t i = 0; i < 4; ++i) {
+            const auto arg = args[i + 3];
+            const auto parsed = std::from_chars(arg.data(), arg.data() + arg.size(), *fields[i]);
+            if (parsed.ec != std::errc{} || parsed.ptr != arg.data() + arg.size()) {
+                std::fputs("import-obs: dimensions and rate must be integers\n", stderr);
+                return 2;
+            }
+        }
+        const std::filesystem::path input{std::string(args[1])}, output{std::string(args[2])};
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        QGuiApplication application(argc, argv);
+        auto imported = limport::import_obs(input, output, options);
+        if (!imported) {
+            std::fprintf(stderr, "import-obs: %s\n", imported.error().c_str());
+            return 1;
+        }
+        std::printf("Imported %zu scenes and %zu sources into %s\n",
+                    imported->project.scenes.size(), imported->project.sources.size(),
+                    output.c_str());
+        for (const auto& warning : imported->warnings)
+            std::printf("Review: %s\n", warning.c_str());
+        std::puts("Read obs-import-report.md before using the imported project on air.");
+        return 0;
     }
     if (cmd == "probe") {
         bool strict = false;

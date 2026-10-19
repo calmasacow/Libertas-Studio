@@ -48,6 +48,14 @@ target_compile_definitions(test_gpu_composite PRIVATE
     LIBERTAS_IMAGE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/images")
 set_tests_properties(test_gpu_composite PROPERTIES SKIP_RETURN_CODE 77)
 libertas_unit_test(test_project_io       libertas::ldoc libertas::lcore)
+find_package(PkgConfig REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Gui)
+pkg_check_modules(JSONCPP REQUIRED IMPORTED_TARGET jsoncpp)
+libertas_unit_test(test_obs_import libertas::limport libertas::lcomp Qt6::Gui PkgConfig::JSONCPP)
+target_compile_definitions(test_obs_import PRIVATE
+    LIBERTAS_CLI="$<TARGET_FILE:libertas>"
+    LIBERTAS_IMAGE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/images")
+add_dependencies(test_obs_import libertas)
 libertas_unit_test(test_layout          libertas::llayout)
 libertas_unit_test(test_layout_history  libertas::llayout)
 libertas_unit_test(test_layout_serialize libertas::llayout libertas::lcore)

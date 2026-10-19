@@ -12,6 +12,36 @@ Next: measure and reduce render costs, finish Linux source backends and their tr
 then import OBS scene collections. Commit and push each validated section. macOS-only sources
 are excluded at the operator's request; use Linux equivalents where available.
 
+### OBS importer and source coverage
+
+ADR-0048 adds `libertas import-obs collection.json new-directory width height fps-num fps-den`.
+The destination must not exist. Original JSON and a durable conversion report accompany the native
+project. UUID references, source sharing, scene order, visibility/locks, quarter turns, flips, crops,
+bounds and audio buses are converted. OBS groups become nested scenes with saved tight dimensions.
+Name-only main-scene selection respects OBS's main-canvas UUID, so an Aitum scene with the same
+name cannot replace program. Extra-canvas scenes are imported on the supplied canvas with warnings.
+
+The local `Untitled.json` converted into `~/Shows/OBS-Imported-20261019.libertas`, using the OBS
+profile's 2560x1440 at 60/1 fps. It contains two scenes and three sources; reopening and the project
+inspector report no problems. Original OBS files and the existing demo projects remain intact.
+Tests create/reopen real projects, render imported colors/images/groups, check cropped/flipped and
+centered rotated placement, drive the actual CLI, and reject malformed references, cycles, duplicate
+keys, excessive nesting and existing destinations. The warning-free `-Werror` build and expanded
+suite pass 29/29 with GPU checks enabled.
+
+Import requires operator review: capture identities, text layout, media output size, filters,
+non-quarter rotations, crop-to-bounds and extra canvases may differ. Source records retain their
+original settings. Transitions use Cut; hotkeys and output configuration are not converted.
+Repeated audio placements can sum, including global audio in nested scenes; review routes.
+The first importer is a CLI command, not an in-app import dialog.
+
+Linux source coverage now includes audio input/output, color, image, text, slideshow, media,
+playlist (VLC equivalent), browser, screen, window/game, V4L2 video, scene and transformed group.
+Blackmagic has an isolated optional adapter and explicit unavailable-device behavior; real hardware
+acquisition remains unverified. Only progressive SDR modes are accepted. Capture uses Hyprland's
+native protocols; a portable portal fallback and cross-device GPU capture remain separate work.
+Encoding/output integration remains separate from preview rendering and the audio mixer.
+
 ### Measured capture optimization
 
 `perf` identified swscale's horizontal scaler as the dominant capture cost. At 2560x1440,

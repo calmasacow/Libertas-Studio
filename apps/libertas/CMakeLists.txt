@@ -7,6 +7,7 @@ pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
 pkg_check_modules(GIO      REQUIRED IMPORTED_TARGET gio-2.0)
 pkg_check_modules(AVCODEC  REQUIRED IMPORTED_TARGET libavcodec libavutil)
 find_package(Vulkan REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Gui)
 
 add_executable(libertas
     inspect.cpp
@@ -20,6 +21,8 @@ target_link_libraries(libertas PRIVATE
     libertas::flags
     libertas::lcore
     libertas::ldoc
+    libertas::limport
+    Qt6::Gui
     Vulkan::Vulkan
     PkgConfig::LIBDRM
     PkgConfig::PIPEWIRE
