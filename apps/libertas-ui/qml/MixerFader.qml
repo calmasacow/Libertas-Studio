@@ -23,6 +23,9 @@ Item {
     /// What the document holds. Taken up immediately except mid-drag.
     property real gainDb: 0
     property bool muted: false
+    property bool meterAvailable: false
+    property real peakLeft: 0
+    property real peakRight: 0
     /// dB at the top and bottom of the travel.
     property real gainMin: -60
     property real gainMax: 12
@@ -59,6 +62,36 @@ Item {
     onGainDbChanged: {
         if (!fader.dragging)
             fader.shownGain = fader.gainDb;
+    }
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: 4
+        color: Theme.c.window
+        visible: fader.meterAvailable
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: parent.height * Math.max(0, Math.min(1, (20 * Math.log(Math.max(fader.peakLeft, 0.001)) / Math.LN10 + 60) / 60))
+            color: fader.peakLeft >= 0.99 ? Theme.c.warning : Theme.c.accent
+        }
+    }
+    Rectangle {
+        anchors.left: parent.left
+        anchors.leftMargin: 6
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: 4
+        color: Theme.c.window
+        visible: fader.meterAvailable
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: parent.height * Math.max(0, Math.min(1, (20 * Math.log(Math.max(fader.peakRight, 0.001)) / Math.LN10 + 60) / 60))
+            color: fader.peakRight >= 0.99 ? Theme.c.warning : Theme.c.accent
+        }
     }
 
     Rectangle {

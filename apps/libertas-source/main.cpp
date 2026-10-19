@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Libertas-Studio contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "decklink.hpp"
+
 #include <QApplication>
+#include <QAudioBuffer>
+#include <QAudioBufferOutput>
 #include <QFont>
 #include <QImageReader>
 #include <QJsonArray>
@@ -16,8 +20,11 @@
 #include <atomic>
 #include <charconv>
 #include <cstring>
+#include <lcapture/audio.hpp>
 #include <lcomp/preview.hpp>
+#include <mutex>
 #include <thread>
+#include <unistd.h>
 
 namespace {
 class Content : public QObject {
@@ -25,6 +32,14 @@ class Content : public QObject {
     QSize size_;
     QImage image_;
     QMediaPlayer player_;
+    std::unique_ptr<QAudioBufferOutput> audio_;
+    std::vector<float> audio_pending_;
+    std::mutex audio_mu_;
+    std::unique_ptr<libertas::capture::AudioSink> browser_sink_;
+    std::unique_ptr<libertas::capture::AudioCapture> browser_audio_;
+    std::unique_ptr<Decklink> decklink_;
+    std::atomic<bool> vendor_frame_pending_{false};
+    std::uint64_t generation_ = 0;
     QVideoSink video_;
     QTimer slides_;
     QTimer web_frames_;
@@ -32,6 +47,13 @@ class Content : public QObject {
     QStringList files_;
     qsizetype index_ = 0;
     bool valid_ = false;
+
+    void append_audio(std::span<const float> samples) {
+        std::lock_guard lock(audio_mu_);
+        audio_pending_.insert(audio_pending_.end(), samples.begin(), samples.end());
+        if (audio_pending_.size() > 9600)
+            audio_pending_.erase(audio_pending_.begin(), audio_pending_.end() - 9600);
+    }
 
     std::string text(const char* key, const char* fallback = "") const {
         auto it = source_.settings.find(key);
@@ -102,6 +124,22 @@ class Content : public QObject {
     std::atomic<bool> dirty{true};
 
     Content() {
+        QAudioFormat format;
+        format.setSampleRate(48000);
+        format.setChannelCount(2);
+        format.setSampleFormat(QAudioFormat::Float);
+        audio_ = std::make_unique<QAudioBufferOutput>(format);
+        player_.setAudioBufferOutput(audio_.get());
+        connect(
+            audio_.get(), &QAudioBufferOutput::audioBufferReceived, this,
+            [this](const QAudioBuffer& buffer) {
+                if (!buffer.isValid() || buffer.format().sampleFormat() != QAudioFormat::Float ||
+                    buffer.format().channelCount() != 2 || buffer.format().sampleRate() != 48000)
+                    return;
+                const auto* samples = buffer.constData<float>();
+                const auto count = static_cast<std::size_t>(buffer.sampleCount());
+                append_audio({samples, count});
+            });
         player_.setVideoSink(&video_);
         connect(&video_, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame& frame) {
             if (frame.isValid())
@@ -138,14 +176,29 @@ class Content : public QObject {
         });
     }
 
+    ~Content() override {
+        decklink_.reset();
+        web_.reset();
+        browser_audio_.reset();
+        browser_sink_.reset();
+    }
+
     void configure(const ldoc::Source& source) {
         if (source_.id == source.id && source_.type == source.type &&
             source_.settings == source.settings)
             return;
         slides_.stop();
+        decklink_.reset();
+        ++generation_;
         web_frames_.stop();
         web_.reset();
+        browser_audio_.reset();
+        browser_sink_.reset();
         player_.stop();
+        {
+            std::lock_guard lock(audio_mu_);
+            audio_pending_.clear();
+        }
         source_ = source;
         size_ = QSize(number("width", 1920), number("height", 1080));
         if (size_.width() < 1 || size_.height() < 1 || size_.width() > 4096 ||
@@ -176,17 +229,47 @@ class Content : public QObject {
             painter.drawText(image.rect(), flags, QString::fromStdString(text("text")));
             painter.end();
             publish(image);
+        } else if (source.type == "source.blackmagic") {
+            std::string error;
+            const auto generation = generation_;
+            decklink_ = Decklink::open(
+                number("deviceIndex", 0), text("mode", "HD 1080p60"),
+                [this, generation](QImage image) {
+                    if (vendor_frame_pending_.exchange(true))
+                        return;
+                    QMetaObject::invokeMethod(
+                        this,
+                        [this, generation, image = std::move(image)] {
+                            if (generation == generation_)
+                                publish(image);
+                            vendor_frame_pending_ = false;
+                        },
+                        Qt::QueuedConnection);
+                },
+                [this](std::span<const float> pcm) { append_audio(pcm); }, error);
+            if (!decklink_)
+                throw std::runtime_error(error);
         } else if (source.type == "source.browser") {
             const QUrl url(QString::fromStdString(text("url")));
             if (!url.isValid() ||
                 (url.scheme() != "https" && url.scheme() != "http" && url.scheme() != "file"))
                 throw std::runtime_error("browser URL must use http, https or file");
+            const std::string sink = "libertas_browser_" + std::to_string(getpid());
+            std::string audio_error;
+            browser_sink_ = libertas::capture::AudioSink::open(sink, audio_error);
+            if (browser_sink_) {
+                qputenv("PULSE_SINK", QByteArray::fromStdString(sink));
+                browser_audio_ = libertas::capture::AudioCapture::open(
+                    sink + ".monitor", false, [this](auto pcm) { append_audio(pcm); }, audio_error);
+            }
+            if (!browser_audio_)
+                qWarning("browser audio: %s", audio_error.c_str());
             web_ = std::make_unique<QWebEngineView>();
             web_->setAttribute(Qt::WA_DontShowOnScreen);
             web_->resize(size_);
             web_->page()->setBackgroundColor(flag("transparentBackground", true) ? Qt::transparent
                                                                                  : Qt::black);
-            web_->page()->setAudioMuted(true);
+            web_->page()->setAudioMuted(!browser_audio_);
             QWebEngineScript css;
             css.setName("source stylesheet");
             css.setInjectionPoint(QWebEngineScript::DocumentReady);
@@ -223,6 +306,13 @@ class Content : public QObject {
             throw std::runtime_error("unsupported source worker type");
     }
 
+    lcomp::AudioPacket take_audio() {
+        std::lock_guard lock(audio_mu_);
+        auto samples = std::move(audio_pending_);
+        audio_pending_.clear();
+        return {source_.id, std::move(samples)};
+    }
+
     lcomp::Picture picture() const {
         lcomp::Picture out;
         out.width = size_.width();
@@ -248,7 +338,9 @@ int main(int argc, char** argv) {
     if (parsed.ec != std::errc{} || *parsed.ptr || fd < 0)
         return 2;
     qputenv("QT_QPA_PLATFORM", "offscreen");
-    qputenv("QTWEBENGINE_CHROMIUM_FLAGS", qgetenv("QTWEBENGINE_CHROMIUM_FLAGS") + " --disable-gpu");
+    qputenv("QTWEBENGINE_CHROMIUM_FLAGS",
+            qgetenv("QTWEBENGINE_CHROMIUM_FLAGS") +
+                " --disable-gpu --autoplay-policy=no-user-gesture-required");
     QApplication app(argc, argv);
     QImageReader::setAllocationLimit(128);
     Content content;
@@ -275,6 +367,14 @@ int main(int argc, char** argv) {
                     if (!error.empty())
                         throw std::runtime_error(error);
                     return frame;
+                },
+                {},
+                [&] {
+                    lcomp::AudioPacket packet;
+                    QMetaObject::invokeMethod(
+                        &content, [&] { packet = content.take_audio(); },
+                        Qt::BlockingQueuedConnection);
+                    return packet;
                 });
             if (!result)
                 qWarning("source worker: %s", result.error().c_str());

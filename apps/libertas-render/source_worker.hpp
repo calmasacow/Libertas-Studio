@@ -10,7 +10,8 @@
 class SourceWorker {
   public:
     using Callback = std::function<void(std::shared_ptr<const lcomp::PreviewFrame>)>;
-    SourceWorker(const ldoc::Source& source, Callback callback);
+    SourceWorker(const ldoc::Source& source, Callback callback,
+                 std::function<void(std::span<const float>)> audio = {});
     ~SourceWorker();
 
   private:

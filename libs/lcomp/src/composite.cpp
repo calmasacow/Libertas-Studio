@@ -760,7 +760,7 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         if (src->type == "source.screen" || src->type == "source.v4l2" ||
             src->type == "source.window" || src->type == "source.game" ||
             src->type == "source.text" || src->type == "source.media" ||
-            src->type == "source.slideshow" || src->type == "source.playlist" || src->type == "source.browser") {
+            src->type == "source.slideshow" || src->type == "source.playlist" || src->type == "source.browser" || src->type == "source.blackmagic") {
             paint_screen(*src, node, opacity, target);
             return;
         }

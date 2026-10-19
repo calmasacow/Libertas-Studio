@@ -171,6 +171,9 @@ LTEST_CASE(a_picture_crosses_the_process_and_the_renderer_exits_when_the_client_
         // A refresh uses the assembled document and a new size budget. Read the actual memfd
         // through the real process, including its resize, instead of testing a sizing helper.
         REQUIRE(link.refresh(2).has_value());
+        auto meters = link.receive(2000);
+        REQUIRE(meters && meters->has_value());
+        CHECK_EQ((**meters).kind, lcomp::PreviewEvent::Kind::Audio);
         auto resized = link.receive(2000);
         REQUIRE(resized && resized->has_value());
         REQUIRE((**resized).kind == lcomp::PreviewEvent::Kind::Frame);
@@ -181,6 +184,9 @@ LTEST_CASE(a_picture_crosses_the_process_and_the_renderer_exits_when_the_client_
         REQUIRE(ack && ack->has_value());
         CHECK_EQ((**ack).kind, lcomp::PreviewEvent::Kind::Ack);
         REQUIRE(link.refresh(2).has_value());
+        meters = link.receive(2000);
+        REQUIRE(meters && meters->has_value());
+        CHECK_EQ((**meters).kind, lcomp::PreviewEvent::Kind::Audio);
         auto unchanged = link.receive(2000);
         REQUIRE(unchanged && unchanged->has_value());
         CHECK_EQ((**unchanged).kind, lcomp::PreviewEvent::Kind::Ack);
@@ -254,6 +260,71 @@ LTEST_CASE(text_source_crosses_worker_and_renderer_and_obeys_placement) {
     link.close();
     CHECK_EQ(reap(*child, 2000), 0);
     CHECK(ink);
+}
+
+LTEST_CASE(media_audio_crosses_worker_mixer_and_meter_transport) {
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends.has_value());
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child.has_value());
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000).has_value());
+    auto source = colour_source(0, 0, 0);
+    source.type = "source.media";
+    source.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/motion-tone.mkv";
+    source.settings["width"] = std::int64_t{32};
+    source.settings["height"] = std::int64_t{24};
+    auto node = bound_to(source);
+    ldoc::Scene scene;
+    scene.id = ldoc::Id::generate();
+    auto project = show(scene, {source});
+    std::get<ldoc::SourceData>(node.data).audio.bus = project.buses.front().id;
+    project.scenes[0].roots = {node};
+    bool source_signal = false, bus_signal = false;
+    REQUIRE(link.send_project(project).has_value());
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    while (std::chrono::steady_clock::now() < until && !(source_signal && bus_signal)) {
+        auto event = link.receive(1000);
+        REQUIRE(event && event->has_value());
+        if ((**event).kind == lcomp::PreviewEvent::Kind::Audio)
+            for (const auto& level : (**event).audio) {
+                if (level.node == node.id && level.available && level.left > 0.01f) source_signal = true;
+                if (level.node == project.buses.front().id && level.available && level.left > 0.01f) bus_signal = true;
+            }
+        if ((**event).kind == lcomp::PreviewEvent::Kind::Ack) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            REQUIRE(link.refresh(64).has_value());
+        }
+    }
+    project.buses.front().mute = true;
+    bool muted = false;
+    // Drain the in-flight refresh before sending an edited project.
+    for (int i = 0; i < 8; ++i) {
+        auto event = link.receive(1000);
+        if (event && event->has_value() && (**event).kind == lcomp::PreviewEvent::Kind::Ack) break;
+    }
+    REQUIRE(link.send_project(project).has_value());
+    const auto mute_until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < mute_until && !muted) {
+        auto event = link.receive(1000);
+        REQUIRE(event && event->has_value());
+        if ((**event).kind == lcomp::PreviewEvent::Kind::Audio)
+            for (const auto& level : (**event).audio)
+                if (level.node == project.buses.front().id && level.available && level.left == 0) muted = true;
+        if ((**event).kind == lcomp::PreviewEvent::Kind::Ack) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            REQUIRE(link.refresh(64).has_value());
+        }
+    }
+    for (int i = 0; i < 8; ++i) {
+        auto event = link.receive(1000);
+        if (event && event->has_value() && (**event).kind == lcomp::PreviewEvent::Kind::Ack) break;
+    }
+    link.quit(); link.close();
+    CHECK_EQ(reap(*child, 3000), 0);
+    CHECK(source_signal);
+    CHECK(bus_signal);
+    CHECK(muted);
 }
 
 LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {

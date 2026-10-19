@@ -401,6 +401,16 @@ void Preview::on_readable() {
             return;
         const lcomp::PreviewEvent& got = **event;
         switch (got.kind) {
+        case lcomp::PreviewEvent::Kind::Pcm:
+            lose(QStringLiteral("Unexpected PCM on the UI channel."));
+            return;
+        case lcomp::PreviewEvent::Kind::Audio:
+            audio_levels_.clear();
+            for (const auto& level : got.audio)
+                audio_levels_[QString::fromStdString(level.node.to_string())] =
+                    {{"available", level.available}, {"left", level.left}, {"right", level.right}};
+            emit changed();
+            break;
         case lcomp::PreviewEvent::Kind::Hello:
             break;
         case lcomp::PreviewEvent::Kind::Frame: {
@@ -449,6 +459,11 @@ void Preview::on_readable() {
             return;
         }
     }
+}
+
+QVariantMap Preview::audioLevel(const QString& nodeId) const {
+    const auto found = audio_levels_.find(nodeId);
+    return rendererAttached() && found != audio_levels_.end() ? found->second : QVariantMap{};
 }
 
 void Preview::on_writable() {

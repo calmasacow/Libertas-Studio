@@ -1037,7 +1037,7 @@ int main(int argc, char** argv) {
         settle();
 
 
-        for (const char* type : {"source.text", "source.media", "source.slideshow", "source.playlist", "source.browser"}) {
+        for (const char* type : {"source.text", "source.media", "source.slideshow", "source.playlist", "source.browser", "source.blackmagic"}) {
             document.addNewSourceToScene(QStringLiteral("Visual source check"), QString::fromLatin1(type));
             const QString placed = document.selectedNode();
             report(!document.placedRect(QString{}, placed).isEmpty(),

@@ -109,6 +109,11 @@ Item {
 
             property real shownGain: src.gainDb
             property bool dragging: false
+            property var meter: ({})
+            Connections {
+                target: Preview
+                function onChanged() { src.meter = Preview.audioLevel(src.nodeId); }
+            }
 
             readonly property bool compact: src.height < 150
             readonly property real fixedHeight:
@@ -164,6 +169,9 @@ Item {
                     gainMin: panel.gainMin
                     gainMax: panel.gainMax
                     locked: src.levelLocked
+                    meterAvailable: src.meter.available === true
+                    peakLeft: src.meter.left || 0
+                    peakRight: src.meter.right || 0
                     onMoved: (db) => Document.setNodeGain(src.sceneId, src.nodeId, db, true)
                     onReleased: Document.endGesture()
                     onReset: Document.setNodeGain(src.sceneId, src.nodeId, 0)
@@ -312,6 +320,11 @@ Item {
             required property int feedCount
             required property int sendCount
             required property bool carriesSelection
+            property var meter: ({})
+            Connections {
+                target: Preview
+                function onChanged() { strip.meter = Preview.audioLevel(strip.busId); }
+            }
 
             objectName: "busStrip"
             visible: !strip.hidden || panel.showHidden
@@ -468,6 +481,9 @@ Item {
                     gainMin: panel.gainMin
                     gainMax: panel.gainMax
                     locked: strip.levelLocked
+                    meterAvailable: strip.meter.available === true
+                    peakLeft: strip.meter.left || 0
+                    peakRight: strip.meter.right || 0
                     onMoved: (db) => Document.setBusGain(strip.busId, db, true)
                     onReleased: Document.endGesture()
                     onReset: Document.setBusGain(strip.busId, 0)
@@ -705,8 +721,8 @@ Item {
         Text {
             anchors.centerIn: parent
             text: panel.hiddenCount === 0
-                  ? qsTr("no audio host — levels only")
-                  : qsTr("%n strip(s) hidden · no audio host — levels only", "",
+                  ? qsTr("Live input and bus meters · Monitor plays locally")
+                  : qsTr("%n strip(s) hidden · live input meters", "",
                          panel.hiddenCount)
             font.pixelSize: 9
             color: Theme.c.textMuted

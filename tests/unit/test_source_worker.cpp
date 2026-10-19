@@ -85,4 +85,43 @@ LTEST_CASE(browser_worker_renders_local_html) {
     CHECK(std::abs(int(pixels[background + 2]) - 160) <= 2);
 }
 
+LTEST_CASE(unavailable_blackmagic_worker_exits_without_inventing_frames) {
+    auto src = source("source.blackmagic");
+    src.settings["deviceIndex"] = std::int64_t{999};
+    std::mutex mu;
+    std::condition_variable done;
+    bool stopped = false, picture = false;
+    {
+        SourceWorker worker(src, [&](auto frame) {
+            std::lock_guard lock(mu);
+            picture = picture || bool(frame);
+            stopped = !frame;
+            done.notify_all();
+        });
+        std::unique_lock lock(mu);
+        done.wait_for(lock, std::chrono::seconds(4), [&] { return stopped; });
+        CHECK(stopped);
+        CHECK(!picture);
+    }
+}
+
+LTEST_CASE(browser_audio_reaches_pcm_transport) {
+    if (!std::getenv("LIBERTAS_TEST_BROWSER_AUDIO")) return;
+    auto src = source("source.browser");
+    src.settings["url"] = std::string("file://") + LIBERTAS_IMAGE_FIXTURES + "/browser-tone.html";
+    std::mutex mu;
+    std::condition_variable ready;
+    bool tone = false;
+    {
+        SourceWorker worker(src, [](auto) {}, [&](auto samples) {
+            std::lock_guard lock(mu);
+            for (float sample : samples) tone = tone || std::abs(sample) > 0.001f;
+            ready.notify_all();
+        });
+        std::unique_lock lock(mu);
+        ready.wait_for(lock, std::chrono::seconds(8), [&] { return tone; });
+    }
+    CHECK(tone);
+}
+
 LTEST_MAIN("source workers")

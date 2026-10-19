@@ -49,6 +49,7 @@ class Preview : public QObject {
     [[nodiscard]] bool rendererAttached() const;
     Q_INVOKABLE [[nodiscard]] QVariantMap renderStats(const QString& canvasId) const;
     Q_INVOKABLE void resetStats();
+    Q_INVOKABLE [[nodiscard]] QVariantMap audioLevel(const QString& nodeId) const;
 
     /// Empty until a frame has arrived for this canvas, which is when the panel keeps its own
     /// "no pipeline attached" wording. An empty id is the first canvas (ADR-0027).
@@ -108,6 +109,7 @@ class Preview : public QObject {
     struct RenderBaseline { std::uint64_t ns = 0, frames = 0, missed = 0; };
     std::map<QString, RenderBaseline> render_baselines_;
     std::map<QString, std::uint64_t> missed_live_ticks_;
+    std::map<QString, QVariantMap> audio_levels_;
 };
 
 } // namespace libertas::ui

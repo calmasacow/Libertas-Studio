@@ -52,6 +52,22 @@ size renegotiation. On this Hyprland session, both CPU and GPU process checks ca
 2536x1390 window and verified shared snapshots across direct/nested placements. Game Capture
 uses this same native window path; it is not an injected game graphics hook.
 
+### Audio input/output and media PCM
+
+ADR-0046 adds native PulseAudio/PipeWire capture and protocol v5 meter/PCM messages. Real Elgato
+audio acquisition passed a 48 kHz stereo PCM check. A real worker/renderer check decodes a tone
+and observes both source and program-bus levels. Media audio now reaches the renderer mixer;
+the earlier visual-worker note describes that section before audio integration.
+Source meters are pre-fader; bus meters reflect gain, mute and pan. Source/bus sends and local
+Monitor controls operate on PCM. Browser audio uses a private temporary sound-server sink,
+with a real Web Audio oscillator check verifying PCM reaches the parent. Encoder output remains
+separate work. Blackmagic's optional native adapter runs in the source worker and uses vendor
+API declarations with their original license; the absent-driver path is tested, but there is no
+Blackmagic driver or hardware here to validate acquisition. Its explicit mode must be supported;
+automatic format detection and HDR are not implemented.
+The expanded suite passes 28/28; the additional real Elgato PCM and browser oscillator checks
+also pass. The build remains warning-free with `-Werror`.
+
 ## Video capture update, 2026-10-18
 
 ADR-0044 adds `source.v4l2` capture through native V4L2 streaming and libswscale BGRA

@@ -1,0 +1,10 @@
+<!doctype html>
+<html><body style="background:#123456"><script>
+const context = new AudioContext();
+const tone = context.createOscillator();
+const gain = context.createGain();
+gain.gain.value = 0.05;
+tone.connect(gain).connect(context.destination);
+tone.start();
+context.resume();
+</script></body></html>

@@ -17,7 +17,7 @@
 
 namespace lcomp {
 
-/// The preview protocol. Version 4.
+/// The preview protocol. Version 5.
 ///
 /// Whole messages on a `lipc::Channel`, bulk in sealed memfds. The bytes are little-endian and
 /// carry no padding, so a reader does not depend on the writer's struct layout.
@@ -37,10 +37,21 @@ namespace lcomp {
 ///   Ack      u8 kind. One per commit, after that commit's frames. The client may send again.
 ///   Fault    u8 kind, the rest UTF-8. Something about the snapshot could not be drawn at all.
 ///            An ack still follows, or the client would wait forever.
+///   Audio    u8 kind, u32 count, then node/bus ULID, u32 left/right peaks in millionths,
+///            u8 availability. Sent even when a video refresh only produces an Ack.
+///   Pcm      u8 kind, source ULID, interleaved stereo float32 little-endian at 48 kHz.
+///            At most 9600 samples; workers to renderer only, never to the UI.
 ///
 /// An empty payload cannot be sent (ADR-0026), and every message here starts with its kind, so
 /// none of them are empty.
-inline constexpr std::uint16_t kPreviewProtocol = 4;
+inline constexpr std::uint16_t kPreviewProtocol = 5;
+
+struct AudioLevel {
+    ldoc::Id node;
+    float left = 0, right = 0;
+    bool available = false;
+};
+struct AudioPacket { ldoc::Id source; std::vector<float> samples; };
 
 /// One frame, with the pixels already copied out of the shared buffer.
 struct PreviewFrame {
@@ -59,11 +70,13 @@ struct PreviewFrame {
 
 /// What `poll` produced. `fault` is set for Fault; `frame` is set for Frame.
 struct PreviewEvent {
-    enum class Kind : std::uint8_t { Hello, Frame, Ack, Fault, PeerGone };
+    enum class Kind : std::uint8_t { Hello, Frame, Ack, Fault, PeerGone, Audio, Pcm };
 
     Kind kind = Kind::PeerGone;
     PreviewFrame frame;
     std::string fault;
+    std::vector<AudioLevel> audio;
+    AudioPacket pcm;
 };
 
 /// The UI's end of the preview, and the test's. It does not composite.
@@ -167,10 +180,12 @@ using FramesDone = std::function<void()>;
 using FramesFresh = std::function<bool()>;
 
 using CanvasRenderer = std::function<Picture(const ldoc::Project&, const ldoc::Id&, std::uint32_t)>;
+using AudioMeters = std::function<std::vector<AudioLevel>(const ldoc::Project&)>;
+using AudioPcm = std::function<AudioPacket()>;
 
 [[nodiscard]] std::expected<void, std::string>
 serve_preview(lipc::Channel channel, FrameSource frames = {}, FramesDone done = {},
-              FramesFresh fresh = {}, CanvasRenderer render = {});
+              FramesFresh fresh = {}, CanvasRenderer render = {}, AudioMeters audio = {}, AudioPcm pcm = {});
 
 /// Start `libertas-render` with one end of a channel.
 ///

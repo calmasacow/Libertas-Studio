@@ -7,8 +7,9 @@
 #include <lcore/log.hpp>
 #include <sys/wait.h>
 
-SourceWorker::SourceWorker(const ldoc::Source& source, Callback callback)
-    : thread_([source, callback = std::move(callback)](std::stop_token stop) {
+SourceWorker::SourceWorker(const ldoc::Source& source, Callback callback,
+                           std::function<void(std::span<const float>)> audio)
+    : thread_([source, callback = std::move(callback), audio = std::move(audio)](std::stop_token stop) {
           pid_t child = -1;
           try {
               auto ends = lipc::Channel::pair();
@@ -39,6 +40,7 @@ SourceWorker::SourceWorker(const ldoc::Source& source, Callback callback)
                       continue;
                   }
                   auto& value = **event;
+                if (value.kind == lcomp::PreviewEvent::Kind::Pcm && audio) audio(value.pcm.samples);
                   if (value.kind == lcomp::PreviewEvent::Kind::PeerGone)
                       throw std::runtime_error("source worker exited");
                   if (value.kind == lcomp::PreviewEvent::Kind::Fault)

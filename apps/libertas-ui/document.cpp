@@ -10,6 +10,7 @@
 
 #include <lcapture/screen.hpp>
 #include <lcapture/video.hpp>
+#include <lcapture/audio.hpp>
 #include <lcore/log.hpp>
 
 #include <QElapsedTimer>
@@ -430,7 +431,8 @@ const ldoc::Scene* program_scene(const ldoc::Project& project, const ldoc::Id& c
 bool is_live_source(std::string_view type) {
     return type == "source.screen" || type == "source.window" || type == "source.game" || type == "source.v4l2" ||
            type == "source.browser" || type == "source.media" || type == "source.text" ||
-           type == "source.slideshow" || type == "source.playlist";
+           type == "source.slideshow" || type == "source.playlist" ||
+           type == "source.audio-input" || type == "source.audio-output" || type == "source.blackmagic";
 }
 
 /// Defined with the other screen helpers, further down beside the settings schema that also
@@ -477,7 +479,7 @@ bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, cons
         if (src->type == "source.window" || src->type == "source.game")
             return window_size(*src, width, height);
         if (src->type == "source.text" || src->type == "source.media" ||
-            src->type == "source.slideshow" || src->type == "source.playlist" || src->type == "source.browser") {
+            src->type == "source.slideshow" || src->type == "source.playlist" || src->type == "source.browser" || src->type == "source.blackmagic") {
             width = number_setting(src->settings, "width").value_or(1920);
             height = number_setting(src->settings, "height").value_or(1080);
             return width > 0 && height > 0 && width <= 4096 && height <= 4096;
@@ -1582,23 +1584,28 @@ constexpr FieldSpec kBrowser[] = {
     {"fps", "Frame rate", "int", "", false, 30, "", "fps"},
     {"css", "Custom CSS", "multiline"},
     {"transparentBackground", "Transparent background", "bool", "", true},
-    {"", "The page reloads when shown. Browser audio is not routed to the mixer yet.", "note"},
+    {"", "The page reloads when shown. Its audio uses a private sound-server output and enters the mixer.", "note"},
 };
 
 constexpr FieldSpec kAudioInput[] = {
-    {"", "This build enumerates no devices, so the node is typed rather than picked from a "
-         "list. `libertas probe` reports what PipeWire offers.", "note"},
-    {"device", "Device", "text", "default"},
-    {"channels", "Channels", "choice", "Stereo", false, 0, "Mono|Stereo"},
-    {"useDeviceTiming", "Timestamp from the device rather than the clock", "bool", "", true},
+    {"device", "Input device", "choice", "default"},
+    {"", "Captures stereo PCM at 48 kHz. Input meters show the signal before fader changes. "
+         "Use Monitor to hear it locally; bus gain, mute and sends control the mix.", "note"},
+};
+
+constexpr FieldSpec kBlackmagic[] = {
+    {"deviceIndex", "Device index", "int", "", false, 0},
+    {"mode", "Display mode name", "text", "HD 1080p60"},
+    {"width", "Output width", "int", "", false, 1920, "", "px"},
+    {"height", "Output height", "int", "", false, 1080, "", "px"},
+    {"", "Requires Blackmagic Desktop Video and a capture device. Mode name must match the "
+         "device's supported mode. SDR video and stereo audio; hardware validation pending.", "note"},
 };
 
 constexpr FieldSpec kAudioOutput[] = {
-    {"", "This build enumerates no devices, so the node is typed rather than picked from a "
-         "list. `libertas probe` reports what PipeWire offers.", "note"},
-    {"device", "Device", "text", "default"},
-    {"channels", "Channels", "choice", "Stereo", false, 0, "Mono|Stereo"},
-    {"useDeviceTiming", "Timestamp from the device rather than the clock", "bool", "", true},
+    {"device", "Output monitor", "choice", "default"},
+    {"", "Captures the selected output's monitor at 48 kHz. Input meters show the signal "
+         "before fader changes. Monitor plays locally; avoid monitoring the output being captured.", "note"},
 };
 
 /// Connector names for every monitor the compositor currently advertises, in its own order.
@@ -1734,6 +1741,7 @@ std::span<const FieldSpec> schema_for(std::string_view type) {
     if (type == "source.screen")       return kScreen;
     if (type == "source.window" || type == "source.game") return kWindow;
     if (type == "source.v4l2")         return kCamera;
+    if (type == "source.blackmagic")   return kBlackmagic;
     if (type == "source.browser")      return kBrowser;
     if (type == "source.audio-input")  return kAudioInput;
     if (type == "source.audio-output") return kAudioOutput;
@@ -1839,6 +1847,7 @@ QVariantList Document::sourceTypes() const {
         {"source.window", "Window", "\u2750"},
         {"source.game", "Game Capture (Wayland window)", "\u2750"},
         {"source.v4l2", "Video Capture", "\u25C9"},
+        {"source.blackmagic", "Blackmagic Device", "\u25C9"},
         {"source.browser", "Browser", "\u25CD"},
         {"source.audio-input", "Audio Input", "\u266A"},
         {"source.audio-output", "Audio Output", "\u266B"},
@@ -2079,6 +2088,20 @@ QVariantList Document::sourceSettingsSchema(const QString& type) const {
                 const auto id = QString::fromStdString(window.id);
                 options.append(id);
                 labels[id] = QString::fromStdString(window.title + " [" + window.app_id + "]");
+            }
+            m["choiceLabels"] = labels;
+        }
+        if (std::string_view{f.key} == "device" &&
+            (type == QLatin1String("source.audio-input") || type == QLatin1String("source.audio-output"))) {
+            options = {QStringLiteral("default")};
+            QVariantMap labels;
+            labels["default"] = QStringLiteral("System default");
+            std::string error;
+            for (const auto& device : libertas::capture::list_audio_devices(error)) {
+                if (device.monitor != (type == QLatin1String("source.audio-output"))) continue;
+                const auto id = QString::fromStdString(device.id);
+                options.append(id);
+                labels[id] = QString::fromStdString(device.name);
             }
             m["choiceLabels"] = labels;
         }

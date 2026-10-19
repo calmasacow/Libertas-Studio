@@ -7,6 +7,7 @@
 #include "lcomp/preview.hpp"
 #include "lipc/fd.hpp"
 #include "source_worker.hpp"
+#include "audio_sources.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -40,7 +41,7 @@ int channel_fd() {
 /// One capture snapshot per connector and commit, shared by every placement and canvas.
 class Renderer {
   public:
-    Renderer() {
+    explicit Renderer(AudioSources& audio) : audio_(audio) {
         const char* mode = std::getenv("LIBERTAS_RENDER_BACKEND");
         require_gpu_ = mode && std::strcmp(mode, "gpu") == 0;
         const char* platform = std::getenv("QT_QPA_PLATFORM");
@@ -130,6 +131,7 @@ class Renderer {
     }
 
   private:
+    AudioSources& audio_;
     struct WorkerSession {
         ldoc::Source source;
         std::mutex mu;
@@ -159,7 +161,7 @@ class Renderer {
                 std::lock_guard lock(ptr->mu);
                 ptr->last = std::move(frame);
                 ++ptr->sequence;
-            });
+            }, [this, id = source.id](auto pcm) { audio_.ingest(id, pcm); });
             workers_.emplace(id, std::move(session));
         }
         if (!worker_held_.contains(id)) {
@@ -192,7 +194,7 @@ class Renderer {
     }
     lcomp::CapturedPicture source_frame(const ldoc::Source& source, bool gpu) {
         if (source.type == "source.text" || source.type == "source.media" ||
-            source.type == "source.slideshow" || source.type == "source.playlist" || source.type == "source.browser")
+            source.type == "source.slideshow" || source.type == "source.playlist" || source.type == "source.browser" || source.type == "source.blackmagic")
             return worker_frame(source);
         if (source.type != "source.v4l2") {
             const bool window = source.type == "source.window" || source.type == "source.game";
@@ -358,13 +360,14 @@ int main() {
         return 2;
     }
 
-    Renderer renderer;
+    AudioSources audio;
+    Renderer renderer(audio);
     auto served = lcomp::serve_preview(
         lipc::Channel{lipc::Fd{fd}}, {}, [&renderer] { renderer.done(); },
         [&renderer] { return renderer.fresh(); },
         [&renderer](const ldoc::Project& p, const ldoc::Id& id, std::uint32_t edge) {
             return renderer.render(p, id, edge);
-        });
+        }, [&audio](const ldoc::Project& p) { return audio.meters(p); });
     if (!served) {
         std::fprintf(stderr, "libertas-render: %s\n", served.error().c_str());
         return 1;

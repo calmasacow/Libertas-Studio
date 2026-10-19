@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
+#include <bit>
 #include <cstring>
 #include <fcntl.h>
 #include <format>
@@ -32,6 +34,8 @@ enum class Kind : std::uint8_t {
     Frame = 6,
     Ack = 7,
     Fault = 8,
+    Audio = 9,
+    Pcm = 10,
 };
 
 constexpr std::size_t kMaxDocument = 32u * 1024u * 1024u;
@@ -370,6 +374,44 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
         event.kind = PreviewEvent::Kind::Hello;
         return event;
     }
+    if (kind == Kind::Pcm) {
+        if (payload.size() < 27 || (payload.size() - 27) % 8 || payload.size() > 38427)
+            return std::unexpected(std::string{"invalid PCM packet size"});
+        const auto id = ldoc::Id::parse(std::string_view(reinterpret_cast<const char*>(payload.data() + 1), 26));
+        if (!id) return std::unexpected(std::string{"invalid PCM source"});
+        PreviewEvent event;
+        event.kind = PreviewEvent::Kind::Pcm;
+        event.pcm.source = *id;
+        for (std::size_t at = 27; at < payload.size();) {
+            std::uint32_t bits = 0;
+            if (!take_u32(payload, at, bits)) return std::unexpected(std::string{"truncated PCM"});
+            const auto sample = std::bit_cast<float>(bits);
+            if (!std::isfinite(sample)) return std::unexpected(std::string{"non-finite PCM"});
+            event.pcm.samples.push_back(sample);
+        }
+        return event;
+    }
+    if (kind == Kind::Audio) {
+        PreviewEvent event;
+        event.kind = PreviewEvent::Kind::Audio;
+        std::size_t at = 1;
+        std::uint32_t count = 0;
+        if (!take_u32(payload, at, count) || count > 1024 || payload.size() != 5 + count * 35)
+            return std::unexpected(std::string{"invalid audio meter packet"});
+        for (std::uint32_t i = 0; i < count; ++i) {
+            auto id = ldoc::Id::parse(std::string_view(reinterpret_cast<const char*>(payload.data() + at), 26));
+            if (!id) return std::unexpected(std::string{"invalid audio meter node"});
+            at += 26;
+            std::uint32_t left = 0, right = 0;
+            if (!take_u32(payload, at, left) || !take_u32(payload, at, right) || left > 1000000 || right > 1000000)
+                return std::unexpected(std::string{"invalid audio meter level"});
+            const auto available = std::to_integer<unsigned>(payload[at++]);
+            if (available > 1) return std::unexpected(std::string{"invalid audio meter status"});
+            event.audio.push_back({*id, static_cast<float>(left) / 1000000.0f,
+                static_cast<float>(right) / 1000000.0f, available != 0});
+        }
+        return event;
+    }
     if (kind != Kind::Frame)
         return std::unexpected(std::string{"the renderer sent a message this build does not know"});
 
@@ -468,7 +510,7 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
 
 std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSource frames,
                                                FramesDone done, FramesFresh fresh,
-                                               CanvasRenderer render) {
+                                               CanvasRenderer render, AudioMeters audio, AudioPcm pcm) {
     // Set whenever a project or scene message lands, so the first commit after an edit always
     // composites even if no screen has redrawn since.
     bool document_changed = true;
@@ -563,6 +605,33 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
                 if (auto sent = send_ack(channel); !sent)
                     return sent;
                 continue;
+            }
+
+            if (pcm) {
+                const auto block = pcm();
+                if (!block.samples.empty()) {
+                    if (block.samples.size() > 9600 || block.samples.size() % 2)
+                        return std::unexpected(std::string{"invalid outgoing PCM block"});
+                    std::vector<std::byte> packet{static_cast<std::byte>(Kind::Pcm)};
+                    for (char c : block.source.to_string()) packet.push_back(static_cast<std::byte>(c));
+                    for (float sample : block.samples)
+                        append_u32(packet, std::bit_cast<std::uint32_t>(std::isfinite(sample) ? sample : 0));
+                    if (auto sent = channel.send(packet); !sent) return sent;
+                }
+            }
+            if (audio) {
+                const auto levels = audio(*assembly.project);
+                if (levels.size() > 1024) return std::unexpected(std::string{"too many audio meters"});
+                std::vector<std::byte> meters{static_cast<std::byte>(Kind::Audio)};
+                append_u32(meters, static_cast<std::uint32_t>(levels.size()));
+                for (const auto& level : levels) {
+                    const auto id = level.node.to_string();
+                    for (char c : id) meters.push_back(static_cast<std::byte>(c));
+                    for (float peak : {level.left, level.right})
+                        append_u32(meters, std::isfinite(peak) ? static_cast<std::uint32_t>(std::clamp(peak, 0.0f, 1.0f) * 1000000.0f) : 0);
+                    meters.push_back(static_cast<std::byte>(level.available));
+                }
+                if (auto sent = channel.send(meters); !sent) return sent;
             }
 
             // A commit with no document change behind it and no new captured frame would
