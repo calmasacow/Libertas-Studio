@@ -1049,6 +1049,26 @@ int main(int argc, char** argv) {
             document.undo();
         }
 
+        {
+            document.addNewSourceToScene(QStringLiteral("Grouped source"), QStringLiteral("source.color"));
+            const auto child = document.selectedNode();
+            document.groupSelectedNodes();
+            const auto group = document.selectedNode();
+            document.setNodeScale(0.5, 0.5);
+            const auto group_box = document.placedRect(QString{}, group);
+            const auto child_box = document.placedRect(QString{}, child);
+            report(std::abs(group_box.value("width").toDouble() - 960.0) < 1.0 &&
+                       std::abs(child_box.value("width").toDouble() - 960.0) < 1.0,
+                   "group transforms map both group and child handles into canvas coordinates");
+            document.selectNode(child);
+            document.setDrawnRect(child_box.value("x").toDouble() + 20,
+                child_box.value("y").toDouble(), 960, 540);
+            report(std::abs(document.placedRect(QString{}, child).value("x").toDouble() -
+                child_box.value("x").toDouble() - 20) < 1.0,
+                "moving a grouped child maps the gesture back into its parent coordinates");
+            document.undo(); document.undo(); document.undo(); document.undo();
+        }
+
         // ---- a source's own settings, behind the gear -------------------------------------
         //
         // The dialog commits nothing until it is accepted, so what is checked is the commit:

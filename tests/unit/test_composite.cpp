@@ -192,6 +192,24 @@ LTEST_CASE(a_groups_opacity_reaches_its_children) {
     CHECK_EQ(pixel(hidden, 0, 0), std::tuple(0, 0, 0, 255));
 }
 
+LTEST_CASE(group_transform_places_its_children_as_one_picture) {
+    auto red = colour_source(255, 0, 0, 4, 4);
+    auto group = ldoc::make_node(ldoc::NodeKind::Group, "Scaled group");
+    std::get<ldoc::GroupData>(group.data).children = {bound_to(red)};
+    group.transform.pivot = {0, 0};
+    group.transform.position = {1, 1};
+    group.transform.scale = {0.5, 0.5};
+    auto scene = scene_named("Scene");
+    scene.roots = {group};
+    auto project = show(4, scene, {red});
+    const auto picture = lcomp::composite_canvas(project, project.canvases[0].id);
+    CHECK_EQ(picture.status, PictureStatus::Complete);
+    CHECK_EQ(pixel(picture, 0, 0), std::tuple(0, 0, 0, 255));
+    CHECK_EQ(pixel(picture, 1, 1), std::tuple(255, 0, 0, 255));
+    CHECK_EQ(pixel(picture, 2, 2), std::tuple(255, 0, 0, 255));
+    CHECK_EQ(pixel(picture, 3, 3), std::tuple(0, 0, 0, 255));
+}
+
 LTEST_CASE(contain_letterboxes_a_colour) {
     ldoc::Source red = colour_source(255, 0, 0, 4, 2);
     ldoc::Node node = bound_to(red);

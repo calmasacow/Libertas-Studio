@@ -47,18 +47,6 @@ bool transform_supported(const ldoc::Transform& t) {
 
 namespace {
 
-/// A group's own transform is not applied to its children. The old rule stays for it: a flip
-/// or a turn on the group would otherwise draw the children as if it were not there.
-bool group_transform_ok(const ldoc::Transform& t) {
-    if (t.rotation_deg != 0.0 || t.skew_deg.x != 0.0 || t.skew_deg.y != 0.0)
-        return false;
-    if (t.scale.x < 0.0 || t.scale.y < 0.0)
-        return false;
-    const double fields[] = {t.position.x, t.position.y,   t.scale.x,    t.scale.y,   t.pivot.x,
-                             t.pivot.y,    t.rotation_deg, t.skew_deg.x, t.skew_deg.y};
-    return std::ranges::all_of(fields, [](double v) { return std::isfinite(v); });
-}
-
 /// Clockwise, in screen space where Y grows downward. `(1, 0)` becomes `(0, 1)`.
 void rotate_cw(int quarter, double x, double y, double& out_x, double& out_y) {
     switch (quarter) {
@@ -724,17 +712,32 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         refuse(target.picture, node, GapReason::UnsupportedEffect);
         return;
     }
-    // A group does not push its transform onto its children. A flip or a turn on the group
-    // itself would draw them as if it were not there, so the group keeps the stricter rule.
-    const bool transform_ok = std::holds_alternative<ldoc::GroupData>(node.data)
-                                  ? group_transform_ok(node.transform)
-                                  : transform_supported(node.transform);
-    if (!transform_ok) {
+    if (!transform_supported(node.transform)) {
         refuse(target.picture, node, GapReason::UnsupportedTransform);
         return;
     }
 
     if (const auto* group = std::get_if<ldoc::GroupData>(&node.data)) {
+        GapReason why = GapReason::NoSize;
+        const auto rect = place(node, target.picture.width, target.picture.height, true, why);
+        if (!rect) { refuse(target.picture, node, why); return; }
+        const bool identity = rect->x0 == 0 && rect->y0 == 0 && rect->x1 == target.picture.width &&
+            rect->y1 == target.picture.height && quarter_turn(node.transform.rotation_deg) == 0 &&
+            node.transform.scale.x > 0 && node.transform.scale.y > 0;
+        if (!identity) {
+            DrawPlan inner;
+            inner.width = target.picture.width; inner.height = target.picture.height;
+            bool drew = false;
+            CanvasTarget nested{inner, drew, target.stack, target.frames};
+            for (auto it = group->children.rbegin(); it != group->children.rend(); ++it)
+                paint_node(project, *it, opacity, nested);
+            for (const auto& gap : inner.gaps) target.picture.gaps.push_back(gap);
+            auto op = operation(node, *rect, 1.0);
+            op.nested = std::make_shared<DrawPlan>(std::move(inner));
+            target.picture.ops.push_back(std::move(op));
+            target.drew = target.drew || drew;
+            return;
+        }
         // Children are listed topmost first. Walk them back to front so the top is drawn last.
         for (auto it = group->children.rbegin(); it != group->children.rend(); ++it)
             paint_node(project, *it, opacity, target);

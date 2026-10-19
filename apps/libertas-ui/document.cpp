@@ -14,6 +14,7 @@
 #include <lcore/log.hpp>
 
 #include <QElapsedTimer>
+#include <QTransform>
 #include <QImageReader>
 
 #include <algorithm>
@@ -210,6 +211,40 @@ const ldoc::Scene* program_scene(const ldoc::Project& project, const ldoc::Id& c
 std::optional<QVariantMap> placed_map(const ldoc::Project& project, const ldoc::Canvas& canvas,
                                       const ldoc::Node& node);
 
+QTransform group_space(const ldoc::Node& group, const ldoc::Canvas& canvas) {
+    lcomp::GapReason why = lcomp::GapReason::NoSize;
+    const auto box = lcomp::drawn_frame(group, canvas.width, canvas.height, true, why);
+    if (!box || canvas.width <= 0 || canvas.height <= 0) return {};
+    const auto map = [&](double x, double y) {
+        if (group.transform.scale.x < 0) x = 1 - x;
+        if (group.transform.scale.y < 0) y = 1 - y;
+        double u = x, v = y;
+        switch (lcomp::quarter_turn(group.transform.rotation_deg).value_or(0)) {
+        case 1: u = 1 - y; v = x; break;
+        case 2: u = 1 - x; v = 1 - y; break;
+        case 3: u = y; v = 1 - x; break;
+        }
+        return QPointF(box->x + u * box->width, box->y + v * box->height);
+    };
+    const auto origin = map(0, 0), x = map(1, 0) - origin, y = map(0, 1) - origin;
+    return QTransform(x.x() / canvas.width, x.y() / canvas.width,
+        y.x() / canvas.height, y.y() / canvas.height, origin.x(), origin.y());
+}
+
+QTransform parent_space(const ldoc::Scene& scene, const ldoc::Id& id, const ldoc::Canvas& canvas) {
+    QTransform result;
+    const auto walk = [&](const auto& self, const std::vector<ldoc::Node>& nodes, const QTransform& parent) -> bool {
+        for (const auto& node : nodes) {
+            if (node.id == id) { result = parent; return true; }
+            if (const auto* children = node.children())
+                if (self(self, *children, group_space(node, canvas) * parent)) return true;
+        }
+        return false;
+    };
+    walk(walk, scene.roots, {});
+    return result;
+}
+
 const ldoc::Canvas* canvas_of(const ldoc::Project& project, const ldoc::Id& id) {
     for (const ldoc::Canvas& canvas : project.canvases) {
         if (canvas.id == id)
@@ -233,7 +268,14 @@ QVariantMap Document::placedRect(const QString& canvasId, const QString& nodeId)
     const ldoc::Node* node = ldoc::find_node(scene->roots, *node_id);
     if (!node)
         return {};
-    return placed_map(project, *canvas, *node).value_or(QVariantMap{});
+    auto result = placed_map(project, *canvas, *node).value_or(QVariantMap{});
+    if (!result.isEmpty()) {
+        const auto box = parent_space(*scene, node->id, *canvas).mapRect(QRectF(
+            result["x"].toDouble(), result["y"].toDouble(), result["width"].toDouble(), result["height"].toDouble()));
+        result["x"] = box.x(); result["y"] = box.y();
+        result["width"] = box.width(); result["height"] = box.height();
+    }
+    return result;
 }
 
 QVariantList Document::placedNodes(const QString& canvasId) const {
@@ -258,8 +300,8 @@ QVariantList Document::placedNodes(const QString& canvasId) const {
                 self(self, child, opacity);
             return;
         }
-        if (const std::optional<QVariantMap> map = placed_map(project, *canvas, node))
-            out.push_back(*map);
+        const auto map = placedRect(canvasId, id_str(node.id));
+        if (!map.isEmpty()) out.push_back(map);
     };
     for (const ldoc::Node& node : scene->roots)
         walk(walk, node, 1.0);
@@ -444,6 +486,10 @@ bool window_size(const ldoc::Source& src, double& width, double& height);
 /// Natural size for a kind the compositor actually paints. Anything else has no rectangle.
 bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, const ldoc::Node& node,
                   double& width, double& height) {
+    if (std::holds_alternative<ldoc::GroupData>(node.data)) {
+        width = canvas.width; height = canvas.height;
+        return width > 0 && height > 0;
+    }
     if (const auto* source = std::get_if<ldoc::SourceData>(&node.data)) {
         if (!source->source)
             return false;
@@ -502,6 +548,7 @@ bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, cons
 }
 
 bool drawable(const ldoc::Node& node) {
+    if (std::holds_alternative<ldoc::GroupData>(node.data)) return true;
     if (std::holds_alternative<ldoc::PrecompData>(node.data))
         return true;
     const auto* source = std::get_if<ldoc::SourceData>(&node.data);
@@ -3296,6 +3343,12 @@ void Document::ungroupNode(const QString& nodeId) {
         emit notice(QStringLiteral("Only a group can be taken apart."));
         return;
     }
+    if (const auto* canvas = current_canvas(); canvas &&
+        (!group_space(*group, *canvas).isIdentity() || group->blend.opacity != 1.0)) {
+        emit notice(QStringLiteral("Reset the group's transform and opacity before ungrouping; "
+                                   "ungrouping now would change its children's picture."));
+        return;
+    }
 
     // Where the group sits now, so its children land in its place rather than at the top.
     std::optional<ldoc::Id> parent;
@@ -3692,6 +3745,11 @@ void Document::setDrawnRect(double x, double y, double width, double height, boo
         return;
     if (!std::isfinite(x) || !std::isfinite(y) || !(width > 0.0) || !(height > 0.0))
         return;
+    bool invertible = false;
+    const auto inverse = parent_space(*scene, node->id, *canvas).inverted(&invertible);
+    if (!invertible) return;
+    const auto local = inverse.mapRect(QRectF(x, y, width, height));
+    x = local.x(); y = local.y(); width = local.width(); height = local.height();
     double natural_w = 0.0;
     double natural_h = 0.0;
     const bool have = natural_size(session_->project(), *canvas, *node, natural_w, natural_h);

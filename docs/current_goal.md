@@ -70,6 +70,15 @@ also pass. The build remains warning-free with `-Werror`.
 
 ## Video capture update, 2026-10-18
 
+### Group placement
+
+ADR-0047 makes transformed groups use the shared scene plan on CPU and GPU. Groups expose
+canvas-sized transform handles; child selection and drag coordinates follow ancestor groups.
+Identity groups retain their existing pass-through behavior. Transformed contents clip to the
+owning canvas; automatic tight bounds are deferred. Ungrouping a transformed group is refused
+until its transform is reset, so placement cannot silently change. Pixel, GPU parity and real
+UI interaction checks pass; the warning-free build and full suite pass 28/28.
+
 ADR-0044 adds `source.v4l2` capture through native V4L2 streaming and libswscale BGRA
 conversion. Add **Video Capture**, select a device, resolution and frame rate. Stable
 device paths exclude metadata nodes. Explicit modes fail instead of silently downgrading.

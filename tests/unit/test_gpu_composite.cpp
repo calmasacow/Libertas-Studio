@@ -96,6 +96,9 @@ LTEST_CASE(gpu_executes_the_shared_walk_for_opacity_precomps_rotations_and_flips
     project.sources[0].settings["file"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/two.png";
     auto group = ldoc::make_node(ldoc::NodeKind::Group, "opacity group");
     group.blend.opacity = 0.5;
+    group.transform.position = {2, 1};
+    group.transform.scale = {0.5, 0.75};
+    group.transform.rotation_deg = 90;
     std::get<ldoc::GroupData>(group.data).children = project.scenes[0].roots;
     project.scenes[0].roots = {group};
     const auto image_plan = lcomp::plan_canvas(project, project.canvases[0].id);

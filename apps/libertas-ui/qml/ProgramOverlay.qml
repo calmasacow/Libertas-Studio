@@ -342,8 +342,7 @@ Item {
             overlay.liveY = start.y + dy;
             overlay.liveW = start.width;
             overlay.liveH = start.height;
-            Document.setNodeFrame(start.posX + dx, start.posY + dy, start.scaleX, start.scaleY,
-                                  true);
+            Document.setDrawnRect(start.x + dx, start.y + dy, start.width, start.height, true);
             return;
         }
         const free = (modifiers & Qt.ShiftModifier) !== 0;
