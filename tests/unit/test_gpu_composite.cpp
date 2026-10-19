@@ -104,6 +104,32 @@ LTEST_CASE(gpu_executes_the_shared_walk_for_opacity_precomps_rotations_and_flips
     compare(lcomp::execute_cpu(image_plan), *image_result);
 }
 
+LTEST_CASE(host_video_uploads_to_a_4k_canvas) {
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE_MSG(gpu != nullptr, "{}", error);
+    auto project = show(3840, 2160);
+    std::vector<std::uint8_t> pixels(2560 * 1440 * 4, 255);
+    const auto plan = lcomp::plan_canvas(project, project.canvases[0].id,
+        [&](const ldoc::Source&) {
+            return lcomp::CapturedPicture{2560, 1440, pixels.data(), pixels.size()};
+        });
+    REQUIRE(gpu->render(plan, 640, error).has_value());
+    const auto started = std::chrono::steady_clock::now();
+    const int count = std::getenv("LIBERTAS_BENCHMARK") ? 180 : 3;
+    for (int i = 0; i < count; ++i) {
+        auto frame = gpu->render(plan, 640, error);
+        REQUIRE_MSG(frame.has_value(), "{}", error);
+        CHECK_EQ(frame->width, 640);
+        CHECK_EQ(frame->height, 360);
+        CHECK_EQ(frame->pixels.front(), 255);
+    }
+    if (std::getenv("LIBERTAS_BENCHMARK"))
+        std::fprintf(stderr, "1440p host upload + 4K composite + 640 preview: %.3f ms/frame\n",
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() / count);
+}
+
 LTEST_CASE(a_real_capture_slot_stays_on_device_until_preview_readback) {
     const char* output = std::getenv("LIBERTAS_TEST_CAPTURE");
     if (!output)

@@ -12,6 +12,21 @@ Next: measure and reduce render costs, finish Linux source backends and their tr
 then import OBS scene collections. Commit and push each validated section. macOS-only sources
 are excluded at the operator's request; use Linux equivalents where available.
 
+### Measured capture optimization
+
+`perf` identified swscale's horizontal scaler as the dominant capture cost. At 2560x1440,
+an isolated 300-frame conversion measured NV12-to-BGRA at 7.80 ms, planar YUV420-to-BGRA
+at 1.19 ms, and BGR24-to-BGRA at 0.80 ms. Prefer YUV420, retaining the same USB bandwidth
+as NV12 and preserving NV12 as a fallback. The real Elgato negotiated YU12 and sustained
+59.39 fps with immutable leased frames; live renderer cycle samples over ten seconds fell
+from 25.6 billion to 10.9 billion. These include capture and rendering and are not latency.
+
+The repeatable `LIBERTAS_TEST_GPU=1 LIBERTAS_BENCHMARK=1` GPU test measures 1440p host upload,
+4K composite and 640-edge preview readback: 7.32 ms/frame while the live show is also running.
+A guarded 32-bit shader division experiment measured 7.18 ms, insufficient evidence to keep
+extra branching; exact existing shader arithmetic remains. Larger gains need profiling the
+host upload path separately from the GPU-only screen path.
+
 ## Video capture update, 2026-10-18
 
 ADR-0044 adds `source.v4l2` capture through native V4L2 streaming and libswscale BGRA
