@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-find_package(Qt6 REQUIRED COMPONENTS Gui Multimedia Widgets WebEngineWidgets)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Gui Multimedia Widgets WebEngineWidgets)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SOURCE_SWSCALE REQUIRED IMPORTED_TARGET libswscale)
 add_executable(libertas-source main.cpp decklink.cpp)

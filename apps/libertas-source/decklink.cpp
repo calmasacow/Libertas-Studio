@@ -34,7 +34,9 @@ struct Decklink::State : IDeckLinkInputCallback {
     HRESULT QueryInterface(REFIID id, LPVOID* out) override {
         if (!out)
             return E_POINTER;
-        if (std::memcmp(&id, &IID_IDeckLinkInputCallback, sizeof(id)) != 0) {
+        constexpr REFIID unknown{0, 0, 0, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46};
+        if (std::memcmp(&id, &IID_IDeckLinkInputCallback, sizeof(id)) != 0 &&
+            std::memcmp(&id, &unknown, sizeof(id)) != 0) {
             *out = nullptr;
             return E_NOINTERFACE;
         }
@@ -149,7 +151,7 @@ std::unique_ptr<Decklink> Decklink::open(int index, const std::string& mode, Vid
     while (modes->Next(&candidate) == S_OK) {
         const char* name = nullptr;
         if (candidate->GetName(&name) == S_OK) {
-            if (mode == name)
+            if (mode == name && candidate->GetFieldDominance() == bmdProgressiveFrame)
                 selected = candidate->GetDisplayMode();
             std::free(const_cast<char*>(name));
         }
@@ -157,7 +159,8 @@ std::unique_ptr<Decklink> Decklink::open(int index, const std::string& mode, Vid
     }
     modes->Release();
     if (selected == bmdModeUnknown)
-        return fail("requested Blackmagic mode is unavailable; use its exact display mode name");
+        return fail("requested progressive Blackmagic mode is unavailable; use its exact display "
+                    "mode name");
     state->video = std::move(video);
     state->audio = std::move(audio);
     if (state->input->SetCallback(state.get()) != S_OK ||

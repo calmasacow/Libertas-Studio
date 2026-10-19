@@ -1646,7 +1646,7 @@ constexpr FieldSpec kBlackmagic[] = {
     {"width", "Output width", "int", "", false, 1920, "", "px"},
     {"height", "Output height", "int", "", false, 1080, "", "px"},
     {"", "Requires Blackmagic Desktop Video and a capture device. Mode name must match the "
-         "device's supported mode. SDR video and stereo audio; hardware validation pending.", "note"},
+         "device's supported progressive mode. SDR video and stereo audio; hardware validation pending.", "note"},
 };
 
 constexpr FieldSpec kAudioOutput[] = {
