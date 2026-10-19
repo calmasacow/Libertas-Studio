@@ -3169,6 +3169,13 @@ void Document::edit_encode_of(const QString& output_id,
 
     ldoc::Encode next = *existing;
     change(next);
+    if (next.encoder.implementation == "nvenc") {
+        if (next.encoder.preset.empty()) next.encoder.preset = "p5";
+        auto& profile = next.encoder.extra["nvenc.profile"];
+        const auto* text = std::get_if<std::string>(&profile);
+        if (!text || text->empty() || next.encoder.codec != existing->encoder.codec)
+            profile = std::string{next.encoder.codec == "h264" ? "high" : "main"};
+    }
     retitle_if_auto(p, *existing, next);
     if (next == *existing)
         return;
@@ -3249,9 +3256,15 @@ QVariantMap Document::outputEncoderSettings(const QString& id) const {
                 else if (const auto* number = std::get_if<std::int64_t>(&value))
                     extra[qstr(key)] = QVariant::fromValue(static_cast<qlonglong>(*number));
             }
+            QString preset = qstr(e->encoder.preset);
+            if (e->encoder.implementation == "nvenc") {
+                if (preset.isEmpty()) preset = QStringLiteral("p5");
+                if (extra.value("nvenc.profile").toString().isEmpty())
+                    extra["nvenc.profile"] = e->encoder.codec == "h264" ? "high" : "main";
+            }
             return {{"id", id_str(e->id)}, {"name", qstr(e->name)},
                     {"rateControl", qstr(e->encoder.rate_control)},
-                    {"preset", qstr(e->encoder.preset)}, {"extra", extra},
+                    {"preset", preset}, {"extra", extra},
                     {"width", e->rescale ? e->rescale->x : 0},
                     {"height", e->rescale ? e->rescale->y : 0},
                     {"keyframeMs", e->encoder.keyframe_interval_ms}};

@@ -19,11 +19,10 @@ Item {
 
     property string selectedOutputId: ""
     property string selectedDestinationId: ""
-    property int revision: 0
-    property var encodeOptions: { revision; return Document.encodeChoices(); }
+    property var encodeOptions: Document.encodeChoices()
     Connections {
         target: Document
-        function onChanged() { dialog.revision++; }
+        function onChanged() { dialog.encodeOptions = Document.encodeChoices(); }
     }
 
     component SettingText: Row {
@@ -214,9 +213,12 @@ Item {
                         x: 10
                         spacing: 6
                         property bool expanded: dialog.selectedOutputId === outputId
-                        property var settings: {
-                            dialog.revision;
-                            return Document.outputEncoderSettings(outputId);
+                        property var settings: Document.outputEncoderSettings(outputId)
+                        Connections {
+                            target: Document
+                            function onChanged() {
+                                output.settings = Document.outputEncoderSettings(output.outputId);
+                            }
                         }
                         function saveOptions(rate, preset, keyframeMs) {
                             Document.setOutputEncodingOptions(outputId, rate, preset, keyframeMs);
@@ -392,7 +394,7 @@ Item {
                             objectName: "outputPreset"
                             labelWidth: 150
                             choices: output.implementation === "nvenc"
-                                ? ["", "p1", "p2", "p3", "p4", "p5", "p6", "p7"]
+                                ? ["p1", "p2", "p3", "p4", "p5", "p6", "p7"]
                                 : output.implementation === "x264"
                                     ? ["", "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"]
                                     : [""]
@@ -445,8 +447,10 @@ Item {
                                          labels: {hq: "High quality", ll: "Low latency", ull: "Ultra low latency", lossless: "Lossless"}},
                                         {key: "nvenc.multipass", label: qsTr("Multipass mode"), choices: ["disabled", "quarter", "full"], value: "quarter",
                                          labels: {disabled: "Single pass", quarter: "Two passes (quarter resolution)", full: "Two passes (full resolution)"}},
-                                        {key: "nvenc.profile", label: qsTr("Profile"), choices: output.codec === "h264" ? ["", "baseline", "main", "high"]
-                                            : output.codec === "hevc" ? ["", "main", "main10"] : ["", "main"], value: ""},
+                                        {key: "nvenc.profile", label: qsTr("Profile"), choices: output.codec === "h264" ? ["baseline", "main", "high"]
+                                            : output.codec === "hevc" ? ["main", "main10"] : ["main"],
+                                         value: output.codec === "h264" ? "high" : "main",
+                                         labels: {baseline: "Baseline", main: "Main", high: "High", main10: "Main 10"}},
                                         {key: "nvenc.lookahead", label: qsTr("Look-ahead"), value: false},
                                         {key: "nvenc.adaptive_quantization", label: qsTr("Adaptive quantization"), value: true},
                                         {key: "nvenc.bframes", label: qsTr("B-frames"), value: 2},

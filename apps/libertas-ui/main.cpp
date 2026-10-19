@@ -3064,7 +3064,7 @@ int main(int argc, char** argv) {
                     report(choose(preset, QStringLiteral("fast")), "x264 offers its fast preset");
                     report(document.outputEncoderSettings(selected).value("preset").toString() == "fast",
                            "selecting a preset updates the actual shared encode");
-                    choose(preset, QStringLiteral("Encoder default"));
+                    choose(preset, QStringLiteral("veryfast"));
                 }
                 auto* custom = visibleControl("encoderText_x264.options");
                 report(custom != nullptr, "x264 exposes its custom options");
@@ -3078,6 +3078,34 @@ int main(int argc, char** argv) {
                 if (videoEncoder) {
                     report(choose(videoEncoder, QStringLiteral("H.264 (NVENC)")),
                            "NVENC can be selected through the video encoder dropdown");
+                    auto* nvPreset = visibleControl("outputPreset");
+                    auto* profile = visibleControl("encoderOption_nvenc.profile");
+                    report(nvPreset && profile && nvPreset->property("value").toString() == "p5" &&
+                               profile->property("value").toString() == "high",
+                           "NVENC H.264 starts at P5 and High profile");
+                    if (nvPreset && profile) {
+                        report(!nvPreset->property("choices").toStringList().contains(QString{}) &&
+                                   !profile->property("choices").toStringList().contains(QString{}),
+                               "NVENC preset and profile menus contain no empty default option");
+                        report(choose(nvPreset, QStringLiteral("P6: Slower")), "NVENC P6 can be clicked");
+                        report(document.outputEncoderSettings(selected).value("preset").toString() == "p6",
+                               "NVENC preset selection persists in the document");
+                        profile = visibleControl("encoderOption_nvenc.profile");
+                        if (profile) {
+                            report(choose(profile, QStringLiteral("Main")), "NVENC Main profile can be clicked");
+                            report(document.outputEncoderSettings(selected).value("extra").toMap()
+                                       .value("nvenc.profile").toString() == "main",
+                                   "NVENC profile selection persists in the document");
+                        }
+                        QMetaObject::invokeMethod(manager, "close");
+                        QMetaObject::invokeMethod(manager, "openOutput", Q_ARG(QVariant, QVariant(selected)));
+                        settle();
+                        nvPreset = visibleControl("outputPreset");
+                        profile = visibleControl("encoderOption_nvenc.profile");
+                        report(nvPreset && profile && nvPreset->property("value").toString() == "p6" &&
+                                   profile->property("value").toString() == "main",
+                               "reopening the manager keeps the chosen NVENC preset and profile");
+                    }
                     auto* lookahead = visibleControl("encoderFlag_nvenc.lookahead");
                     report(lookahead && visibleControl("encoderOption_nvenc.multipass") &&
                                visibleControl("encoderNumber_nvenc.bframes"),
