@@ -71,9 +71,10 @@ struct Push {
     std::array<int, 4> flags{};
     std::array<float, 4> colour{};
     std::array<float, 4> opacity{};
+    std::array<int, 4> crop{};
 };
 
-static_assert(sizeof(Push) == 64);
+static_assert(sizeof(Push) == 80);
 } // namespace
 
 struct GpuCompositor::Impl {
@@ -419,6 +420,7 @@ struct GpuCompositor::Impl {
                 continue;
             Push push;
             push.rect = {r.x0, r.y0, r.x1, r.y1};
+            push.crop = op.crop;
             push.flags = {op.quarter, op.flip_x, op.flip_y, op.colour ? 0 : op.nested ? 2 : 1};
             push.opacity[0] = static_cast<float>(std::clamp(op.opacity, 0.0, 1.0));
             Image* input = &dest;

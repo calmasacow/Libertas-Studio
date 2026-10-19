@@ -68,6 +68,7 @@ LTEST_CASE(gpu_executes_the_shared_walk_for_opacity_precomps_rotations_and_flips
     auto node = project.scenes[0].roots[0];
     node.layout.size = {17, 13};
     node.transform.position = {-2, 3};
+    node.layout.crop = {1, 1, 2, 1};
     ldoc::Scene inner = project.scenes[0];
     inner.id = ldoc::Id::generate();
     inner.roots[0].blend.opacity = 0.7;
@@ -93,6 +94,7 @@ LTEST_CASE(gpu_executes_the_shared_walk_for_opacity_precomps_rotations_and_flips
     }
     // The other texture path is the real decoder, with RGBA instead of capture's BGRA.
     project.sources[0].type = "source.image";
+    project.scenes[0].roots[0].layout.crop = {};
     project.sources[0].settings["file"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/two.png";
     auto group = ldoc::make_node(ldoc::NodeKind::Group, "opacity group");
     group.blend.opacity = 0.5;

@@ -10,6 +10,7 @@ layout(push_constant) uniform Push {
     ivec4 flags; // quarter turn, flip X, flip Y, source kind (solid/sRGB/premultiplied linear)
     vec4 colour;
     vec4 opacity;
+    ivec4 crop;
 } p;
 
 int axis(int i, int dest, int src, bool flip) {
@@ -23,14 +24,16 @@ void main() {
     if (any(greaterThanEqual(pos, min(p.rect.zw, imageSize(target))))) return;
     vec4 s = p.colour;
     if (p.flags.w != 0) {
-        ivec2 i = pos-p.rect.xy, d = p.rect.zw-p.rect.xy, n = textureSize(source,0), uv;
+        ivec2 i = pos-p.rect.xy, d = p.rect.zw-p.rect.xy;
+        ivec2 n = textureSize(source,0)-p.crop.xy-p.crop.zw, uv;
+        if (any(lessThanEqual(n, ivec2(0)))) return;
         if (p.flags.x == 1) uv = ivec2(axis(i.y,d.y,n.x,false),axis(i.x,d.x,n.y,true));
         else if (p.flags.x == 2) uv = ivec2(axis(i.x,d.x,n.x,true),axis(i.y,d.y,n.y,true));
         else if (p.flags.x == 3) uv = ivec2(axis(i.y,d.y,n.x,true),axis(i.x,d.x,n.y,false));
         else uv = ivec2(axis(i.x,d.x,n.x,false),axis(i.y,d.y,n.y,false));
         if (p.flags.y != 0) uv.x = n.x-1-uv.x;
         if (p.flags.z != 0) uv.y = n.y-1-uv.y;
-        s = texelFetch(source,uv,0);
+        s = texelFetch(source,uv+p.crop.xy,0);
         if (p.flags.w == 1) s.rgb = linear_rgb(s.rgb);
     }
     if (p.flags.w != 2) s.rgb *= s.a;

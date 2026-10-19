@@ -197,6 +197,7 @@ struct DrawPlan;
 /// Resolved pixels and geometry; executors never interpret document nodes (ADR-0042).
 struct DrawOp {
     DrawRect rect;
+    std::array<int, 4> crop{}; // Source pixels: left, top, right, bottom.
     double opacity = 1;
     int quarter = 0;
     bool flip_x = false;

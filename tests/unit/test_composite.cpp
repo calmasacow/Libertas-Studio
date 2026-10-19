@@ -615,4 +615,21 @@ LTEST_CASE(extreme_placement_is_bounded_before_integer_conversion_or_axis_alloca
     CHECK_EQ(picture.gaps.front().reason, GapReason::UnsupportedTransform);
 }
 
+LTEST_CASE(cropping_samples_only_the_retained_source_pixels) {
+    auto source = screen_source("crop");
+    auto scene = scene_named("crop");
+    auto node = bound_to(source);
+    node.layout.crop = {1, 0, 1, 0};
+    node.layout.fit = ldoc::FitMode::Stretch;
+    node.layout.size = {4, 4};
+    scene.roots = {node};
+    auto project = show(4, scene, {source});
+    const std::vector<std::uint8_t> pixels = {0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255};
+    const auto picture = lcomp::composite_canvas(project, project.canvases[0].id,
+        [&](const ldoc::Source&) { return lcomp::CapturedPicture{3, 1, pixels.data(), pixels.size()}; });
+    CHECK_EQ(picture.status, PictureStatus::Complete);
+    CHECK_EQ(pixel(picture, 0, 0), std::tuple(0, 255, 0, 255));
+    CHECK_EQ(pixel(picture, 3, 3), std::tuple(0, 255, 0, 255));
+}
+
 LTEST_MAIN("composite")

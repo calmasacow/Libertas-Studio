@@ -109,6 +109,12 @@ std::optional<Unscaled> unscaled_content(const ldoc::Node& node, double natural_
     double sw = have_natural ? natural_w : bw;
     double sh = have_natural ? natural_h : bh;
     const ldoc::CropRect& crop = node.layout.crop;
+    for (double edge : {crop.left, crop.top, crop.right, crop.bottom}) {
+        if (!std::isfinite(edge) || edge < 0 || edge > kMaxPreviewEdge) {
+            why = GapReason::NoSize;
+            return std::nullopt;
+        }
+    }
     sw -= crop.left + crop.right;
     sh -= crop.top + crop.bottom;
     if (!(sw > 0.0) || !(sh > 0.0) || !std::isfinite(sw) || !std::isfinite(sh)) {
@@ -558,6 +564,8 @@ struct CanvasTarget {
 DrawOp operation(const ldoc::Node& node, const Px& rect, double opacity) {
     DrawOp op;
     op.rect = rect;
+    op.crop = {static_cast<int>(node.layout.crop.left), static_cast<int>(node.layout.crop.top),
+               static_cast<int>(node.layout.crop.right), static_cast<int>(node.layout.crop.bottom)};
     op.opacity = opacity;
     op.quarter = quarter_turn(node.transform.rotation_deg).value_or(0);
     op.flip_x = node.transform.scale.x < 0.0;
@@ -721,7 +729,7 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         GapReason why = GapReason::NoSize;
         const auto rect = place(node, target.picture.width, target.picture.height, true, why);
         if (!rect) { refuse(target.picture, node, why); return; }
-        const bool identity = rect->x0 == 0 && rect->y0 == 0 && rect->x1 == target.picture.width &&
+        const bool identity = !node.layout.crop.any() && rect->x0 == 0 && rect->y0 == 0 && rect->x1 == target.picture.width &&
             rect->y1 == target.picture.height && quarter_turn(node.transform.rotation_deg) == 0 &&
             node.transform.scale.x > 0 && node.transform.scale.y > 0;
         if (!identity) {
@@ -948,11 +956,18 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
             throw std::invalid_argument("CPU executor requires host pixels, not a device image");
         if (op.colour) {
             fill_rect(picture, op.rect, *op.colour, op.opacity);
-        } else if (op.nested) {
-            const Picture nested = execute_cpu(*op.nested, true);
-            blit(picture, op.rect, nested, op.opacity, op.quarter, op.flip_x, op.flip_y);
-        } else if (op.image.read_from() && !op.device_image) {
-            blit(picture, op.rect, op.image, op.opacity, op.quarter, op.flip_x, op.flip_y, op.bgra);
+        } else {
+            const Picture nested = op.nested ? execute_cpu(*op.nested, true) : Picture{};
+            const Picture& source = op.nested ? nested : op.image;
+            Picture view;
+            view.width = source.width - op.crop[0] - op.crop[2];
+            view.height = source.height - op.crop[1] - op.crop[3];
+            view.stride = source.stride;
+            if (source.read_from() && view.width > 0 && view.height > 0) {
+                view.borrowed = source.read_from() + static_cast<std::size_t>(op.crop[1]) *
+                    source.stride + static_cast<std::size_t>(op.crop[0]) * 4;
+                blit(picture, op.rect, view, op.opacity, op.quarter, op.flip_x, op.flip_y, op.bgra);
+            }
         }
     }
     return picture;

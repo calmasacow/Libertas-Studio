@@ -79,6 +79,10 @@ owning canvas; automatic tight bounds are deferred. Ungrouping a transformed gro
 until its transform is reset, so placement cannot silently change. Pixel, GPU parity and real
 UI interaction checks pass; the warning-free build and full suite pass 28/28.
 
+Source cropping now trims sampled pixels on both CPU and GPU, rather than squeezing the whole
+picture into cropped geometry. A red/green/blue strip check retains only green, and GPU parity
+checks cover cropped captures with every quarter turn and flip. Full suite remains 28/28.
+
 ADR-0044 adds `source.v4l2` capture through native V4L2 streaming and libswscale BGRA
 conversion. Add **Video Capture**, select a device, resolution and frame rate. Stable
 device paths exclude metadata nodes. Explicit modes fail instead of silently downgrading.
