@@ -429,7 +429,8 @@ const ldoc::Scene* program_scene(const ldoc::Project& project, const ldoc::Id& c
 /// recompositing a still picture for ever.
 bool is_live_source(std::string_view type) {
     return type == "source.screen" || type == "source.window" || type == "source.v4l2" ||
-           type == "source.browser" || type == "source.media";
+           type == "source.browser" || type == "source.media" || type == "source.text" ||
+           type == "source.slideshow" || type == "source.playlist";
 }
 
 /// Defined with the other screen helpers, further down beside the settings schema that also
@@ -472,6 +473,12 @@ bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, cons
             return screen_size(*src, width, height);
         if (src->type == "source.v4l2")
             return video_size(*src, width, height);
+        if (src->type == "source.text" || src->type == "source.media" ||
+            src->type == "source.slideshow" || src->type == "source.playlist" || src->type == "source.browser") {
+            width = number_setting(src->settings, "width").value_or(1920);
+            height = number_setting(src->settings, "height").value_or(1080);
+            return width > 0 && height > 0 && width <= 4096 && height <= 4096;
+        }
         return false;
     }
     if (const auto* pre = std::get_if<ldoc::PrecompData>(&node.data)) {
@@ -1480,11 +1487,28 @@ constexpr FieldSpec kMedia[] = {
     {"loop", "Loop", "bool", "", true},
     {"", "A media source in an emergency scene has to loop, or the safety net runs out part "
          "way through the emergency (ADR-0025).", "note"},
-    {"restartOnActivate", "Restart playback when the source becomes active", "bool", "", true},
     {"clearOnEnd", "Show nothing when playback ends", "bool", "", true},
-    {"closeWhenInactive", "Close the file when the source is not showing", "bool", "", false},
-    {"hardwareDecode", "Use hardware decoding when available", "bool", "", false},
     {"speedPercent", "Speed", "int", "", false, 100, "", "%"},
+    {"width", "Output width", "int", "", false, 1920, "", "px"},
+    {"height", "Output height", "int", "", false, 1080, "", "px"},
+    {"", "Playback restarts when shown. Video keeps its aspect ratio inside the output box.", "note"},
+};
+
+constexpr FieldSpec kSlideshow[] = {
+    {"files", "Image paths (one per line)", "multiline"},
+    {"intervalMs", "Slide duration", "int", "", false, 5000, "", "ms"},
+    {"loop", "Loop", "bool", "", true},
+    {"width", "Output width", "int", "", false, 1920, "", "px"},
+    {"height", "Output height", "int", "", false, 1080, "", "px"},
+};
+
+constexpr FieldSpec kPlaylist[] = {
+    {"files", "Media paths (one per line)", "multiline"},
+    {"loop", "Loop", "bool", "", true},
+    {"clearOnEnd", "Show nothing when playback ends", "bool", "", true},
+    {"speedPercent", "Speed", "int", "", false, 100, "", "%"},
+    {"width", "Output width", "int", "", false, 1920, "", "px"},
+    {"height", "Output height", "int", "", false, 1080, "", "px"},
 };
 
 constexpr FieldSpec kImage[] = {
@@ -1494,11 +1518,13 @@ constexpr FieldSpec kImage[] = {
 };
 
 constexpr FieldSpec kText[] = {
-    {"text", "Text", "text"},
+    {"text", "Text", "multiline"},
     {"font", "Font", "text", "Sans"},
     {"size", "Size", "int", "", false, 48, "", "px"},
     {"color", "Colour", "colour", "#ffffff"},
     {"alignment", "Alignment", "choice", "Left", false, 0, "Left|Centre|Right"},
+    {"width", "Output width", "int", "", false, 1920, "", "px"},
+    {"height", "Output height", "int", "", false, 1080, "", "px"},
 };
 
 constexpr FieldSpec kColour[] = {
@@ -1551,9 +1577,9 @@ constexpr FieldSpec kBrowser[] = {
     {"width", "Width", "int", "", false, 1920, "", "px"},
     {"height", "Height", "int", "", false, 1080, "", "px"},
     {"fps", "Frame rate", "int", "", false, 30, "", "fps"},
-    {"css", "Custom CSS", "text"},
-    {"shutdownWhenHidden", "Shut the page down when it is not showing", "bool", "", false},
-    {"refreshOnActivate", "Reload when the source becomes active", "bool", "", false},
+    {"css", "Custom CSS", "multiline"},
+    {"transparentBackground", "Transparent background", "bool", "", true},
+    {"", "The page reloads when shown. Browser audio is not routed to the mixer yet.", "note"},
 };
 
 constexpr FieldSpec kAudioInput[] = {
@@ -1669,6 +1695,8 @@ bool video_size(const ldoc::Source& src, double& width, double& height) {
 
 std::span<const FieldSpec> schema_for(std::string_view type) {
     if (type == "source.media")        return kMedia;
+    if (type == "source.slideshow")    return kSlideshow;
+    if (type == "source.playlist")     return kPlaylist;
     if (type == "source.image")        return kImage;
     if (type == "source.text")         return kText;
     if (type == "source.color")        return kColour;
@@ -1771,6 +1799,8 @@ QVariantList Document::sourceTypes() const {
     // list an operator is reading when it matters most (ADR-0025).
     static constexpr Entry kTypes[] = {
         {"source.media", "Media File", "\u25B6"},
+        {"source.slideshow", "Image Slide Show", "\u25A8"},
+        {"source.playlist", "Media Playlist (VLC equivalent)", "\u25B6"},
         {"source.image", "Image", "\u25A8"},
         {"source.text", "Text", "T"},
         {"source.color", "Colour", "\u25A0"},

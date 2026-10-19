@@ -72,7 +72,8 @@ constexpr std::array<std::string_view, 4> kSelfContainedSources = {
 /// in OBS too, and for a real reason: a window grab can carry that application's audio, while
 /// a display grab is a video capture with no audio stream behind it. Desktop audio is a
 /// separate source there, as it is here.
-constexpr std::array<std::string_view, 4> kSilentSources = {
+constexpr std::array<std::string_view, 5> kSilentSources = {
+    "source.slideshow",
     "source.image",
     "source.text",
     "source.color",

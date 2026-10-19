@@ -27,6 +27,20 @@ A guarded 32-bit shader division experiment measured 7.18 ms, insufficient evide
 extra branching; exact existing shader arithmetic remains. Larger gains need profiling the
 host upload path separately from the GPU-only screen path.
 
+### Native visual sources
+
+ADR-0045 adds the isolated `libertas-source` worker. Text uses Qt font shaping and rasterization;
+slideshows decode an ordered list of images; media and playlists use Qt's FFmpeg backend;
+browser pages use sandboxed Qt WebEngine. The worker publishes straight RGBA through the existing
+preview transport, and both compositors consume the same source snapshots. Explicit output
+dimensions drive editor handles and placement. Text and playlist fields support multiple lines.
+
+Worker checks assert real glyph pixels and transparency, changing slides, decoded moving video
+and local HTML colours. CPU and GPU renderer-process checks verify text placement. Browser
+rendering currently uses software frames and a host upload; profile before adding GPU sharing.
+Sources restart when reactivated. Browser and media audio routing is not yet implemented.
+Qt Multimedia and Qt WebEngine development packages are additional build requirements.
+
 ## Video capture update, 2026-10-18
 
 ADR-0044 adds `source.v4l2` capture through native V4L2 streaming and libswscale BGRA

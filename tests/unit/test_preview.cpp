@@ -215,6 +215,47 @@ LTEST_CASE(a_picture_crosses_the_process_and_the_renderer_exits_when_the_client_
     CHECK_EQ(count_fds(), fds_before);
 }
 
+LTEST_CASE(text_source_crosses_worker_and_renderer_and_obeys_placement) {
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends.has_value());
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child.has_value());
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000).has_value());
+    auto source = colour_source(1, 1, 1);
+    source.type = "source.text";
+    source.settings["text"] = std::string("Hi");
+    source.settings["size"] = std::int64_t{20};
+    source.settings["width"] = std::int64_t{32};
+    source.settings["height"] = std::int64_t{32};
+    auto node = bound_to(source);
+    node.layout.fit = ldoc::FitMode::Stretch;
+    node.layout.size = {32, 32};
+    node.transform.position = {32, 0};
+    ldoc::Scene scene;
+    scene.id = ldoc::Id::generate();
+    scene.roots = {node};
+    auto project = show(scene, {source});
+    project.canvases[0].width = 64;
+    project.canvases[0].height = 32;
+    bool ink = false;
+    for (int attempt = 0; attempt < 100 && !ink; ++attempt) {
+        const auto frame = commit(link, project);
+        if (frame.status == lcomp::PictureStatus::Complete) {
+            for (int y = 0; y < 32; ++y)
+                for (int x = 0; x < 64; ++x) {
+                    if (x < 32) CHECK_EQ(pixel(frame, x, y), std::make_tuple(0, 0, 0, 255));
+                    else ink = ink || std::get<0>(pixel(frame, x, y)) > 0;
+                }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+    link.quit();
+    link.close();
+    CHECK_EQ(reap(*child, 2000), 0);
+    CHECK(ink);
+}
+
 LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
     const char* connector = std::getenv("LIBERTAS_TEST_CAPTURE");
     const char* video = std::getenv("LIBERTAS_TEST_VIDEO");

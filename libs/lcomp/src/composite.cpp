@@ -700,7 +700,7 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
     target.drew = true;
     DrawOp op = operation(node, *rect, opacity);
     op.image = std::move(sampled);
-    op.bgra = true;
+    op.bgra = frame.bgra;
     op.device_image = frame.device_image;
     target.picture.ops.push_back(std::move(op));
 }
@@ -757,7 +757,9 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
             paint_image(*src, node, opacity, target);
             return;
         }
-        if (src->type == "source.screen" || src->type == "source.v4l2") {
+        if (src->type == "source.screen" || src->type == "source.v4l2" ||
+            src->type == "source.text" || src->type == "source.media" ||
+            src->type == "source.slideshow" || src->type == "source.playlist" || src->type == "source.browser") {
             paint_screen(*src, node, opacity, target);
             return;
         }

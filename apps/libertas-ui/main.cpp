@@ -1037,6 +1037,18 @@ int main(int argc, char** argv) {
         settle();
 
 
+        for (const char* type : {"source.text", "source.media", "source.slideshow", "source.playlist", "source.browser"}) {
+            document.addNewSourceToScene(QStringLiteral("Visual source check"), QString::fromLatin1(type));
+            const QString placed = document.selectedNode();
+            report(!document.placedRect(QString{}, placed).isEmpty(),
+                   "each visual worker source exposes its actual output box to transform tools");
+            document.setNodeScale(0.5, 1.0);
+            report(std::abs(document.placedRect(QString{}, placed).value("width").toDouble() - 960.0) < 1.0,
+                   "resizing a worker source updates its visible transform rectangle");
+            document.undo();
+            document.undo();
+        }
+
         // ---- a source's own settings, behind the gear -------------------------------------
         //
         // The dialog commits nothing until it is accepted, so what is checked is the commit:
@@ -1095,7 +1107,7 @@ int main(int argc, char** argv) {
             QVariantMap edited = browser.value("settings").toMap();
             edited["url"] = QStringLiteral("https://example.invalid/overlay");
             edited["fps"] = 60;
-            edited["shutdownWhenHidden"] = true;
+            edited["transparentBackground"] = true;
             document.applySourceSettings(browser_id, QStringLiteral("Overlay"), edited);
             settle();
             const QVariantMap after = document.sourceDetails(browser_id);
@@ -1105,7 +1117,7 @@ int main(int argc, char** argv) {
                        QLatin1String("https://example.invalid/overlay"),
                    "and stores what was typed");
             report(after.value("settings").toMap().value("fps").toInt() == 60 &&
-                       after.value("settings").toMap().value("shutdownWhenHidden").toBool(),
+                       after.value("settings").toMap().value("transparentBackground").toBool(),
                    "a number stays a number and a checkbox a boolean");
             report(document.undoDescription() != undo_before_settings,
                    "as one undo step for the whole panel");

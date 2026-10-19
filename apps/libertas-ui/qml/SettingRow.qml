@@ -38,6 +38,7 @@ Item {
             case "int":    return intRow;
             case "choice": return choiceRow;
             case "colour": return colourRow;
+            case "multiline": return multilineRow;
             default:       return textRow;
             }
         }
@@ -118,6 +119,41 @@ Item {
             labelAlign: Text.AlignRight
             value: row.currentValue === undefined ? "#000000" : String(row.currentValue)
             onCommitted: newValue => row.committed(newValue)
+        }
+    }
+
+    Component {
+        id: multilineRow
+        Item {
+            implicitHeight: 100
+            Text {
+                width: row.labelWidth - 4
+                text: row.field.label
+                color: Theme.c.textMuted
+                font.pixelSize: 11
+                horizontalAlignment: Text.AlignRight
+                wrapMode: Text.WordWrap
+            }
+            Rectangle {
+                x: row.labelWidth + 4
+                width: Math.max(40, parent.width - x)
+                height: parent.height - 4
+                color: "transparent"
+                border.color: Theme.c.textMuted
+                clip: true
+                TextEdit {
+                    anchors.fill: parent
+                    anchors.margins: 4
+                    text: row.currentValue === undefined ? "" : String(row.currentValue)
+                    color: Theme.c.text
+                    font.pixelSize: 12
+                    wrapMode: TextEdit.Wrap
+                    selectByMouse: true
+                    textFormat: TextEdit.PlainText
+                    Accessible.name: row.field.label
+                    onTextChanged: if (activeFocus) row.committed(text)
+                }
+            }
         }
     }
 

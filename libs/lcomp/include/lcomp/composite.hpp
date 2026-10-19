@@ -170,6 +170,8 @@ struct CapturedPicture {
     /// Its lease must outlive execution of the draw plan. CPU callers supply pixels instead.
     const void* device_image = nullptr;
 
+    bool bgra = true;
+
     [[nodiscard]] bool empty() const { return (pixels == nullptr || size == 0) && !device_image; }
 };
 

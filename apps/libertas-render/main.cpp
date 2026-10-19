@@ -6,6 +6,7 @@
 
 #include "lcomp/preview.hpp"
 #include "lipc/fd.hpp"
+#include "source_worker.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -83,6 +84,10 @@ class Renderer {
     }
 
     bool fresh() const {
+        for (const auto& [id, session] : workers_) {
+            std::lock_guard lock(session->mu);
+            if (session->sequence != session->drawn) return true;
+        }
         for (const auto& [id, session] : videos_) {
             std::lock_guard lock(session->mu);
             if (session->sequence != session->drawn) return true;
@@ -96,6 +101,14 @@ class Renderer {
     }
 
     void done() {
+        for (const auto& [id, snapshot] : worker_held_) {
+            auto& session = *workers_.at(id);
+            std::lock_guard lock(session.mu);
+            session.drawn = snapshot.second;
+        }
+        worker_held_.clear();
+        std::erase_if(workers_, [this](const auto& item) { return !worker_wanted_.contains(item.first); });
+        worker_wanted_.clear();
         for (const auto& [id, snapshot] : video_held_) {
             auto& session = *videos_.at(id);
             std::lock_guard lock(session.mu);
@@ -116,6 +129,48 @@ class Renderer {
     }
 
   private:
+    struct WorkerSession {
+        ldoc::Source source;
+        std::mutex mu;
+        std::shared_ptr<const lcomp::PreviewFrame> last;
+        std::uint64_t sequence = 0, drawn = 0;
+        std::unique_ptr<SourceWorker> worker;
+        ~WorkerSession() { worker.reset(); }
+    };
+    std::map<std::string, std::unique_ptr<WorkerSession>> workers_;
+    std::map<std::string, std::pair<std::shared_ptr<const lcomp::PreviewFrame>, std::uint64_t>> worker_held_;
+    std::set<std::string> worker_wanted_;
+
+    lcomp::CapturedPicture worker_frame(const ldoc::Source& source) {
+        const auto id = source.id.to_string();
+        worker_wanted_.insert(id);
+        auto existing = workers_.find(id);
+        if (existing != workers_.end() &&
+            (existing->second->source.settings != source.settings || existing->second->source.type != source.type)) {
+            worker_held_.erase(id);
+            workers_.erase(existing);
+        }
+        if (!workers_.contains(id)) {
+            auto session = std::make_unique<WorkerSession>();
+            session->source = source;
+            auto* ptr = session.get();
+            session->worker = std::make_unique<SourceWorker>(source, [ptr](auto frame) {
+                std::lock_guard lock(ptr->mu);
+                ptr->last = std::move(frame);
+                ++ptr->sequence;
+            });
+            workers_.emplace(id, std::move(session));
+        }
+        if (!worker_held_.contains(id)) {
+            auto& session = *workers_.at(id);
+            std::lock_guard lock(session.mu);
+            worker_held_.emplace(id, std::make_pair(session.last, session.sequence));
+        }
+        const auto& image = worker_held_.at(id).first;
+        if (!image) return {};
+        return {image->width, image->height, image->pixels.data(), image->pixels.size(), nullptr, false};
+    }
+
     struct VideoSession {
         ldoc::Source source;
         std::mutex mu;
@@ -135,6 +190,9 @@ class Renderer {
         return {};
     }
     lcomp::CapturedPicture source_frame(const ldoc::Source& source, bool gpu) {
+        if (source.type == "source.text" || source.type == "source.media" ||
+            source.type == "source.slideshow" || source.type == "source.playlist" || source.type == "source.browser")
+            return worker_frame(source);
         if (source.type != "source.v4l2") return frame(setting(source, "output"), gpu);
         const auto id = source.id.to_string();
         video_wanted_.insert(id);

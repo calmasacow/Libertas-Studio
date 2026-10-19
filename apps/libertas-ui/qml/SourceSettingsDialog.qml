@@ -310,8 +310,8 @@ Item {
                           ? (still.status === Image.Error
                              ? qsTr("could not read that image")
                              : qsTr("reading the image"))
-                          : dialog.typeId === "source.v4l2"
-                            ? qsTr("Video appears in Program after applying these settings")
+                          : ["source.v4l2", "source.text", "source.media", "source.slideshow", "source.playlist", "source.browser"].includes(dialog.typeId)
+                            ? qsTr("Source appears in Program after applying these settings")
                             : qsTr("no pipeline attached")
                     font.pixelSize: 11
                     color: Theme.c.textMuted

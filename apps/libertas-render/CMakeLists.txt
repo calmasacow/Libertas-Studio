@@ -8,7 +8,10 @@
 
 add_executable(libertas-render
     main.cpp
+    source_worker.cpp
 )
+add_dependencies(libertas-render libertas-source)
+target_compile_definitions(libertas-render PRIVATE LIBERTAS_SOURCE_EXE="$<TARGET_FILE:libertas-source>")
 
 target_link_libraries(libertas-render PRIVATE
     libertas::flags

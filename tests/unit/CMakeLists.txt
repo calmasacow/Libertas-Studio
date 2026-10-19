@@ -17,6 +17,12 @@ endfunction()
 libertas_unit_test(test_actions          libertas::lsession)
 libertas_unit_test(test_capture          libertas::lcapture)
 libertas_unit_test(test_video            libertas::lcapture)
+libertas_unit_test(test_source_worker    libertas::lcomp libertas::lcore)
+target_sources(test_source_worker PRIVATE ../../apps/libertas-render/source_worker.cpp)
+target_compile_definitions(test_source_worker PRIVATE
+    LIBERTAS_SOURCE_EXE="$<TARGET_FILE:libertas-source>"
+    LIBERTAS_IMAGE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/images")
+add_dependencies(test_source_worker libertas-source)
 libertas_unit_test(test_command          libertas::ldoc)
 libertas_unit_test(test_composite        libertas::lcomp)
 target_compile_definitions(test_composite PRIVATE

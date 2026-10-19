@@ -56,6 +56,7 @@ add_subdirectory(libs/lcomp)
 add_subdirectory(libs/lcapture)
 add_subdirectory(libs/lrhi)
 add_subdirectory(apps/libertas)
+add_subdirectory(apps/libertas-source)
 add_subdirectory(apps/libertas-render)
 add_subdirectory(apps/libertas-ui)
 
