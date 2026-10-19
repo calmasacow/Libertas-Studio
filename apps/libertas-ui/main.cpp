@@ -3613,6 +3613,40 @@ int main(int argc, char** argv) {
                 report(collect(window->contentItem(), QStringLiteral("encodeBlock")).size() ==
                            document.encodeCount(),
                        "and draws a block for every encode, which is the GPU's side of it");
+                const auto managerFrames = collect(mgr, QStringLiteral("outputsManagerFrame"));
+                const auto titles = collect(mgr, QStringLiteral("outputsManagerTitle"));
+                const auto corners = collect(mgr, QStringLiteral("outputsManagerResize_%1")
+                    .arg(static_cast<int>(Qt::RightEdge | Qt::BottomEdge)));
+                report(!managerFrames.isEmpty() && !titles.isEmpty() && !corners.isEmpty(),
+                       "output manager exposes title drag and corner resize handles");
+                if (!managerFrames.isEmpty() && !titles.isEmpty() && !corners.isEmpty()) {
+                    auto* frame = managerFrames.front();
+                    const auto original = QRectF(frame->position(), frame->size());
+                    auto drag = [&](QQuickItem* handle, const QPointF& delta) {
+                        const auto start = handle->mapToScene(QPointF(handle->width() / 2,
+                                                                      handle->height() / 2));
+                        post(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+                        post(QEvent::MouseMove, start + delta / 2, Qt::NoButton, Qt::LeftButton);
+                        post(QEvent::MouseMove, start + delta, Qt::NoButton, Qt::LeftButton);
+                        post(QEvent::MouseButtonRelease, start + delta, Qt::LeftButton, Qt::NoButton);
+                        settle();
+                    };
+                    drag(titles.front(), QPointF(-40, 20));
+                    report(frame->position() != original.topLeft() && frame->size() == original.size(),
+                           "dragging the title moves the output manager without resizing it");
+                    drag(corners.front(), QPointF(-80, -60));
+                    report(frame->width() < original.width() && frame->height() < original.height(),
+                           "dragging the corner resizes the actual output manager");
+                    drag(corners.front(), QPointF(-2000, -2000));
+                    report(frame->width() == frame->property("minimumWidth").toDouble() &&
+                               frame->height() == frame->property("minimumHeight").toDouble(),
+                           "resizing stops at the manager's minimum usable size");
+                    frame->setX(original.x());
+                    frame->setY(original.y());
+                    frame->setWidth(original.width());
+                    frame->setHeight(original.height());
+                    settle();
+                }
                 if (parser.isSet(shot_opt))
                     grab().save(parser.value(shot_opt) + QStringLiteral("/outputs-manager.png"));
                 QMetaObject::invokeMethod(mgr, "close");

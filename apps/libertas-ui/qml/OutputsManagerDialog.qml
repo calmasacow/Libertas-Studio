@@ -82,6 +82,14 @@ Item {
     }
 
     function open() {
+        if (!frame.geometryInitialized) {
+            frame.width = Math.min(dialog.width - 48, 760);
+            frame.height = Math.min(dialog.height - 48, 560);
+            frame.x = (dialog.width - frame.width) / 2;
+            frame.y = (dialog.height - frame.height) / 2;
+            frame.geometryInitialized = true;
+        }
+        frame.fitToWindow();
         selectedOutputId = "";
         selectedDestinationId = "";
         scroll.contentY = 0;
@@ -112,9 +120,28 @@ Item {
     Rectangle {
         id: frame
 
-        anchors.centerIn: parent
+        objectName: "outputsManagerFrame"
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
         width: Math.min(parent.width - 48, 760)
         height: Math.min(parent.height - 48, 560)
+        property bool geometryInitialized: false
+        readonly property real minimumWidth: Math.min(480, dialog.width - 16)
+        readonly property real minimumHeight: Math.min(300, dialog.height - 16)
+
+        function fitToWindow() {
+            width = Math.max(minimumWidth, Math.min(width, dialog.width - 16));
+            height = Math.max(minimumHeight, Math.min(height, dialog.height - 16));
+            x = Math.max(8, Math.min(x, dialog.width - width - 8));
+            y = Math.max(8, Math.min(y, dialog.height - height - 8));
+        }
+
+        Connections {
+            target: dialog
+            function onWidthChanged() { if (frame.geometryInitialized) frame.fitToWindow(); }
+            function onHeightChanged() { if (frame.geometryInitialized) frame.fitToWindow(); }
+        }
+
         color: Theme.c.panelBackground
         border.width: 1
         border.color: Theme.c.accent
@@ -134,6 +161,17 @@ Item {
             anchors.margins: 1
             height: 34
             color: Theme.c.panelHeader
+
+            MouseArea {
+                objectName: "outputsManagerTitle"
+                anchors.fill: parent
+                cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                drag.target: frame
+                drag.minimumX: 8
+                drag.minimumY: 8
+                drag.maximumX: Math.max(8, dialog.width - frame.width - 8)
+                drag.maximumY: Math.max(8, dialog.height - frame.height - 8)
+            }
 
             Column {
                 anchors.left: parent.left
@@ -783,6 +821,57 @@ Item {
                 text: qsTr("Close")
                 primary: true
                 onClicked: dialog.close()
+            }
+        }
+
+        Repeater {
+            model: [Qt.LeftEdge, Qt.RightEdge, Qt.TopEdge, Qt.BottomEdge,
+                    Qt.LeftEdge | Qt.TopEdge, Qt.RightEdge | Qt.TopEdge,
+                    Qt.LeftEdge | Qt.BottomEdge, Qt.RightEdge | Qt.BottomEdge]
+
+            delegate: MouseArea {
+                id: handle
+                required property int modelData
+                readonly property bool fromLeft: (modelData & Qt.LeftEdge) !== 0
+                readonly property bool fromRight: (modelData & Qt.RightEdge) !== 0
+                readonly property bool fromTop: (modelData & Qt.TopEdge) !== 0
+                readonly property bool fromBottom: (modelData & Qt.BottomEdge) !== 0
+                property point origin
+                property rect original
+                objectName: "outputsManagerResize_" + modelData
+                z: 10
+                x: fromRight ? frame.width - 8 : fromLeft ? 0 : 8
+                y: fromBottom ? frame.height - 8 : fromTop ? 0 : 8
+                width: fromLeft || fromRight ? 8 : frame.width - 16
+                height: fromTop || fromBottom ? 8 : frame.height - 16
+                cursorShape: (fromLeft || fromRight) && (fromTop || fromBottom)
+                    ? (fromLeft === fromTop ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor)
+                    : fromLeft || fromRight ? Qt.SizeHorCursor : Qt.SizeVerCursor
+
+                onPressed: mouse => {
+                    origin = mapToItem(dialog, mouse.x, mouse.y);
+                    original = Qt.rect(frame.x, frame.y, frame.width, frame.height);
+                }
+                onPositionChanged: mouse => {
+                    if (!pressed) return;
+                    const at = mapToItem(dialog, mouse.x, mouse.y);
+                    const dx = at.x - origin.x;
+                    const dy = at.y - origin.y;
+                    const x1 = fromLeft ? Math.max(8, Math.min(original.x + dx,
+                        original.x + original.width - frame.minimumWidth)) : original.x;
+                    const y1 = fromTop ? Math.max(8, Math.min(original.y + dy,
+                        original.y + original.height - frame.minimumHeight)) : original.y;
+                    const x2 = fromRight ? Math.min(dialog.width - 8, Math.max(
+                        original.x + frame.minimumWidth, original.x + original.width + dx))
+                        : original.x + original.width;
+                    const y2 = fromBottom ? Math.min(dialog.height - 8, Math.max(
+                        original.y + frame.minimumHeight, original.y + original.height + dy))
+                        : original.y + original.height;
+                    frame.x = x1;
+                    frame.y = y1;
+                    frame.width = x2 - x1;
+                    frame.height = y2 - y1;
+                }
             }
         }
     }
