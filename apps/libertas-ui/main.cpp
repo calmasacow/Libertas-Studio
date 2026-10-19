@@ -3047,6 +3047,18 @@ int main(int argc, char** argv) {
                 auto choose = [&](QQuickItem* field, const QString& text) {
                     reveal(field);
                     click(field);
+                    bool besideField = false;
+                    for (auto* popup : collect(window->contentItem(), QStringLiteral("choicePopup"))) {
+                        if (!popup->isVisible()) continue;
+                        const auto fieldAt = field->mapToScene(QPointF(
+                            field->property("labelWidth").toDouble() + 4,
+                            (field->height() - 18) / 2));
+                        const auto popupAt = popup->mapToScene(QPointF{});
+                        besideField = std::abs(popupAt.x() - fieldAt.x()) < 3 &&
+                            (std::abs(popupAt.y() - fieldAt.y() - 20) < 3 ||
+                             std::abs(popupAt.y() + popup->height() - fieldAt.y()) < 3);
+                    }
+                    report(besideField, "dropdown opens beside its field after scrolling");
                     QList<QQuickItem*> pending{window->contentItem()};
                     while (!pending.isEmpty()) {
                         auto* item = pending.takeLast();

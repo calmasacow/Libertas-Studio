@@ -27,6 +27,8 @@ Item {
 
     implicitHeight: 20
 
+    onVisibleChanged: if (!visible) popup.visible = false
+
     Text {
         id: caption
 
@@ -98,6 +100,7 @@ Item {
     Rectangle {
         id: popup
 
+        objectName: "choicePopup"
         parent: field.Window.contentItem
         visible: false
         z: 401
@@ -108,16 +111,20 @@ Item {
         border.color: Theme.c.accent
         radius: 2
 
-        x: {
-            const at = box.mapToItem(parent, 0, 0);
-            return Math.max(2, Math.min(at.x, parent.width - width - 2));
-        }
-        y: {
+        function place() {
             const at = box.mapToItem(parent, 0, box.height);
+            x = Math.max(2, Math.min(at.x, parent.width - width - 2));
             // Flip above when there is no room below, so the last entry is never off-screen.
-            return at.y + height > parent.height - 2
+            y = at.y + height > parent.height - 2
                  ? Math.max(2, at.y - box.height - height)
                  : at.y + 2;
+        }
+
+        onVisibleChanged: {
+            if (visible) {
+                choiceList.forceLayout();
+                place();
+            }
         }
 
         ListView {
