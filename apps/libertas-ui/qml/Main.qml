@@ -87,12 +87,20 @@ Window {
         }
     }
 
+    MainMenu {
+        id: mainMenu
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        mainWindow: root
+    }
+
     WorkspaceTabs {
         id: workspaceTabs
 
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: parent.top
+        anchors.top: mainMenu.bottom
     }
 
     Item {
@@ -274,6 +282,8 @@ Window {
 
     StatusBar {
         id: statusBar
+        visible: mainMenu.statusBarVisible
+        height: visible ? 26 : 0
 
         anchors.left: parent.left
         anchors.right: parent.right

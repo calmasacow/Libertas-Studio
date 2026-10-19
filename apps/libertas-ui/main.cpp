@@ -301,6 +301,7 @@ int main(int argc, char** argv) {
             return -1;
         };
 
+
         const QList<QQuickItem*> frames =
             collect(window->contentItem(), QStringLiteral("panelFrame"));
         report(frames.size() == 6, "six panel items exist in the scene graph");
@@ -389,6 +390,36 @@ int main(int argc, char** argv) {
         // The caption updates in the same event as the frame. The image paints on the next
         // pass, and a picture that appears between the two drag grabs is counted as spill.
         settle();
+        {
+            const auto menus = collect(window->contentItem(), QStringLiteral("mainMenu"));
+            const auto headings = collect(window->contentItem(), QStringLiteral("mainMenuHeading"));
+            report(menus.size() == 1 && headings.size() == 8,
+                   "the application menu exposes all eight headings");
+            for (auto* heading : headings) {
+                if (!heading->property("text").toString().contains(QStringLiteral("View")))
+                    continue;
+                const auto at = heading->mapToScene(QPointF(heading->width() / 2, heading->height() / 2));
+                post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                settle();
+                const auto items = collect(window->contentItem(), QStringLiteral("menuStatusBar"));
+                report(items.size() == 1 && items.front()->isVisible(), "View opens its real menu");
+                if (!items.isEmpty() && !menus.isEmpty()) {
+                    auto* item = items.front();
+                    const auto point = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
+                    post(QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, point, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    report(!menus.front()->property("statusBarVisible").toBool(),
+                           "the Status Bar menu action changes the visible chrome");
+                    menus.front()->setProperty("statusBarVisible", true);
+                }
+                QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+                QCoreApplication::sendEvent(window, &escape);
+                break;
+            }
+        }
+
         const QImage resting = grab();
         report(!resting.isNull() && resting.width() > 0, "the window renders a frame at rest");
 
@@ -2944,6 +2975,25 @@ int main(int argc, char** argv) {
                "and the panel draws it once the tab is brought forward");
         report(!out_at(outputs_before, "isEnabled").toBool(),
                "disabled, because an enabled one would be a keystroke from going live");
+
+        {
+            const auto rows = collect(window->contentItem(), QStringLiteral("outputBlock"));
+            const auto buttons = collect(window->contentItem(), QStringLiteral("outputSettingsButton"));
+            const auto start = collect(window->contentItem(), QStringLiteral("startAllOutputs"));
+            report(!start.isEmpty() && !start.front()->isEnabled(),
+                   "Start All cannot pretend to encode before an output engine exists");
+            if (!rows.isEmpty() && !buttons.isEmpty()) {
+                report(!rows.front()->property("expanded").toBool(), "output settings start collapsed");
+                auto* button = buttons.front();
+                const auto at = button->mapToScene(QPointF(button->width() / 2, button->height() / 2));
+                post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                settle();
+                report(rows.front()->property("expanded").toBool(),
+                       "the output settings button opens its actual editor");
+                rows.front()->setProperty("expanded", false);
+            }
+        }
 
         const QString out_id = out_at(outputs_before, "outputId").toString();
         document.setOutputEncoder(out_id, QStringLiteral("hevc"), QStringLiteral("nvenc"));

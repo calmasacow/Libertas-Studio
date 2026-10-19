@@ -25,6 +25,13 @@ Rectangle {
 
     signal clicked
 
+    activeFocusOnTab: true
+    Accessible.role: Accessible.Button
+    Accessible.name: tip || label
+    Accessible.onPressAction: if (button.enabled) button.clicked()
+    Keys.onReturnPressed: button.clicked()
+    Keys.onSpacePressed: button.clicked()
+
     implicitWidth: 22
     implicitHeight: 20
     radius: 2
@@ -35,7 +42,7 @@ Rectangle {
          : "transparent"
     border.width: 1
     border.color: !button.enabled ? "transparent"
-                : mouse.containsMouse || button.active ? Theme.c.accent
+                : mouse.containsMouse || button.active || button.activeFocus ? Theme.c.accent
                 : Theme.c.border
 
     Behavior on color {

@@ -14,7 +14,7 @@ import Libertas
 /// then wanted out of the way, while program and preview are touched constantly. Keeping them
 /// together meant one of the two was always in the way of the other.
 ///
-/// Nothing here encodes anything; there is no render process yet and the footer says so. An
+/// Output transport is not connected yet; the footer says so. An
 /// output is born disabled, because one that arrived enabled and pointed somewhere would be a
 /// keystroke from going to a destination nobody chose.
 
@@ -28,6 +28,12 @@ Item {
 
         objectName: "outputsManagerDialog"
         parent: panel.Window.contentItem
+    }
+
+    StripMenu {
+        id: outputMenu
+        parent: panel.Window.contentItem
+        z: 100
     }
 
     Flickable {
@@ -76,17 +82,16 @@ Item {
 
                     objectName: "outputBlock"
                     width: content.width
-                    height: outColumn.height + 10
+                    height: outColumn.height + 8
                     property bool expanded: false
 
                     Rectangle {
                         anchors.fill: parent
                         anchors.margins: 4
                         radius: 2
-                        color: output.isEnabled ? Theme.c.panelHeaderActive : "transparent"
+                        color: "transparent"
                         border.width: 1
                         border.color: output.misconfigured ? Theme.c.error
-                                    : output.isEnabled ? Theme.c.good
                                     : Theme.c.border
                     }
 
@@ -103,69 +108,113 @@ Item {
 
                         Item {
                             width: parent.width
-                            height: 18
+                            height: 32
 
-                            CheckLabel {
+                            MouseArea {
+                                id: rowMouse
+                                anchors.fill: parent
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                onDoubleClicked: output.expanded = !output.expanded
+                                onClicked: mouse => {
+                                    if (mouse.button !== Qt.RightButton) return;
+                                    const at = mapToItem(outputMenu, mouse.x, mouse.y);
+                                    outputMenu.popup(at.x, at.y, [
+                                        {text: qsTr("Settings"), action: () => { output.expanded = true; }},
+                                        {text: qsTr("Include in output configuration"), checked: output.isEnabled,
+                                         action: () => Document.setOutputEnabled(output.outputId, !output.isEnabled)},
+                                        {separator: true},
+                                        {text: qsTr("Remove output"), action: () => Document.removeOutput(output.outputId)}
+                                    ]);
+                                }
+                            }
+
+                            Rectangle {
+                                id: badge
+                                width: 24
+                                height: 24
                                 anchors.left: parent.left
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: output.name
-                                checked: output.isEnabled
-                                onToggled: Document.setOutputEnabled(output.outputId,
-                                                                     !output.isEnabled)
+                                radius: 5
+                                color: Theme.c.panelHeaderActive
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: output.destinationKind === "file" ? "REC" : "LIVE"
+                                    font.pixelSize: 8
+                                    font.bold: true
+                                    color: output.destinationKind === "file" ? Theme.c.error : Theme.c.accent
+                                }
                             }
-
                             Row {
+                                anchors.left: badge.right
+                                anchors.leftMargin: 6
+                                anchors.right: outputAction.left
+                                anchors.rightMargin: 6
+                                anchors.verticalCenter: parent.verticalCenter
+                                Text {
+                                    width: parent.width * 0.38
+                                    text: output.name
+                                    font.pixelSize: 11
+                                    color: output.misconfigured ? Theme.c.error : Theme.c.text
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: parent.width * 0.29
+                                    text: output.canvasName
+                                    font.pixelSize: 11
+                                    color: Theme.c.textMuted
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: parent.width * 0.33
+                                    text: output.encodeName
+                                    font.pixelSize: 11
+                                    color: Theme.c.text
+                                    elide: Text.ElideRight
+                                }
+                            }
+                            ToolButton {
+                                id: outputAction
+                                objectName: "outputSettingsButton"
+                                anchors.right: parent.right
+                                anchors.rightMargin: 32
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 30
+                                height: 26
+                                label: "\u2699"
+                                tip: qsTr("Settings for %1. Output is not running.").arg(output.name)
+                                onClicked: output.expanded = !output.expanded
+                            }
+                            ToolButton {
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
-                                spacing: 4
-
-                                ToolButton {
-                                    label: output.expanded ? "▴" : "▾"
-                                    tip: qsTr("Encoder and destination")
-                                    onClicked: output.expanded = !output.expanded
-                                }
-
-                                ToolButton {
-                                    label: "−"
-                                    tip: qsTr("Remove this output")
-                                    onClicked: Document.removeOutput(output.outputId)
-                                }
+                                width: 26
+                                height: 26
+                                label: output.destinationKind === "file" ? "\u25cf" : "\u25b6"
+                                enabled: false
+                                tip: qsTr("Start output - not available yet")
                             }
                         }
 
+                        CheckLabel {
+                            visible: output.expanded
+                            text: qsTr("Include in output configuration (not running)")
+                            checked: output.isEnabled
+                            onToggled: Document.setOutputEnabled(output.outputId, !output.isEnabled)
+                        }
                         Text {
+                            visible: output.expanded
                             width: parent.width
-                            // The resolution is the encode's, not the canvas's: an encode that
-                            // rescales sends something other than its canvas, and naming only
-                            // the canvas here said 1440p for a 1080p stream.
-                            text: output.canvasName + " → " + output.resolution + " · " +
-                                  output.codec + "/" + output.implementation + " · " +
-                                  output.bitrateKbps + " kbps"
-                            font.pixelSize: 9
+                            text: output.resolution + " / " + output.bitrateKbps + " kbps" +
+                                  (output.sharedWith.length ? qsTr(" - shared with %1").arg(output.sharedWith.join(", ")) : "")
+                            font.pixelSize: 10
                             color: Theme.c.textMuted
-                            elide: Text.ElideRight
+                            wrapMode: Text.WordWrap
                         }
-
-                        // One encode feeding several destinations is the point of ADR-0029, and
-                        // identical numbers on two rows do not say it -- two separate encodes
-                        // configured alike look the same. Say it in words, on the row.
                         Text {
-                            width: parent.width
-                            visible: output.sharedWith.length > 0
-                            text: qsTr("↳ shares the “%1” encode with %2")
-                                      .arg(output.encodeName)
-                                      .arg(output.sharedWith.join(qsTr(", ")))
-                            font.pixelSize: 9
-                            color: Theme.c.accent
-                            elide: Text.ElideRight
-                        }
-
-                        Text {
-                            width: parent.width
-                            visible: output.misconfigured
-                            text: qsTr("⚠ enabled with no destination")
-                            font.pixelSize: 9
+                            visible: output.expanded && output.misconfigured
+                            text: qsTr("Enabled with no destination")
                             color: Theme.c.error
+                            font.pixelSize: 10
                         }
 
                         ChoiceField {
@@ -342,11 +391,40 @@ Item {
                 }
             }
 
+            Repeater {
+                model: [qsTr("Built-in backtrack"), qsTr("Built-in virtual camera")]
+                delegate: Item {
+                    required property string modelData
+                    width: content.width
+                    height: 38
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 12
+                        anchors.right: pending.left
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData
+                        color: Theme.c.textMuted
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        id: pending
+                        anchors.right: parent.right
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Not available")
+                        color: Theme.c.textMuted
+                        font.pixelSize: 10
+                    }
+                }
+            }
+
             Text {
                 width: content.width
                 visible: Document.outputs.rowCount() === 0
                 padding: 10
-                text: qsTr("No outputs. An output is one encode of one canvas going to one place.")
+                text: qsTr("No destinations. Use + to add an output.")
                 font.pixelSize: 10
                 color: Theme.c.textMuted
                 wrapMode: Text.WordWrap
@@ -394,6 +472,20 @@ Item {
                 tip: qsTr("Outputs manager — encodes and what shares them")
                 onClicked: managerDialog.open()
             }
+
+            ToolButton {
+                objectName: "startAllOutputs"
+                width: 72
+                label: qsTr("Start All")
+                enabled: false
+                tip: qsTr("Output engine is not connected yet")
+            }
+            ToolButton {
+                label: "\u25a0"
+                enabled: false
+                tip: qsTr("Stop all outputs - not available yet")
+            }
+
         }
 
         // Beside the buttons and elided, not centred on the footer. Centring put it underneath
@@ -406,7 +498,7 @@ Item {
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
             horizontalAlignment: Text.AlignRight
-            text: qsTr("no render process — nothing is encoding")
+            text: qsTr("Not encoding")
             font.pixelSize: 9
             color: Theme.c.textMuted
             opacity: 0.6

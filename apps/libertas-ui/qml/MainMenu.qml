@@ -1,0 +1,268 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQml
+import QtQuick.Controls as Controls
+import Libertas
+
+Controls.MenuBar {
+    id: bar
+    objectName: "mainMenu"
+    required property var mainWindow
+    property bool statusBarVisible: true
+    readonly property bool editable: Document.selectedNode !== "" && !Document.nodeProperties.locked
+    readonly property var extraPanels: {
+        const revision = Workspace.revision;
+        const ids = Workspace.closedPanels.slice();
+        for (let i = 0; i < Workspace.panelCount; ++i) {
+            for (const id of Workspace.panelAt(i).tabs) {
+                if (ids.indexOf(id) < 0) ids.push(id);
+            }
+        }
+        return ids.filter(id => id.indexOf(":") >= 0);
+    }
+    function showPanel(id) {
+        Workspace.openPanel(id);
+        Workspace.activate(id);
+    }
+
+    implicitHeight: 28
+    background: Rectangle { color: Theme.c.panelHeader }
+    delegate: Controls.MenuBarItem {
+        id: heading
+        objectName: "mainMenuHeading"
+        implicitHeight: 28
+        font.pixelSize: 12
+        contentItem: Text {
+            text: heading.text.replace(/&/g, "")
+            font: heading.font
+            color: Theme.c.text
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            color: heading.highlighted ? Theme.c.panelHeaderActive : "transparent"
+        }
+    }
+
+    component Entry: Controls.MenuItem {
+        id: entry
+        implicitHeight: 28
+        font.pixelSize: 12
+        contentItem: Text {
+            leftPadding: 24
+            rightPadding: 20
+            text: entry.text
+            font: entry.font
+            color: entry.enabled ? Theme.c.text : Theme.c.textMuted
+            opacity: entry.enabled ? 1 : 0.55
+            verticalAlignment: Text.AlignVCenter
+        }
+        indicator: Text {
+            x: 8
+            anchors.verticalCenter: parent.verticalCenter
+            text: entry.checked ? "\u2713" : ""
+            color: Theme.c.accent
+        }
+        background: Rectangle {
+            color: entry.highlighted ? Theme.c.panelHeaderActive : "transparent"
+        }
+    }
+    component Menu: Controls.Menu {
+        implicitWidth: 264
+        padding: 4
+        delegate: Entry {}
+        background: Rectangle {
+            color: Theme.c.panelBackground
+            border.color: Theme.c.border
+            radius: 3
+        }
+    }
+    component Pending: Entry { enabled: false }
+    component Divider: Controls.MenuSeparator {
+        contentItem: Rectangle { implicitHeight: 1; color: Theme.c.border }
+    }
+
+    Menu {
+        title: qsTr("&File")
+        Entry { text: qsTr("Save project"); enabled: Document.projectPath !== ""; onTriggered: Document.save() }
+        Pending { text: qsTr("Show Recordings") }
+        Pending { text: qsTr("Remux Recordings") }
+        Divider {}
+        Menu {
+            title: qsTr("Settings")
+            Entry { text: qsTr("Canvas"); onTriggered: bar.showPanel("canvas") }
+            Entry { text: qsTr("Outputs"); onTriggered: bar.showPanel("outputs") }
+            Entry { text: qsTr("Keyboard Shortcuts"); onTriggered: bar.showPanel("shortcuts") }
+        }
+        Pending { text: qsTr("Show Settings Folder") }
+        Pending { text: qsTr("Show Profile Folder") }
+        Divider {}
+        Entry {
+            text: qsTr("Exit")
+            onTriggered: {
+                if (Document.dirty) Document.save();
+                if (Document.dirty)
+                    bar.mainWindow.report(qsTr("Project has unsaved changes. Save successfully before exiting."));
+                else bar.mainWindow.close();
+            }
+        }
+    }
+    Menu {
+        title: qsTr("&Edit")
+        Entry { objectName: "menuUndo"; text: qsTr("Undo"); enabled: Document.canUndo; onTriggered: Document.undo() }
+        Entry { text: qsTr("Redo"); enabled: Document.canRedo; onTriggered: Document.redo() }
+        Divider {}
+        Entry { text: qsTr("Copy"); enabled: Document.selectedNode !== ""; onTriggered: Document.copySelectedNode() }
+        Entry { text: qsTr("Paste"); onTriggered: Document.paste() }
+        Pending { text: qsTr("Paste (Duplicate)") }
+        Divider {}
+        Pending { text: qsTr("Copy Filters") }
+        Pending { text: qsTr("Paste Filters") }
+        Divider {}
+        Menu {
+            title: qsTr("Transform")
+            enabled: bar.editable
+            Entry { text: qsTr("Reset Transform"); onTriggered: Document.resetTransform() }
+            Entry { text: qsTr("Rotate 90 degrees clockwise"); onTriggered: Document.rotateBy(90) }
+            Entry { text: qsTr("Rotate 90 degrees counterclockwise"); onTriggered: Document.rotateBy(-90) }
+            Entry { text: qsTr("Flip Horizontal"); onTriggered: Document.flipHorizontal() }
+            Entry { text: qsTr("Flip Vertical"); onTriggered: Document.flipVertical() }
+            Divider {}
+            Entry { text: qsTr("Fit to Canvas"); onTriggered: Document.fitToCanvas(false) }
+            Entry { text: qsTr("Stretch to Canvas"); onTriggered: Document.fitToCanvas(true) }
+            Entry { text: qsTr("Center on Canvas"); onTriggered: Document.centerOnCanvas(true, true) }
+        }
+        Menu {
+            title: qsTr("Order")
+            enabled: bar.editable
+            Entry { text: qsTr("Move Up"); onTriggered: Document.moveNode(Document.selectedNode, -1) }
+            Entry { text: qsTr("Move Down"); onTriggered: Document.moveNode(Document.selectedNode, 1) }
+            Entry { text: qsTr("Move to Top"); onTriggered: Document.moveSelectedToEnd(true) }
+            Entry { text: qsTr("Move to Bottom"); onTriggered: Document.moveSelectedToEnd(false) }
+        }
+        Pending { text: qsTr("Preview Scaling") }
+        Pending { text: qsTr("Lock Preview") }
+        Divider {}
+        Entry { text: qsTr("Advanced Audio Properties"); onTriggered: bar.showPanel("audio-mixer") }
+    }
+    Menu {
+        title: qsTr("&View")
+        Entry { text: qsTr("Reset UI"); onTriggered: Workspace.resetLayout() }
+        Entry {
+            text: qsTr("Fullscreen Interface")
+            checkable: true
+            checked: bar.mainWindow.visibility === Window.FullScreen
+            onTriggered: checked ? bar.mainWindow.showFullScreen() : bar.mainWindow.showNormal()
+        }
+        Divider {}
+        Pending { text: qsTr("Dock Toolbars") }
+        Pending { text: qsTr("Source Icons") }
+        Entry {
+            objectName: "menuStatusBar"
+            text: qsTr("Status Bar")
+            checkable: true
+            checked: bar.statusBarVisible
+            onTriggered: bar.statusBarVisible = checked
+        }
+        Divider {}
+        Entry { text: qsTr("Stats"); onTriggered: bar.showPanel("broadcast-stats") }
+        Pending { text: qsTr("Open Multiview") }
+        Pending { text: qsTr("Always On Top") }
+    }
+    Menu {
+        id: docks
+        title: qsTr("&Docks")
+        Pending { text: qsTr("Lock Docks") }
+        Entry { text: qsTr("Reset Docks"); onTriggered: Workspace.resetLayout() }
+        Divider {}
+        Pending { text: qsTr("Custom Browser Docks") }
+        Instantiator {
+            model: ["audio-mixer", "broadcast-stats", "program", "outputs", "properties",
+                    "canvas", "favourites", "scenes", "sources", "controls", "info", "log", "shortcuts"]
+            delegate: Entry {
+                required property string modelData
+                text: Workspace.title(modelData)
+                checkable: true
+                checked: { const revision = Workspace.revision; return Workspace.layoutHasPanel(modelData); }
+                onTriggered: checked ? bar.showPanel(modelData) : Workspace.closePanel(modelData)
+            }
+            onObjectAdded: (index, object) => docks.insertItem(index + 4, object)
+            onObjectRemoved: (index, object) => docks.removeItem(object)
+        }
+        Divider {}
+        Menu {
+            id: extraCanvases
+            title: qsTr("Extra Canvases")
+            enabled: bar.extraPanels.length > 0
+            Instantiator {
+                model: bar.extraPanels
+                delegate: Entry {
+                    required property string modelData
+                    text: Workspace.title(modelData)
+                    checkable: true
+                    checked: { const revision = Workspace.revision; return Workspace.layoutHasPanel(modelData); }
+                    onTriggered: checked ? bar.showPanel(modelData) : Workspace.closePanel(modelData)
+                }
+                onObjectAdded: (index, object) => extraCanvases.insertItem(index, object)
+                onObjectRemoved: (index, object) => extraCanvases.removeItem(object)
+            }
+        }
+        Pending { text: qsTr("Countdown Timers") }
+        Pending { text: qsTr("Chat") }
+        Pending { text: qsTr("Activity") }
+        Pending { text: qsTr("Stream Info") }
+        Pending { text: qsTr("Overlays") }
+    }
+    Menu {
+        title: qsTr("&Profile")
+        Pending { text: qsTr("New...") }
+        Pending { text: qsTr("Duplicate...") }
+        Pending { text: qsTr("Rename...") }
+        Pending { text: qsTr("Remove") }
+        Divider {}
+        Pending { text: qsTr("Import...") }
+        Pending { text: qsTr("Export...") }
+        Divider {}
+        Pending { text: qsTr("Profiles are not available yet") }
+    }
+    Menu {
+        title: qsTr("&Scene Collection")
+        Pending { text: qsTr("New...") }
+        Pending { text: qsTr("Duplicate...") }
+        Pending { text: qsTr("Rename...") }
+        Pending { text: qsTr("Remove") }
+        Divider {}
+        Pending { text: qsTr("Import... (CLI available)") }
+        Pending { text: qsTr("Export...") }
+        Divider {}
+        Entry { text: qsTr("Project Problems"); onTriggered: bar.showPanel("info") }
+        Divider {}
+        Entry { text: Document.projectName; checkable: true; checked: true; enabled: false }
+    }
+    Menu {
+        title: qsTr("&Tools")
+        Pending { text: qsTr("Auto-Configuration Wizard") }
+        Pending { text: qsTr("Plugin Manager") }
+        Divider {}
+        Pending { text: qsTr("Output Timer") }
+        Pending { text: qsTr("Scripts") }
+        Pending { text: qsTr("WebSocket Server Settings") }
+        Pending { text: qsTr("Source Profiler") }
+    }
+    Menu {
+        title: qsTr("&Help")
+        Entry { text: qsTr("Help Portal"); onTriggered: Qt.openUrlExternally("https://github.com/calmasacow/Libertas-Studio#readme") }
+        Entry { text: qsTr("Visit Website"); onTriggered: Qt.openUrlExternally("https://github.com/calmasacow/Libertas-Studio") }
+        Pending { text: qsTr("Join Discord Server") }
+        Divider {}
+        Entry { text: qsTr("Log"); onTriggered: bar.showPanel("log") }
+        Pending { text: qsTr("Restart in Safe Mode") }
+        Divider {}
+        Pending { text: qsTr("What's New") }
+        Pending { text: qsTr("Release Notes") }
+        Entry { text: qsTr("About"); onTriggered: bar.mainWindow.report(qsTr("Libertas Studio 0.0.1 - GPL-3.0-or-later. Disabled menu items are not implemented yet.")) }
+    }
+}
