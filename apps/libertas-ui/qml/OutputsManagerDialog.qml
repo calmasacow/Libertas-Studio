@@ -37,7 +37,7 @@ Item {
         spacing: 4
         height: 28
         Text {
-            width: 100
+            width: 150
             anchors.verticalCenter: parent.verticalCenter
             text: field.label
             color: Theme.c.textMuted
@@ -45,7 +45,7 @@ Item {
         }
         Controls.TextField {
             id: input
-            width: parent.width - 104
+            width: parent.width - 154
             height: 28
             color: Theme.c.text
             font.pixelSize: 11
@@ -114,7 +114,7 @@ Item {
         id: frame
 
         anchors.centerIn: parent
-        width: Math.min(parent.width - 48, 620)
+        width: Math.min(parent.width - 48, 760)
         height: Math.min(parent.height - 48, 560)
         color: Theme.c.panelBackground
         border.width: 1
@@ -280,12 +280,22 @@ Item {
                             font.pixelSize: 10
                         }
 
+                        Text {
+                            width: parent.width
+                            visible: output.expanded
+                            text: output.sharedWith.length
+                                ? qsTr("Shared configuration. Edits also affect: %1").arg(output.sharedWith.join(", "))
+                                : qsTr("This output has its own encoder configuration. Edit its settings below.")
+                            wrapMode: Text.WordWrap
+                            color: Theme.c.textMuted
+                            font.pixelSize: 11
+                        }
                         ChoiceField {
                             objectName: "outputEncodeChoice"
                             width: parent.width
                             visible: output.expanded
-                            label: qsTr("Use encode")
-                            labelWidth: 100
+                            label: qsTr("Configuration")
+                            labelWidth: 150
                             choices: dialog.encodeOptions.map(e => e.id)
                             choiceLabels: {
                                 const labels = {};
@@ -295,11 +305,25 @@ Item {
                             value: output.settings.id || ""
                             onCommitted: value => Document.setOutputEncode(output.outputId, value)
                         }
+                        SettingText {
+                            width: parent.width
+                            visible: output.expanded
+                            label: qsTr("Configuration name")
+                            inputName: "encoderConfigurationName"
+                            text: output.settings.name || ""
+                            onCommitted: value => Document.renameEncode(output.settings.id, value)
+                        }
+                        DialogButton {
+                            objectName: "independentOutputEncode"
+                            visible: output.expanded && output.sharedWith.length > 0
+                            text: qsTr("Make independent")
+                            onClicked: Document.makeOutputEncodeIndependent(output.outputId)
+                        }
                         ChoiceField {
                             width: parent.width
                             visible: output.expanded
                             objectName: "outputEncoderChoice"
-                            labelWidth: 100
+                            labelWidth: 150
                             label: qsTr("Video encoder")
                             choices: {
                                 const out = [];
@@ -328,9 +352,9 @@ Item {
 
                         NumberField {
                             width: parent.width
-                            visible: output.expanded
+                            visible: output.expanded && !["cqp", "crf"].includes(output.settings.rateControl)
                             objectName: "outputBitrate"
-                            labelWidth: 100
+                            labelWidth: 150
                             label: qsTr("Bitrate (kbps)")
                             decimals: 0
                             value: output.bitrateKbps
@@ -343,8 +367,10 @@ Item {
                             width: parent.width
                             visible: output.expanded
                             label: qsTr("Rate control")
-                            labelWidth: 100
-                            choices: ["cbr", "vbr", "cqp", "crf"]
+                            labelWidth: 150
+                            choices: output.implementation === "x264" ? ["cbr", "vbr", "crf"]
+                                : output.implementation === "nvenc" ? ["cbr", "vbr", "cqp"]
+                                : ["cbr", "vbr"]
                             value: output.settings.rateControl || "cbr"
                             onCommitted: value => output.saveOptions(value, output.settings.preset,
                                                                       output.settings.keyframeMs)
@@ -354,20 +380,138 @@ Item {
                             width: parent.width
                             visible: output.expanded
                             label: qsTr("Keyframe (s)")
-                            labelWidth: 100
+                            labelWidth: 150
                             value: (output.settings.keyframeMs || 0) / 1000
                             onCommitted: value => output.saveOptions(output.settings.rateControl,
                                 output.settings.preset, Math.round(value * 1000))
                         }
-                        SettingText {
+                        ChoiceField {
                             width: parent.width
                             visible: output.expanded
-                            label: qsTr("Preset")
-                            inputName: "outputPreset"
-                            text: output.settings.preset || ""
-                            placeholderText: qsTr("Encoder default")
+                            label: output.implementation === "x264" ? qsTr("CPU usage preset") : qsTr("Preset")
+                            objectName: "outputPreset"
+                            labelWidth: 150
+                            choices: output.implementation === "nvenc"
+                                ? ["", "p1", "p2", "p3", "p4", "p5", "p6", "p7"]
+                                : output.implementation === "x264"
+                                    ? ["", "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"]
+                                    : [""]
+                            choiceLabels: ({"": qsTr("Encoder default"), "p1": "P1: Fastest", "p2": "P2: Faster",
+                                "p3": "P3: Fast", "p4": "P4: Medium", "p5": "P5: Slow (good quality)",
+                                "p6": "P6: Slower", "p7": "P7: Slowest (best quality)"})
+                            value: output.settings.preset || ""
                             onCommitted: value => output.saveOptions(output.settings.rateControl,
                                 value, output.settings.keyframeMs)
+                        }
+                        CheckLabel {
+                            objectName: "outputRescale"
+                            visible: output.expanded
+                            text: qsTr("Rescale output")
+                            checked: output.settings.width > 0
+                            onToggled: Document.setEncodeRescale(output.settings.id,
+                                checked ? 0 : 1920, checked ? 0 : 1080)
+                        }
+                        Row {
+                            width: parent.width
+                            spacing: 8
+                            visible: output.expanded && output.settings.width > 0
+                            NumberField {
+                                width: (parent.width - 8) / 2
+                                label: qsTr("Width")
+                                decimals: 0
+                                value: output.settings.width || 0
+                                onCommitted: value => Document.setEncodeRescale(output.settings.id,
+                                    Math.round(value), output.settings.height)
+                            }
+                            NumberField {
+                                width: (parent.width - 8) / 2
+                                label: qsTr("Height")
+                                decimals: 0
+                                value: output.settings.height || 0
+                                onCommitted: value => Document.setEncodeRescale(output.settings.id,
+                                    output.settings.width, Math.round(value))
+                            }
+                        }
+                        Repeater {
+                            model: {
+                                const fields = [];
+                                if (output.settings.width > 0)
+                                    fields.push({key: "rescale_filter", label: qsTr("Downscale filter"), choices: ["bilinear", "bicubic", "lanczos"], value: "bicubic"});
+                                if (["cqp", "crf"].includes(output.settings.rateControl))
+                                    fields.push({key: "quality", label: qsTr("Constant quality"), value: 23});
+                                if (output.implementation === "nvenc") {
+                                    fields.push(
+                                        {key: "nvenc.tuning", label: qsTr("Tuning"), choices: ["hq", "ll", "ull", "lossless"], value: "hq",
+                                         labels: {hq: "High quality", ll: "Low latency", ull: "Ultra low latency", lossless: "Lossless"}},
+                                        {key: "nvenc.multipass", label: qsTr("Multipass mode"), choices: ["disabled", "quarter", "full"], value: "quarter",
+                                         labels: {disabled: "Single pass", quarter: "Two passes (quarter resolution)", full: "Two passes (full resolution)"}},
+                                        {key: "nvenc.profile", label: qsTr("Profile"), choices: output.codec === "h264" ? ["", "baseline", "main", "high"]
+                                            : output.codec === "hevc" ? ["", "main", "main10"] : ["", "main"], value: ""},
+                                        {key: "nvenc.lookahead", label: qsTr("Look-ahead"), value: false},
+                                        {key: "nvenc.adaptive_quantization", label: qsTr("Adaptive quantization"), value: true},
+                                        {key: "nvenc.bframes", label: qsTr("B-frames"), value: 2},
+                                        {key: "nvenc.options", label: qsTr("Custom encoder options"), value: ""});
+                                } else if (output.implementation === "x264") {
+                                    fields.push(
+                                        {key: "x264.custom_buffer", label: qsTr("Use custom buffer size"), value: false},
+                                        {key: "x264.buffer_kbps", label: qsTr("Buffer size (kbps)"), value: 6000},
+                                        {key: "x264.profile", label: qsTr("Profile"), choices: ["", "baseline", "main", "high"], value: ""},
+                                        {key: "x264.tune", label: qsTr("Tune"), choices: ["", "film", "animation", "grain", "stillimage", "psnr", "ssim", "fastdecode", "zerolatency"], value: ""},
+                                        {key: "x264.options", label: qsTr("x264 options"), value: ""});
+                                }
+                                fields.push(
+                                    {key: "audio.codec", label: qsTr("Audio encoder"), choices: ["aac", "opus"], value: "aac"},
+                                    {key: "audio.bitrate_kbps", label: qsTr("Audio bitrate (kbps)"), value: 160},
+                                    {key: "audio.track", label: qsTr("Audio track (1-6)"), value: 1},
+                                    {key: "audio.vod_track", label: qsTr("Twitch VOD track (0=off)"), value: 0});
+                                return fields;
+                            }
+                            delegate: Column {
+                                id: option
+                                required property var modelData
+                                width: output.width
+                                visible: output.expanded
+                                property var value: output.settings.extra?.[modelData.key] ?? modelData.value
+                                function commit(value) { Document.setOutputEncoderExtra(output.outputId, modelData.key, value); }
+                                ChoiceField {
+                                    width: parent.width
+                                    visible: !!option.modelData.choices
+                                    objectName: "encoderOption_" + option.modelData.key
+                                    labelWidth: 150
+                                    label: option.modelData.label
+                                    choices: option.modelData.choices || []
+                                    choiceLabels: option.modelData.labels || ({"": qsTr("Encoder default")})
+                                    value: String(option.value)
+                                    onCommitted: value => option.commit(value)
+                                }
+                                NumberField {
+                                    width: parent.width
+                                    visible: !option.modelData.choices && typeof option.modelData.value === "number"
+                                    objectName: "encoderNumber_" + option.modelData.key
+                                    labelWidth: 150
+                                    label: option.modelData.label
+                                    decimals: 0
+                                    value: Number(option.value) || 0
+                                    onCommitted: value => option.commit(Math.round(value))
+                                }
+                                CheckLabel {
+                                    width: parent.width
+                                    height: 20
+                                    visible: typeof option.modelData.value === "boolean"
+                                    objectName: "encoderFlag_" + option.modelData.key
+                                    text: option.modelData.label
+                                    checked: Boolean(option.value)
+                                    onToggled: option.commit(!checked)
+                                }
+                                SettingText {
+                                    width: parent.width
+                                    visible: !option.modelData.choices && typeof option.modelData.value === "string"
+                                    label: option.modelData.label
+                                    inputName: "encoderText_" + option.modelData.key
+                                    text: String(option.value)
+                                    onCommitted: value => option.commit(value)
+                                }
+                            }
                         }
                         ToolButton {
                             objectName: "destinationSettings"
@@ -393,7 +537,7 @@ Item {
                             ChoiceField {
                                 width: parent.width
                                 label: qsTr("Protocol")
-                                labelWidth: 100
+                                labelWidth: 150
                                 choices: Document.destinationKinds.map(k => k.title)
                                 value: output.destinationKind.toUpperCase()
                                 onCommitted: value => Document.setOutputDestination(

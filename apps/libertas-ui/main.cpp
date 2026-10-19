@@ -3044,14 +3044,54 @@ int main(int argc, char** argv) {
                            "manager Name field changes the output dock label");
                     editText(outputName, previous);
                 }
+                auto choose = [&](QQuickItem* field, const QString& text) {
+                    reveal(field);
+                    click(field);
+                    QList<QQuickItem*> pending{window->contentItem()};
+                    while (!pending.isEmpty()) {
+                        auto* item = pending.takeLast();
+                        if (item->isVisible() && item->property("text").toString() == text) {
+                            click(item);
+                            return true;
+                        }
+                        pending.append(item->childItems());
+                    }
+                    return false;
+                };
                 auto* preset = visibleControl("outputPreset");
-                report(preset != nullptr, "selected encode exposes editable preset settings");
+                report(preset != nullptr, "selected encode exposes preset choices");
                 if (preset) {
-                    const auto previous = document.outputEncoderSettings(selected).value("preset").toString();
-                    editText(preset, QStringLiteral("fast"));
+                    report(choose(preset, QStringLiteral("fast")), "x264 offers its fast preset");
                     report(document.outputEncoderSettings(selected).value("preset").toString() == "fast",
-                           "editing the preset field updates the actual shared encode");
-                    editText(preset, previous);
+                           "selecting a preset updates the actual shared encode");
+                    choose(preset, QStringLiteral("Encoder default"));
+                }
+                auto* custom = visibleControl("encoderText_x264.options");
+                report(custom != nullptr, "x264 exposes its custom options");
+                if (custom) {
+                    editText(custom, QStringLiteral("bframes=3"));
+                    report(document.outputEncoderSettings(selected).value("extra").toMap()
+                               .value("x264.options").toString() == "bframes=3",
+                           "custom x264 options persist in the encoder configuration");
+                }
+                auto* videoEncoder = visibleControl("outputEncoderChoice");
+                if (videoEncoder) {
+                    report(choose(videoEncoder, QStringLiteral("H.264 (NVENC)")),
+                           "NVENC can be selected through the video encoder dropdown");
+                    auto* lookahead = visibleControl("encoderFlag_nvenc.lookahead");
+                    report(lookahead && visibleControl("encoderOption_nvenc.multipass") &&
+                               visibleControl("encoderNumber_nvenc.bframes"),
+                           "NVENC exposes look-ahead, multipass, and B-frame settings");
+                    if (lookahead) {
+                        reveal(lookahead);
+                        report(lookahead->width() > 0 && lookahead->height() > 0,
+                               "NVENC checkbox has a real clickable area");
+                        click(lookahead);
+                        report(document.outputEncoderSettings(selected).value("extra").toMap()
+                                   .value("nvenc.lookahead").toBool(),
+                               "NVENC look-ahead toggle updates the saved configuration");
+                    }
+                    choose(videoEncoder, QStringLiteral("H.264 (x264)"));
                 }
                 auto* rate = visibleControl("outputRateControl");
                 report(rate != nullptr && visibleControl("outputEncodeChoice") != nullptr,
@@ -3474,6 +3514,38 @@ int main(int argc, char** argv) {
             report(out_at(outs_before, "sharedWith").toStringList().contains(
                        QLatin1String("Shared B")),
                    "and each row names the other destinations on its encode");
+
+            workspace.activate(QStringLiteral("outputs"));
+            settle();
+            const auto managers = collect(window->contentItem(), QStringLiteral("outputsManagerDialog"));
+            if (!managers.isEmpty()) {
+                auto* manager = managers.front();
+                const auto sharedId = out_at(outs_before, "outputId").toString();
+                QMetaObject::invokeMethod(manager, "openOutput", Q_ARG(QVariant, QVariant(sharedId)));
+                settle();
+                bool clicked = false;
+                for (auto* button : collect(manager, QStringLiteral("independentOutputEncode"))) {
+                    if (!button->isVisible()) continue;
+                    const auto at = button->mapToScene(QPointF(button->width() / 2, button->height() / 2));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    clicked = true;
+                    break;
+                }
+                report(clicked && document.encodeCount() == encodes_before + 2 &&
+                           document.outputEncoderSettings(sharedId).value("id").toString() != enc_id,
+                       "Make independent copies a shared encode through the manager button");
+                if (document.encodeCount() == encodes_before + 2) {
+                    document.undo();
+                    settle();
+                    report(document.outputEncoderSettings(sharedId).value("id").toString() == enc_id,
+                           "one undo restores encoder sharing");
+                }
+                QMetaObject::invokeMethod(manager, "close");
+            } else {
+                report(false, "manager exists for independent encoder interaction");
+            }
 
             document.removeOutput(out_at(outs_before + 1, "outputId").toString());
             settle();

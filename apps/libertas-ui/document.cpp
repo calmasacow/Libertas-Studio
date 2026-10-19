@@ -3064,6 +3064,11 @@ void Document::renameEncode(const QString& id, const QString& name) {
 }
 
 void Document::setEncodeRescale(const QString& id, int width, int height) {
+    if ((width != 0 || height != 0) &&
+        (width < 2 || height < 2 || width > 16384 || height > 16384 || width % 2 || height % 2)) {
+        emit notice(QStringLiteral("Output dimensions must be even numbers from 2 to 16384."));
+        return;
+    }
     const auto parsed = parse_id(id);
     if (!parsed)
         return;
@@ -3179,7 +3184,23 @@ void Document::setOutputBitrate(const QString& id, int kbps) {
 
 void Document::setOutputEncoder(const QString& id, const QString& codec,
                                 const QString& implementation) {
+    bool supported = false;
+    for (const auto& entry : codecs()) {
+        const auto choice = entry.toMap();
+        supported = supported || (choice.value("codec").toString() == codec &&
+                                  choice.value("implementation").toString() == implementation);
+    }
+    if (!supported) {
+        emit notice(QStringLiteral("Unknown video encoder configuration."));
+        return;
+    }
     edit_encode_of(id, [&](ldoc::Encode& e) {
+        if (e.encoder.implementation != to_std(implementation)) {
+            e.encoder.preset.clear();
+            if ((e.encoder.rate_control == "crf" && implementation != "x264") ||
+                (e.encoder.rate_control == "cqp" && implementation != "nvenc"))
+                e.encoder.rate_control = "cbr";
+        }
         e.encoder.codec = to_std(codec);
         e.encoder.implementation = to_std(implementation);
     });
@@ -3220,10 +3241,21 @@ QVariantMap Document::outputEncoderSettings(const QString& id) const {
     for (const auto& o : session_->project().outputs) {
         if (o.id != *parsed)
             continue;
-        if (const auto* e = session_->project().encode(o.encode))
-            return {{"id", id_str(e->id)}, {"rateControl", qstr(e->encoder.rate_control)},
-                    {"preset", qstr(e->encoder.preset)},
+        if (const auto* e = session_->project().encode(o.encode)) {
+            QVariantMap extra;
+            for (const auto& [key, value] : e->encoder.extra) {
+                if (const auto* text = std::get_if<std::string>(&value)) extra[qstr(key)] = qstr(*text);
+                else if (const auto* flag = std::get_if<bool>(&value)) extra[qstr(key)] = *flag;
+                else if (const auto* number = std::get_if<std::int64_t>(&value))
+                    extra[qstr(key)] = QVariant::fromValue(static_cast<qlonglong>(*number));
+            }
+            return {{"id", id_str(e->id)}, {"name", qstr(e->name)},
+                    {"rateControl", qstr(e->encoder.rate_control)},
+                    {"preset", qstr(e->encoder.preset)}, {"extra", extra},
+                    {"width", e->rescale ? e->rescale->x : 0},
+                    {"height", e->rescale ? e->rescale->y : 0},
                     {"keyframeMs", e->encoder.keyframe_interval_ms}};
+        }
     }
     return {};
 }
@@ -3241,6 +3273,73 @@ void Document::setOutputEncodingOptions(const QString& id, const QString& rateCo
         e.encoder.preset = to_std(preset.trimmed());
         e.encoder.keyframe_interval_ms = keyframeMs;
     });
+}
+
+void Document::makeOutputEncodeIndependent(const QString& id) {
+    const auto parsed = parse_id(id);
+    if (!parsed) return;
+    const auto& p = session_->project();
+    for (const auto& o : p.outputs) {
+        if (o.id != *parsed) continue;
+        const auto* existing = p.encode(o.encode);
+        if (!existing) return;
+        const auto users = std::count_if(p.outputs.begin(), p.outputs.end(),
+            [&](const auto& other) { return other.encode == o.encode; });
+        if (users < 2) return;
+        auto copy = *existing;
+        copy.id = ldoc::Id::generate();
+        copy.name += " (independent)";
+        auto output = o;
+        output.encode = copy.id;
+        run(ldoc::make_batch({ldoc::AddEncode{copy, p.encodes.size()},
+                             ldoc::SetOutput{output}}, "Make encoder independent"));
+        return;
+    }
+}
+
+void Document::setOutputEncoderExtra(const QString& id, const QString& key,
+                                     const QVariant& value) {
+    const QMap<QString, QStringList> enums{
+        {"nvenc.tuning", {"hq", "ll", "ull", "lossless"}},
+        {"nvenc.multipass", {"disabled", "quarter", "full"}},
+        {"nvenc.profile", {"", "baseline", "main", "high", "main10"}},
+        {"x264.profile", {"", "baseline", "main", "high"}},
+        {"x264.tune", {"", "film", "animation", "grain", "stillimage", "psnr", "ssim", "fastdecode", "zerolatency"}},
+        {"audio.codec", {"aac", "opus"}},
+        {"rescale_filter", {"bilinear", "bicubic", "lanczos"}}
+    };
+    const QMap<QString, QPair<int, int>> numbers{
+        {"nvenc.bframes", {0, 4}}, {"x264.buffer_kbps", {0, 1000000}},
+        {"quality", {0, 63}}, {"audio.track", {1, 6}},
+        {"audio.vod_track", {0, 6}}, {"audio.bitrate_kbps", {32, 512}}
+    };
+    const QStringList flags{"nvenc.lookahead", "nvenc.adaptive_quantization", "x264.custom_buffer"};
+    ldoc::ParamValue stored;
+    bool valid = false;
+    if (enums.contains(key)) {
+        valid = value.metaType().id() == QMetaType::QString && enums[key].contains(value.toString());
+        stored = to_std(value.toString());
+    } else if (numbers.contains(key)) {
+        bool ok = false;
+        const double number = value.toDouble(&ok);
+        const auto bounds = numbers[key];
+        valid = ok && std::isfinite(number) && std::floor(number) == number &&
+                number >= bounds.first && number <= bounds.second;
+        stored = valid ? static_cast<std::int64_t>(number) : std::int64_t{0};
+    } else if (flags.contains(key)) {
+        valid = value.metaType().id() == QMetaType::Bool;
+        stored = value.toBool();
+    } else if (key == "nvenc.options" || key == "x264.options") {
+        const auto text = value.toString();
+        valid = value.metaType().id() == QMetaType::QString && text.size() <= 4096 &&
+                !text.contains(QChar::Null) && !text.contains('\n') && !text.contains('\r');
+        stored = to_std(text);
+    }
+    if (!valid) {
+        emit notice(QStringLiteral("Invalid encoder option."));
+        return;
+    }
+    edit_encode_of(id, [&](ldoc::Encode& e) { e.encoder.extra[to_std(key)] = stored; });
 }
 
 void Document::saveOutputKey(const QString& id, const QString& key) {

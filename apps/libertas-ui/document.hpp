@@ -481,6 +481,9 @@ public:
     Q_INVOKABLE QVariantMap outputEncoderSettings(const QString& id) const;
     Q_INVOKABLE void setOutputEncodingOptions(const QString& id, const QString& rateControl,
                                              const QString& preset, int keyframeMs);
+    Q_INVOKABLE void makeOutputEncodeIndependent(const QString& id);
+    Q_INVOKABLE void setOutputEncoderExtra(const QString& id, const QString& key,
+                                           const QVariant& value);
     Q_INVOKABLE void saveOutputKey(const QString& id, const QString& key);
     Q_INVOKABLE void setOutputCredentialRef(const QString& id, const QString& ref);
     /// Point an output at an encode that already exists -- the Aitum case: encode 1080p once,

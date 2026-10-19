@@ -148,7 +148,7 @@ if(LIBERTAS_BUILD_TESTS)
         # type into, and loading fcitx leaks 1.7 KB through D-Bus on every run. Not loading it is
         # better than suppressing it.
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_IM_MODULE=none;QT_LOGGING_RULES=qt.qpa.*=false;LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tests/lsan.suppressions:print_suppressions=0"
-        TIMEOUT 60
+        TIMEOUT 90
         # Excluded from the TSan preset by this label.
         #
         # Not a judgement about this test: Qt here is a distribution build with no TSan, and
