@@ -5,10 +5,12 @@
 #include "ldoc/document.hpp"
 
 #include <QObject>
-#include <QTimer>
 #include <QString>
+#include <QVariantMap>
+#include <QTimer>
 #include <QtQml/qqmlregistration.h>
 #include <filesystem>
+#include <map>
 #include <memory>
 
 class QJSEngine;
@@ -30,6 +32,7 @@ class Preview : public QObject {
 
     /// Bumped when a commit's frames have been copied. The image URL carries it so Qt reloads.
     Q_PROPERTY(int generation READ generation NOTIFY changed)
+    Q_PROPERTY(bool rendererAttached READ rendererAttached NOTIFY changed)
 
   public:
     /// Not default-constructible. Qt's singleton registration prefers a default constructor
@@ -43,6 +46,9 @@ class Preview : public QObject {
     static Preview* create(QQmlEngine* engine, QJSEngine*);
 
     [[nodiscard]] int generation() const;
+    [[nodiscard]] bool rendererAttached() const;
+    Q_INVOKABLE [[nodiscard]] QVariantMap renderStats(const QString& canvasId) const;
+    Q_INVOKABLE void resetStats();
 
     /// Empty until a frame has arrived for this canvas, which is when the panel keeps its own
     /// "no pipeline attached" wording. An empty id is the first canvas (ADR-0027).
@@ -50,6 +56,7 @@ class Preview : public QObject {
     Q_INVOKABLE [[nodiscard]] bool hasFrame(const QString& canvasId) const;
     /// The id the image URL is keyed by. Empty until a document has named a canvas.
     Q_INVOKABLE [[nodiscard]] QString canvasKey(const QString& canvasId) const;
+    Q_INVOKABLE void requestSize(QObject* owner, int edge);
 
     /// The latest document. Called from the session's change notification, never from the
     /// return of the command that caused it (ADR-0024). A snapshot already in flight is not
@@ -82,6 +89,7 @@ class Preview : public QObject {
     void start();
     void tick();
     void try_send();
+    void update_size();
     void on_readable();
     void on_writable();
     void lose(const QString& why);
@@ -95,6 +103,11 @@ class Preview : public QObject {
     std::unique_ptr<Link> link_;
     QTimer* live_ = nullptr;
     ldoc::Project latest_;
+    std::map<QObject*, int> preview_sizes_;
+    std::uint32_t preview_edge_ = 0;
+    struct RenderBaseline { std::uint64_t ns = 0, frames = 0, missed = 0; };
+    std::map<QString, RenderBaseline> render_baselines_;
+    std::map<QString, std::uint64_t> missed_live_ticks_;
 };
 
 } // namespace libertas::ui

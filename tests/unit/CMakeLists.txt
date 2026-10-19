@@ -16,6 +16,7 @@ endfunction()
 
 libertas_unit_test(test_actions          libertas::lsession)
 libertas_unit_test(test_capture          libertas::lcapture)
+libertas_unit_test(test_video            libertas::lcapture)
 libertas_unit_test(test_command          libertas::ldoc)
 libertas_unit_test(test_composite        libertas::lcomp)
 target_compile_definitions(test_composite PRIVATE
@@ -33,6 +34,11 @@ libertas_unit_test(test_preview         libertas::lcomp)
 target_compile_definitions(test_preview PRIVATE
     LIBERTAS_RENDER="$<TARGET_FILE:libertas-render>")
 add_dependencies(test_preview libertas-render)
+set_tests_properties(test_preview PROPERTIES ENVIRONMENT "LIBERTAS_RENDER_BACKEND=cpu")
+libertas_unit_test(test_gpu_composite libertas::lrhi)
+target_compile_definitions(test_gpu_composite PRIVATE
+    LIBERTAS_IMAGE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/images")
+set_tests_properties(test_gpu_composite PROPERTIES SKIP_RETURN_CODE 77)
 libertas_unit_test(test_project_io       libertas::ldoc libertas::lcore)
 libertas_unit_test(test_layout          libertas::llayout)
 libertas_unit_test(test_layout_history  libertas::llayout)

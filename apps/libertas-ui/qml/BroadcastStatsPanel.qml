@@ -12,8 +12,8 @@ import Libertas
 ///
 /// The machine's figures — CPU, memory, free disk, GPU load, encoder load, VRAM — are measured
 /// right now and are real. The show's figures — frame rate, render time, frames missed to
-/// rendering lag, frames skipped to encoding lag, and everything per-output — belong to a render
-/// process that does not exist yet, and are shown as "—".
+/// rendering lag belong to preview compositing and are reported per canvas. Encoding and output
+/// figures remain unavailable until an encoder exists.
 ///
 /// Not as zero. "0 / 0 (0.0%)" dropped frames reads as *nothing is being dropped*, which is a
 /// claim about a running show; "—" says there is no show. Those are different sentences and only
@@ -155,22 +155,48 @@ Item {
                 bottomPadding: 4
             }
 
-            StatRow {
-                width: parent.width
-                label: qsTr("FPS")
-                value: panel.unavailable
-            }
-
-            StatRow {
-                width: parent.width
-                label: qsTr("Average time to render frame")
-                value: panel.unavailable
-            }
-
-            StatRow {
-                width: parent.width
-                label: qsTr("Frames missed due to rendering lag")
-                value: panel.unavailable
+            Repeater {
+                model: Document.canvases
+                delegate: Column {
+                    required property string canvasId
+                    required property string name
+                    readonly property var stats: {
+                        Preview.generation
+                        return Preview.renderStats(canvasId)
+                    }
+                    width: body.width
+                    spacing: 1
+                    Text {
+                        width: parent.width
+                        text: name
+                        font.pixelSize: 9
+                        font.weight: Font.DemiBold
+                        color: Theme.c.textMuted
+                        topPadding: 5
+                    }
+                    StatRow {
+                        width: parent.width
+                        label: qsTr("Canvas target FPS")
+                        value: stats.available && stats.fps > 0
+                            ? stats.fps.toFixed(1) : panel.unavailable
+                    }
+                    StatRow {
+                        width: parent.width
+                        label: qsTr("Average time to render frame")
+                        value: stats.available && stats.frames > 0
+                            ? stats.renderMs.toFixed(2) + " ms" : panel.unavailable
+                    }
+                    StatRow {
+                        width: parent.width
+                        label: qsTr("Frames rendered since reset")
+                        value: stats.available ? stats.frames : panel.unavailable
+                    }
+                    StatRow {
+                        width: parent.width
+                        label: qsTr("Frames missed due to rendering lag")
+                        value: stats.available ? stats.missed : panel.unavailable
+                    }
+                }
             }
 
             StatRow {
@@ -182,9 +208,9 @@ Item {
             Text {
                 width: parent.width
                 wrapMode: Text.WordWrap
-                // ADR-0020. Said here because this is the panel where someone would otherwise
-                // expect to find the single number.
-                text: qsTr("No render process. When there is one these are reported per canvas and per output rather than as one number — a hitch in one canvas must not be hidden inside another's average.")
+                text: Preview.rendererAttached
+                    ? qsTr("Render time and missed frames describe preview compositing. Encoding stats appear when an output encoder is running.")
+                    : qsTr("Waiting for renderer statistics.")
                 font.pixelSize: 9
                 color: Theme.c.textMuted
                 topPadding: 4
@@ -392,13 +418,11 @@ Item {
             anchors.rightMargin: 6
             anchors.verticalCenter: parent.verticalCenter
             label: "↺"
-            // Enabled when there are counters to clear, which there will not be until a render
-            // process is reporting them.
-            enabled: Telemetry.rendererAttached
-            tip: Telemetry.rendererAttached
-                ? qsTr("Reset the dropped and skipped frame counters")
-                : qsTr("Nothing to reset until a render process is attached")
-            onClicked: {}
+            enabled: Preview.rendererAttached
+            tip: Preview.rendererAttached
+                ? qsTr("Reset per-canvas render counters")
+                : qsTr("No renderer is attached")
+            onClicked: Preview.resetStats()
         }
     }
 }

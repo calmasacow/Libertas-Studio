@@ -54,6 +54,8 @@ struct Preview::Held {
     int width = 0;
     int height = 0;
     std::uint32_t gaps = 0;
+    std::uint64_t render_ns = 0, rendered_frames = 0;
+    std::uint32_t fps_num = 0, fps_den = 0;
 };
 
 struct Preview::State {
@@ -71,6 +73,7 @@ struct Preview::Link {
     bool in_flight = false;
     bool dirty = false;
     bool have_pending = false;
+    bool refresh_only = false;
     /// Set when this commit was a fault, so its ack does not publish a picture of the last one.
     bool failed = false;
     ldoc::Project pending;
@@ -139,6 +142,51 @@ int Preview::generation() const {
     return state_->generation;
 }
 
+bool Preview::rendererAttached() const { return link_ && link_->alive; }
+
+QVariantMap Preview::renderStats(const QString& canvasId) const {
+    const QString key = resolve(canvasId);
+    std::lock_guard lock(state_->mu);
+    const auto it = state_->frames.find(key);
+    if (it == state_->frames.end())
+        return {{QStringLiteral("available"), false}, {QStringLiteral("frames"), 0},
+                {QStringLiteral("renderMs"), 0.0}, {QStringLiteral("missed"), 0},
+                {QStringLiteral("fps"), 0.0}};
+    const auto base = render_baselines_.find(key);
+    const RenderBaseline zero{};
+    const auto& start = base == render_baselines_.end() ? zero : base->second;
+    const auto& frame = it->second;
+    const std::uint64_t frames = frame.rendered_frames - start.frames;
+    const std::uint64_t ns = frame.render_ns - start.ns;
+    const auto missed = missed_live_ticks_.find(key);
+    const std::uint64_t missed_count = missed == missed_live_ticks_.end() ? 0 : missed->second;
+    return {{QStringLiteral("available"), true},
+            {QStringLiteral("frames"), QVariant::fromValue<qulonglong>(frames)},
+            {QStringLiteral("renderMs"),
+             frames ? static_cast<double>(ns) / static_cast<double>(frames) / 1e6 : 0.0},
+            {QStringLiteral("missed"), QVariant::fromValue<qulonglong>(missed_count - start.missed)},
+            {QStringLiteral("fps"), frame.fps_den ? static_cast<double>(frame.fps_num) / frame.fps_den : 0.0}};
+}
+
+void Preview::resetStats() {
+    {
+        std::lock_guard lock(state_->mu);
+        render_baselines_.clear();
+        for (const auto& canvas : latest_.canvases) {
+            const QString key = QString::fromStdString(canvas.id.to_string());
+            const auto frame_it = state_->frames.find(key);
+            const auto missed_it = missed_live_ticks_.find(key);
+            const std::uint64_t ns = frame_it == state_->frames.end() ? 0 : frame_it->second.render_ns;
+            const std::uint64_t frames =
+                frame_it == state_->frames.end() ? 0 : frame_it->second.rendered_frames;
+            render_baselines_.insert_or_assign(
+                key, RenderBaseline{ns, frames,
+                                    missed_it == missed_live_ticks_.end() ? 0 : missed_it->second});
+        }
+    }
+    emit changed();
+}
+
 QString Preview::resolve(const QString& canvasId) const {
     return canvasId.isEmpty() ? first_canvas_ : canvasId;
 }
@@ -169,7 +217,15 @@ QString Preview::caption(const QString& canvasId) const {
     }
     if (held.status == lcomp::PictureStatus::Unsupported)
         return QStringLiteral("too large to preview");
-    const QString size = QStringLiteral("%1x%2").arg(held.width).arg(held.height);
+    int width = held.width, height = held.height;
+    for (const auto& canvas : latest_.canvases) {
+        if (QString::fromStdString(canvas.id.to_string()) == key) {
+            width = canvas.width;
+            height = canvas.height;
+            break;
+        }
+    }
+    const QString size = QStringLiteral("%1x%2").arg(width).arg(height);
     switch (held.status) {
     case lcomp::PictureStatus::NoProgram:
         return size + QStringLiteral(" · no program scene");
@@ -211,19 +267,51 @@ void Preview::setLive(bool live, ldoc::Fps rate) {
 /// one is already in flight the normal in-flight rule applies and this tick is dropped rather
 /// than queued -- a preview that fell behind should skip to the newest frame, not play catch-up.
 void Preview::tick() {
-    if (!link_ || !link_->alive || link_->in_flight)
+    if (!link_ || !link_->alive)
         return;
+    if (link_->in_flight) {
+        for (const auto& canvas : latest_.canvases)
+            ++missed_live_ticks_[QString::fromStdString(canvas.id.to_string())];
+        return;
+    }
     if (latest_.canvases.empty())
         return;
-    publish(latest_);
+    link_->refresh_only = true;
+    try_send();
 }
 
+void Preview::requestSize(QObject* owner, int edge) {
+    if (!owner)
+        return;
+    if (!preview_sizes_.contains(owner)) {
+        QObject::connect(owner, &QObject::destroyed, this, [this, owner] {
+            preview_sizes_.erase(owner);
+            update_size();
+        });
+    }
+    preview_sizes_[owner] = std::clamp(edge, 1, lcomp::kMaxPreviewEdge);
+    update_size();
+}
+
+void Preview::update_size() {
+    int largest = 1;
+    for (const auto& [item, size] : preview_sizes_) {
+        (void)item;
+        largest = std::max(largest, size);
+    }
+    if (preview_edge_ == static_cast<std::uint32_t>(largest))
+        return;
+    preview_edge_ = static_cast<std::uint32_t>(largest);
+    if (!latest_.canvases.empty())
+        publish(latest_);
+}
 
 void Preview::publish(const ldoc::Project& project) {
     latest_ = project;
     if (!link_ || !link_->alive)
         return;
     link_->pending = project;
+    link_->refresh_only = false;
     link_->have_pending = true;
     if (!project.canvases.empty())
         first_canvas_ = QString::fromStdString(project.canvases.front().id.to_string());
@@ -279,7 +367,9 @@ void Preview::try_send() {
         return;
     link_->incoming.clear();
     link_->failed = false;
-    const auto sent = link_->channel->send_project(link_->pending);
+    const auto sent = link_->refresh_only
+                          ? link_->channel->refresh(preview_edge_)
+                          : link_->channel->send_project(link_->pending, preview_edge_);
     if (!sent) {
         if (lcomp::send_would_block(sent.error())) {
             link_->write->setEnabled(true);
@@ -319,6 +409,10 @@ void Preview::on_readable() {
             held.width = got.frame.width;
             held.height = got.frame.height;
             held.gaps = got.frame.gaps;
+            held.render_ns = got.frame.render_ns;
+            held.rendered_frames = got.frame.rendered_frames;
+            held.fps_num = got.frame.fps_num;
+            held.fps_den = got.frame.fps_den;
             held.image = image_from(got.frame);
             link_->incoming.insert_or_assign(QString::fromStdString(got.frame.canvas.to_string()),
                                              std::move(held));
@@ -333,7 +427,7 @@ void Preview::on_readable() {
             link_->in_flight = false;
             const bool failed = link_->failed;
             link_->failed = false;
-            if (!failed) {
+            if (!failed && !link_->incoming.empty()) {
                 {
                     std::lock_guard lock(state_->mu);
                     state_->frames.clear();

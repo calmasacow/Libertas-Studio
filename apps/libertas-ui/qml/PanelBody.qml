@@ -201,6 +201,9 @@ Item {
             readonly property real fit: Math.min(parent.width / programView.aspect, parent.height)
             width: Math.max(fit * programView.aspect, 1)
             height: Math.max(fit, 1)
+            readonly property int previewEdge: Math.ceil(Math.max(width, height) * Screen.devicePixelRatio)
+            onPreviewEdgeChanged: Preview.requestSize(canvasFrame, previewEdge)
+            Component.onCompleted: Preview.requestSize(canvasFrame, previewEdge)
             color: Theme.c.window
             border.width: 1
             border.color: Theme.c.border

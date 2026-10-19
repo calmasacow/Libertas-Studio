@@ -464,7 +464,9 @@ LTEST_CASE(a_screen_source_draws_the_frame_it_is_handed) {
 
     std::string asked_for = "<never asked>";
     const FrameBuffer green = flat_bgra(4, 4, 0, 200, 0);
-    const lcomp::FrameSource frames = [&](const std::string& connector) {
+    const lcomp::FrameSource frames = [&](const ldoc::Source& source) {
+        const auto it = source.settings.find("output");
+        const auto connector = it == source.settings.end() ? std::string{} : std::get<std::string>(it->second);
         asked_for = connector;
         return view_of(green, 4, 4);
     };
@@ -490,7 +492,7 @@ LTEST_CASE(a_screen_with_no_frame_yet_is_a_gap_and_not_a_black_rectangle) {
     scene.roots = {bound_to(screen)};
     const ldoc::Project project = show(4, scene, {screen});
 
-    const lcomp::FrameSource none = [](const std::string&) { return lcomp::CapturedPicture{}; };
+    const lcomp::FrameSource none = [](const ldoc::Source&) { return lcomp::CapturedPicture{}; };
     const Picture picture = lcomp::composite_canvas(project, project.canvases[0].id, none);
     CHECK_EQ(picture.status, PictureStatus::Partial);
     REQUIRE(!picture.gaps.empty());
@@ -522,7 +524,9 @@ LTEST_CASE(an_empty_connector_is_passed_through_as_empty) {
 
     std::string asked_for = "<never asked>";
     const FrameBuffer any = flat_bgra(4, 4, 10, 20, 30);
-    const lcomp::FrameSource frames = [&](const std::string& connector) {
+    const lcomp::FrameSource frames = [&](const ldoc::Source& source) {
+        const auto it = source.settings.find("output");
+        const auto connector = it == source.settings.end() ? std::string{} : std::get<std::string>(it->second);
         asked_for = connector;
         return view_of(any, 4, 4);
     };
@@ -540,7 +544,7 @@ LTEST_CASE(a_frame_shorter_than_it_claims_is_refused_rather_than_read_past) {
     const ldoc::Project project = show(4, scene, {screen});
 
     const FrameBuffer two_pixels = flat_bgra(1, 2, 255, 0, 0);
-    const lcomp::FrameSource lying = [&](const std::string&) {
+    const lcomp::FrameSource lying = [&](const ldoc::Source&) {
         // Claims 4x4, carries two pixels.
         return view_of(two_pixels, 4, 4);
     };
@@ -548,6 +552,49 @@ LTEST_CASE(a_frame_shorter_than_it_claims_is_refused_rather_than_read_past) {
     CHECK_EQ(picture.status, PictureStatus::Partial);
     REQUIRE(!picture.gaps.empty());
     CHECK_EQ(picture.gaps.front().reason, GapReason::NoFrame);
+}
+
+LTEST_CASE(a_screen_inside_a_precomp_uses_the_same_frame_provider) {
+    auto screen = screen_source("HDMI-A-2");
+    auto inner = scene_named("inner");
+    inner.roots = {bound_to(screen)};
+    auto outer = scene_named("outer");
+    auto precomp = ldoc::make_node(ldoc::NodeKind::Precomp, "nested");
+    std::get<ldoc::PrecompData>(precomp.data).scene = inner.id;
+    outer.roots = {precomp};
+    auto project = show(4, outer, {screen});
+    inner.canvas = project.canvases[0].id;
+    project.scenes.push_back(inner);
+    const auto pixels = flat_bgra(4, 4, 13, 117, 231);
+    const Picture picture =
+        lcomp::composite_canvas(project, project.canvases[0].id, [&](const ldoc::Source& source) {
+        const auto it = source.settings.find("output");
+        const auto connector = it == source.settings.end() ? std::string{} : std::get<std::string>(it->second);
+            CHECK_EQ(connector, std::string("HDMI-A-2"));
+            return view_of(pixels, 4, 4);
+        });
+    CHECK_EQ(picture.status, PictureStatus::Complete);
+    CHECK_EQ(pixel(picture, 2, 2), std::tuple(13, 117, 231, 255));
+}
+
+LTEST_CASE(extreme_placement_is_bounded_before_integer_conversion_or_axis_allocation) {
+    auto screen = screen_source("screen");
+    auto scene = scene_named("extreme transform");
+    auto node = bound_to(screen);
+    node.layout.fit = ldoc::FitMode::Stretch;
+    node.layout.size = {1e7, 1e7};
+    scene.roots = {node};
+    auto project = show(4, scene, {screen});
+    const auto pixels = flat_bgra(4, 4, 13, 117, 231);
+    lcomp::FrameSource frames = [&](const ldoc::Source&) { return view_of(pixels, 4, 4); };
+    auto picture = lcomp::composite_canvas(project, project.canvases[0].id, frames);
+    CHECK_EQ(picture.status, PictureStatus::Complete);
+    CHECK_EQ(pixel(picture, 3, 3), std::tuple(13, 117, 231, 255));
+    project.scenes[0].roots[0].transform.position.x = 1e100;
+    picture = lcomp::composite_canvas(project, project.canvases[0].id, frames);
+    CHECK_EQ(picture.status, PictureStatus::Partial);
+    REQUIRE(!picture.gaps.empty());
+    CHECK_EQ(picture.gaps.front().reason, GapReason::UnsupportedTransform);
 }
 
 LTEST_MAIN("composite")

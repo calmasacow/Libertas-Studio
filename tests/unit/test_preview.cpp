@@ -10,6 +10,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <sys/wait.h>
 #include <thread>
@@ -136,6 +137,10 @@ LTEST_CASE(a_picture_crosses_the_process_and_the_renderer_exits_when_the_client_
         const lcomp::PreviewFrame first = commit(link, project);
         CHECK_EQ(first.status, lcomp::PictureStatus::Complete);
         CHECK_EQ(first.gaps, 0u);
+        CHECK_EQ(first.rendered_frames, 1u);
+        CHECK(first.render_ns > 0);
+        CHECK_EQ(first.fps_num, 60u);
+        CHECK_EQ(first.fps_den, 1u);
         CHECK_EQ(pixel(first, 0, 0), std::tuple(255, 0, 0, 255));
 
         // The document changed. The next frame has to be the new picture, not the one still
@@ -144,6 +149,8 @@ LTEST_CASE(a_picture_crosses_the_process_and_the_renderer_exits_when_the_client_
         project.sources = {red};
         const lcomp::PreviewFrame second = commit(link, project);
         CHECK_EQ(second.status, lcomp::PictureStatus::Complete);
+        CHECK_EQ(second.rendered_frames, 2u);
+        CHECK(second.render_ns >= first.render_ns);
         CHECK_EQ(pixel(second, 1, 1), std::tuple(0, 0, 255, 255));
 
         // A camera is not drawn. The colour underneath still is, and the gap count is what the
@@ -161,6 +168,44 @@ LTEST_CASE(a_picture_crosses_the_process_and_the_renderer_exits_when_the_client_
         CHECK_EQ(gapped.gaps, 1u);
         CHECK_EQ(pixel(gapped, 2, 2), std::tuple(0, 0, 255, 255));
 
+        // A refresh uses the assembled document and a new size budget. Read the actual memfd
+        // through the real process, including its resize, instead of testing a sizing helper.
+        REQUIRE(link.refresh(2).has_value());
+        auto resized = link.receive(2000);
+        REQUIRE(resized && resized->has_value());
+        REQUIRE((**resized).kind == lcomp::PreviewEvent::Kind::Frame);
+        CHECK_EQ((**resized).frame.width, 2);
+        CHECK_EQ((**resized).frame.height, 2);
+        CHECK_EQ(pixel((**resized).frame, 1, 1), std::tuple(0, 0, 255, 255));
+        auto ack = link.receive(2000);
+        REQUIRE(ack && ack->has_value());
+        CHECK_EQ((**ack).kind, lcomp::PreviewEvent::Kind::Ack);
+        REQUIRE(link.refresh(2).has_value());
+        auto unchanged = link.receive(2000);
+        REQUIRE(unchanged && unchanged->has_value());
+        CHECK_EQ((**unchanged).kind, lcomp::PreviewEvent::Kind::Ack);
+
+        // A transparent precomp over a blue source must preserve the background and blend
+        // its red child once. Both selected backends execute this through the process.
+        ldoc::Source overlay = colour_source(255, 0, 0);
+        ldoc::Scene inner;
+        inner.id = ldoc::Id::generate();
+        inner.canvas = project.canvases[0].id;
+        auto child = bound_to(overlay);
+        child.layout.size = {2, 2};
+        child.layout.fit = ldoc::FitMode::Stretch;
+        inner.roots = {child};
+        auto nested = ldoc::make_node(ldoc::NodeKind::Precomp, "nested");
+        std::get<ldoc::PrecompData>(nested.data).scene = inner.id;
+        nested.blend.opacity = 0.5;
+        scene.roots = {nested, bound_to(red)};
+        project.sources = {red, overlay};
+        project.scenes = {scene, inner};
+        const auto blended = commit(link, project);
+        CHECK_EQ(blended.status, lcomp::PictureStatus::Complete);
+        CHECK_EQ(pixel(blended, 0, 0), std::tuple(188, 0, 188, 255));
+        CHECK_EQ(pixel(blended, 3, 3), std::tuple(0, 0, 255, 255));
+
         // Closing is the peer going away. Quit is the polite path; this is the one a crashed
         // client actually takes, and the renderer has to exit rather than wait.
         link.close();
@@ -170,4 +215,67 @@ LTEST_CASE(a_picture_crosses_the_process_and_the_renderer_exits_when_the_client_
     CHECK_EQ(count_fds(), fds_before);
 }
 
-LTEST_MAIN("preview")
+LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
+    const char* connector = std::getenv("LIBERTAS_TEST_CAPTURE");
+    const char* video = std::getenv("LIBERTAS_TEST_VIDEO");
+    if (!connector && !video)
+        return;
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends.has_value());
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child.has_value());
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000).has_value());
+    auto source = colour_source(0, 0, 0);
+    source.type = video ? "source.v4l2" : "source.screen";
+    if (video) {
+        source.settings["device"] = std::string(video);
+        source.settings["resolution"] = std::string("2560x1440");
+        source.settings["frameRate"] = std::string("60");
+    } else source.settings["output"] = std::string(connector);
+    auto node = bound_to(source);
+    node.layout.size = {64, 72};
+    node.layout.fit = ldoc::FitMode::Stretch;
+    ldoc::Scene scene;
+    scene.id = ldoc::Id::generate();
+    auto project = show(scene, {source});
+    project.canvases[0].width = 128;
+    project.canvases[0].height = 72;
+    ldoc::Scene inner;
+    inner.id = ldoc::Id::generate();
+    inner.canvas = project.canvases[0].id;
+    auto duplicate = node;
+    duplicate.id = ldoc::Id::generate();
+    inner.roots = {node, duplicate};
+    auto nested = ldoc::make_node(ldoc::NodeKind::Precomp, "same screen again");
+    auto& pre = std::get<ldoc::PrecompData>(nested.data);
+    pre.scene = inner.id;
+    pre.size = {64, 72};
+    nested.transform.position = {64, 0};
+    project.scenes[0].roots = {node, nested};
+    project.scenes.push_back(inner);
+    int complete = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (complete < 20 && std::chrono::steady_clock::now() < deadline) {
+        const auto frame = commit(link, project);
+        if (frame.status == lcomp::PictureStatus::Complete) {
+            ++complete;
+            for (int y = 0; y < 72; ++y)
+                for (int x = 0; x < 64; ++x)
+                    CHECK_EQ(pixel(frame, x, y), pixel(frame, x + 64, y));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    link.quit();
+    link.close();
+    CHECK_EQ(reap(*child, 2000), 0);
+    CHECK_EQ(complete, 20);
+}
+
+int main() {
+    if (!std::getenv("LIBERTAS_TEST_CAPTURE") && !std::getenv("LIBERTAS_TEST_VIDEO"))
+        std::erase_if(ltest::registry(), [](const auto& test) {
+            return test.name == "capture_reuses_one_snapshot_across_direct_and_nested_placements";
+        });
+    return ltest::run_all("preview");
+}

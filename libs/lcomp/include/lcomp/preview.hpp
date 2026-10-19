@@ -17,7 +17,7 @@
 
 namespace lcomp {
 
-/// The preview protocol. Version 1.
+/// The preview protocol. Version 4.
 ///
 /// Whole messages on a `lipc::Channel`, bulk in sealed memfds. The bytes are little-endian and
 /// carry no padding, so a reader does not depend on the writer's struct layout.
@@ -25,10 +25,12 @@ namespace lcomp {
 ///   Hello    u8 kind, u16 version. Renderer to client, once, before anything else.
 ///   Project  u8 kind, u32 length, one memfd of `project_to_json`. Resets the assembly.
 ///   Scene    u8 kind, u32 length, one memfd of `scene_to_json`.
-///   Commit   u8 kind. Composite what has been assembled and answer.
+///   Commit   u8 kind, u32 maximum preview edge (0 = full size). Reuse the last snapshot
+///            on refresh; Ack alone means no document, capture or size change.
 ///   Quit     u8 kind. The renderer exits.
 ///   Frame    u8 kind, 26-byte canvas id, u32 width, u32 height, u32 stride, u8 status,
-///            u32 gap count. The first frame for a canvas, and any frame whose size changed,
+///            u32 gap count, u64 cumulative render ns, u64 completed frames,
+///            u32 canvas fps numerator, u32 denominator. The first frame for a canvas, and any frame whose size changed,
 ///            carries one memfd of tightly packed straight sRGB8. Later frames of the same
 ///            size reuse it: the client copies on receipt, and it does not send another
 ///            snapshot until it has copied, so the renderer is not writing what is being read.
@@ -38,7 +40,7 @@ namespace lcomp {
 ///
 /// An empty payload cannot be sent (ADR-0026), and every message here starts with its kind, so
 /// none of them are empty.
-inline constexpr std::uint16_t kPreviewProtocol = 1;
+inline constexpr std::uint16_t kPreviewProtocol = 4;
 
 /// One frame, with the pixels already copied out of the shared buffer.
 struct PreviewFrame {
@@ -48,6 +50,10 @@ struct PreviewFrame {
     std::uint32_t stride = 0;
     PictureStatus status = PictureStatus::NoProgram;
     std::uint32_t gaps = 0;
+    std::uint64_t render_ns = 0;
+    std::uint64_t rendered_frames = 0;
+    std::uint32_t fps_num = 0;
+    std::uint32_t fps_den = 0;
     std::vector<std::uint8_t> pixels;
 };
 
@@ -84,7 +90,9 @@ class PreviewLink {
     /// Project file, then one scene each, then commit. Fails without committing if a send
     /// does not fit, so the renderer never composites a half-snapshot from this call; a later
     /// call starts with Project, which resets whatever did arrive.
-    [[nodiscard]] std::expected<void, std::string> send_project(const ldoc::Project& project);
+    [[nodiscard]] std::expected<void, std::string> send_project(const ldoc::Project& project,
+                                                                std::uint32_t max_edge = 0);
+    [[nodiscard]] std::expected<void, std::string> refresh(std::uint32_t max_edge = 0);
 
     /// Ask the renderer to exit. A peer that has already gone is not an error here.
     void quit();
@@ -158,10 +166,11 @@ using FramesDone = std::function<void()>;
 /// which is what a caller with no capture wants.
 using FramesFresh = std::function<bool()>;
 
-[[nodiscard]] std::expected<void, std::string> serve_preview(lipc::Channel channel,
-                                                             FrameSource frames = {},
-                                                             FramesDone done = {},
-                                                             FramesFresh fresh = {});
+using CanvasRenderer = std::function<Picture(const ldoc::Project&, const ldoc::Id&, std::uint32_t)>;
+
+[[nodiscard]] std::expected<void, std::string>
+serve_preview(lipc::Channel channel, FrameSource frames = {}, FramesDone done = {},
+              FramesFresh fresh = {}, CanvasRenderer render = {});
 
 /// Start `libertas-render` with one end of a channel.
 ///

@@ -9,6 +9,7 @@
 #include "ldoc/command.hpp"
 
 #include <lcapture/screen.hpp>
+#include <lcapture/video.hpp>
 #include <lcore/log.hpp>
 
 #include <QElapsedTimer>
@@ -434,6 +435,7 @@ bool is_live_source(std::string_view type) {
 /// Defined with the other screen helpers, further down beside the settings schema that also
 /// needs the monitor list.
 bool screen_size(const ldoc::Source& src, double& width, double& height);
+bool video_size(const ldoc::Source& src, double& width, double& height);
 
 /// Natural size for a kind the compositor actually paints. Anything else has no rectangle.
 bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, const ldoc::Node& node,
@@ -468,6 +470,8 @@ bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, cons
         }
         if (src->type == "source.screen")
             return screen_size(*src, width, height);
+        if (src->type == "source.v4l2")
+            return video_size(*src, width, height);
         return false;
     }
     if (const auto* pre = std::get_if<ldoc::PrecompData>(&node.data)) {
@@ -1531,17 +1535,13 @@ constexpr FieldSpec kWindow[] = {
 };
 
 constexpr FieldSpec kCamera[] = {
-    {"", "This build enumerates no devices, so the node is typed rather than picked from a "
-         "list. `libertas probe` reports what is attached to this machine.", "note"},
-    {"device", "Device", "text", "/dev/video0"},
+    {"", "Uncompressed V4L2 video capture. Audio capture and automatic reconnect are not available yet.", "note"},
+    {"device", "Video device", "choice", ""},
     {"resolution", "Resolution", "choice", "Leave unchanged", false, 0,
-     "Leave unchanged|1920x1080|1280x720|960x540|640x480"},
+     "Leave unchanged|3840x2160|2560x1440|1920x1080|1280x720|960x540|640x480"},
     {"frameRate", "Frame rate", "choice", "Leave unchanged", false, 0,
      "Leave unchanged|60|59.94|50|30|29.97|25|24"},
     {"colourRange", "Colour range", "choice", "Default", false, 0, "Default|Partial|Full"},
-    {"buffering", "Use buffering", "bool", "", true},
-    {"autoresetOnTimeout", "Reset the device when it stops sending", "bool", "", false},
-    {"framesUntilTimeout", "Frames until timeout", "int", "", false, 5},
 };
 
 constexpr FieldSpec kBrowser[] = {
@@ -1629,6 +1629,44 @@ bool screen_size(const ldoc::Source& src, double& width, double& height) {
     return true;
 }
 
+const std::vector<libertas::capture::VideoDevice>& videos_now() {
+    static std::vector<libertas::capture::VideoDevice> cached;
+    static QElapsedTimer age;
+    if (!age.isValid() || age.elapsed() >= 500) {
+        cached = libertas::capture::list_video_devices();
+        age.start();
+    }
+    return cached;
+}
+
+bool video_size(const ldoc::Source& src, double& width, double& height) {
+    const auto size = src.settings.find("resolution");
+    if (size != src.settings.end()) {
+        if (const auto* text = std::get_if<std::string>(&size->second)) {
+            const auto parts = QString::fromStdString(*text).split('x');
+            if (parts.size() == 2) {
+                bool ok_w = false, ok_h = false;
+                const int w = parts[0].toInt(&ok_w), h = parts[1].toInt(&ok_h);
+                if (ok_w && ok_h && w > 0 && h > 0 && w <= 8192 && h <= 8192) {
+                    width = w; height = h; return true;
+                }
+            }
+        }
+    }
+    const auto it = src.settings.find("device");
+    const auto* path = it == src.settings.end() ? nullptr : std::get_if<std::string>(&it->second);
+    if (path) {
+        for (const auto& device : videos_now()) {
+            std::error_code ec;
+            if (device.path == *path || std::filesystem::equivalent(device.path, *path, ec)) {
+                width = device.width; height = device.height;
+                return width > 0 && height > 0;
+            }
+        }
+    }
+    return false;
+}
+
 std::span<const FieldSpec> schema_for(std::string_view type) {
     if (type == "source.media")        return kMedia;
     if (type == "source.image")        return kImage;
@@ -1699,6 +1737,8 @@ ldoc::ParamMap default_settings(std::string_view type) {
         else
             out.emplace(f.key, std::string{f.text});
     }
+    if (type == "source.v4l2" && !videos_now().empty())
+        out["device"] = videos_now().front().path;
     return out;
 }
 
@@ -1736,7 +1776,7 @@ QVariantList Document::sourceTypes() const {
         {"source.color", "Colour", "\u25A0"},
         {"source.screen", "Screen", "\u25AD"},
         {"source.window", "Window", "\u2750"},
-        {"source.v4l2", "Camera", "\u25C9"},
+        {"source.v4l2", "Video Capture", "\u25C9"},
         {"source.browser", "Browser", "\u25CD"},
         {"source.audio-input", "Audio Input", "\u266A"},
         {"source.audio-output", "Audio Output", "\u266B"},
@@ -1964,6 +2004,11 @@ QVariantList Document::sourceSettingsSchema(const QString& type) const {
             // Nothing connected, or a compositor with no capture protocol. An empty dropdown
             // with the note above it reads as "none to choose", which is the truth; inventing a
             // placeholder row would offer a screen that cannot be captured.
+            m["value"] = options.isEmpty() ? QString{} : options.front();
+        }
+        if (std::string_view{f.key} == "device" && type == QLatin1String("source.v4l2")) {
+            options.clear();
+            for (const auto& device : videos_now()) options.append(QString::fromStdString(device.path));
             m["value"] = options.isEmpty() ? QString{} : options.front();
         }
         m["choices"] = options;

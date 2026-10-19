@@ -376,6 +376,16 @@ int main(int argc, char** argv) {
         const QString want = preview.caption(QString{});
         report(pipeline == want && want.contains(QStringLiteral("nothing in the scene")),
                "the empty program scene is a picture, and says there is nothing in it");
+        const QVariantMap render_stats = preview.renderStats(QString{});
+        report(render_stats.value(QStringLiteral("available")).toBool() &&
+                   render_stats.value(QStringLiteral("frames")).toULongLong() > 0 &&
+                   render_stats.value(QStringLiteral("renderMs")).toDouble() > 0.0,
+               "the real renderer reports per-canvas frame count and render time");
+        report(render_stats.value(QStringLiteral("missed")).toULongLong() == 0,
+               "idle time does not count as missed render frames");
+        preview.resetStats();
+        report(preview.renderStats(QString{}).value(QStringLiteral("frames")).toULongLong() == 0,
+               "reset clears the displayed per-canvas frame count");
         // The caption updates in the same event as the frame. The image paints on the next
         // pass, and a picture that appears between the two drag grabs is counted as spill.
         settle();
@@ -545,6 +555,25 @@ int main(int argc, char** argv) {
             report(frame_item != nullptr, "the program frame is on screen");
             std::fprintf(stderr, "       (program picture: %.0f%% red)\n", fraction * 100.0);
             report(fraction > 0.8, "most of the program picture is the red the document asked for");
+            // Refresh-only commits can return Ack without a Frame. Drive the actual timer,
+            // child process and image provider: an empty Ack must not erase the program image.
+            preview.setLive(true, {60, 1});
+            pump(250);
+            preview.setLive(false, {60, 1});
+            bool retained_red = false;
+            if (frame_item != nullptr) {
+                const QPointF center = frame_item->mapToScene(
+                    QPointF{frame_item->width() / 2, frame_item->height() / 2});
+                const QImage retained = grab();
+                const int x = static_cast<int>(center.x() * window->devicePixelRatio());
+                const int y = static_cast<int>(center.y() * window->devicePixelRatio());
+                if (retained.rect().contains(x, y)) {
+                    const QRgb sample = retained.pixel(x, y);
+                    retained_red = qRed(sample) > 240 && qGreen(sample) < 20 && qBlue(sample) < 20;
+                }
+            }
+            report(preview.hasFrame(QString{}) && retained_red,
+                   "unchanged refresh acknowledgements keep the real program picture visible");
             document.undo();
             document.undo();
         }

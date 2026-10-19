@@ -26,19 +26,9 @@ namespace libertas::capture {
 /// answer for "which screens can I capture", since on such a compositor the answer is none.
 [[nodiscard]] std::vector<WlOutputInfo> list_screens(std::string& error);
 
-/// Captures one screen and hands back the last frame as CPU pixels.
-///
-/// This is the sequence `capture-spike` proved, with the measuring taken out: open the
-/// compositor connection, start a session on the named output, intersect the compositor's
-/// modifiers with the device's, allocate a ring of buffers ourselves, let the compositor render
-/// into them, read the newest one back.
-///
-/// Readback rather than a GPU handle because the preview compositor is CPU-side and must stay
-/// one scene walk (ADR-0040). That costs a copy per frame and is the right trade for a preview;
-/// the encode path keeps its frames on the device and does not come through here.
-///
-/// A ring rather than one buffer: with a single destination the compositor cannot draw frame N+1
-/// while we hold its only target, which serialises it against us.
+/// Captures a named screen into a ring of client-allocated dmabufs (ADR-0011).
+/// `start_images` publishes leased slots without readback; `start` is the CPU convenience path.
+/// A slot is never reused while leased. The allocating device must outlive capture and leases.
 class ScreenCapture {
 public:
     /// Opens a capture session for `connector` ("DP-1", or empty for the first output --
@@ -87,11 +77,16 @@ public:
     /// be scaled away.
     void start(std::function<void(std::vector<std::uint8_t>&&)> on_frame);
 
+    /// Publishes a lease on a completed slot; no readback or Vulkan submission on this thread.
+    /// Keep at most one current frame and one renderer snapshot. Device must outlive all leases.
+    void start_images(std::function<void(std::shared_ptr<const DmabufImage>)> on_frame);
+
     /// Stops the thread and waits for it. Called by the destructor; safe to call twice.
     void stop();
 
 private:
     ScreenCapture();
+    std::shared_ptr<const DmabufImage> capture_image(std::string& error);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

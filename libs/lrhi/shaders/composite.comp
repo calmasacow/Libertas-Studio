@@ -1,0 +1,39 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+layout(local_size_x=16, local_size_y=16) in;
+layout(binding=0, rgba16f) uniform image2D target;
+layout(binding=1) uniform sampler2D source;
+layout(push_constant) uniform Push {
+    ivec4 rect;
+    ivec4 flags; // quarter turn, flip X, flip Y, source kind (solid/sRGB/premultiplied linear)
+    vec4 colour;
+    vec4 opacity;
+} p;
+
+int axis(int i, int dest, int src, bool flip) {
+    return int(int64_t(flip ? dest-1-i : i) * int64_t(src) / int64_t(dest));
+}
+vec3 linear_rgb(vec3 c) {
+    return mix(pow((c+0.055)/1.055, vec3(2.4)), c/12.92, lessThanEqual(c, vec3(0.04045)));
+}
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy) + max(p.rect.xy, ivec2(0));
+    if (any(greaterThanEqual(pos, min(p.rect.zw, imageSize(target))))) return;
+    vec4 s = p.colour;
+    if (p.flags.w != 0) {
+        ivec2 i = pos-p.rect.xy, d = p.rect.zw-p.rect.xy, n = textureSize(source,0), uv;
+        if (p.flags.x == 1) uv = ivec2(axis(i.y,d.y,n.x,false),axis(i.x,d.x,n.y,true));
+        else if (p.flags.x == 2) uv = ivec2(axis(i.x,d.x,n.x,true),axis(i.y,d.y,n.y,true));
+        else if (p.flags.x == 3) uv = ivec2(axis(i.y,d.y,n.x,true),axis(i.x,d.x,n.y,false));
+        else uv = ivec2(axis(i.x,d.x,n.x,false),axis(i.y,d.y,n.y,false));
+        if (p.flags.y != 0) uv.x = n.x-1-uv.x;
+        if (p.flags.z != 0) uv.y = n.y-1-uv.y;
+        s = texelFetch(source,uv,0);
+        if (p.flags.w == 1) s.rgb = linear_rgb(s.rgb);
+    }
+    if (p.flags.w != 2) s.rgb *= s.a;
+    s *= p.opacity.x;
+    imageStore(target,pos,s + imageLoad(target,pos)*(1-s.a));
+}

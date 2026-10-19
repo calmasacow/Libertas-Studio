@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Libertas-Studio contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// One screen, captured into a ring of our own buffers and read back as RGBA8.
+// One screen, captured into a ring of our own buffers. Consumers lease completed slots.
 //
 // The sequence here is `capture-spike`'s, with the measuring removed. Keeping it in one place
 // matters because the order is not obvious and most of it is only discoverable by failing:
@@ -38,7 +38,7 @@ std::vector<WlOutputInfo> list_screens(std::string& error) {
 struct ScreenCapture::Impl {
     rhi::VkCtx* device = nullptr;
     WlCapPtr cap;
-    std::vector<rhi::VkExportedImage> ring;
+    std::vector<std::shared_ptr<rhi::VkExportedImage>> ring;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t slot = 0;
@@ -46,10 +46,8 @@ struct ScreenCapture::Impl {
     std::atomic<bool> running{false};
 
     ~Impl() {
-        // The wl_buffers go with the connection; the images are ours.
-        for (rhi::VkExportedImage& img : ring)
-            if (device != nullptr)
-                rhi::vk_destroy_exportable(*device, img);
+        cap.reset();
+        ring.clear();
     }
 };
 
@@ -73,6 +71,10 @@ std::unique_ptr<ScreenCapture> ScreenCapture::open(rhi::VkCtx& device, const std
     WlCapCaps caps;
     if (!wlcap_begin_session(*self->impl_->cap, connector, with_cursor, caps, error))
         return nullptr;
+    if (!rhi::vk_matches_drm_device(device, caps.dmabuf_device)) {
+        error = "capture compositor uses another DRM device; cross-device capture is not validated";
+        return nullptr;
+    }
     self->impl_->width = caps.width;
     self->impl_->height = caps.height;
 
@@ -106,7 +108,13 @@ std::unique_ptr<ScreenCapture> ScreenCapture::open(rhi::VkCtx& device, const std
                 rhi::vk_destroy_exportable(device, img);
             continue;
         }
-        self->impl_->ring = std::move(ring);
+        for (auto& img : ring) {
+            self->impl_->ring.emplace_back(new rhi::VkExportedImage(img),
+                                           [&device](rhi::VkExportedImage* image) {
+                                               rhi::vk_destroy_exportable(device, *image);
+                                               delete image;
+                                           });
+        }
         lc::info("capture: {}x{} {} on {}", caps.width, caps.height,
                     fourcc_str(format.drm_format), connector.empty() ? "the first screen" : connector);
         return self;
@@ -120,23 +128,42 @@ std::unique_ptr<ScreenCapture> ScreenCapture::open(rhi::VkCtx& device, const std
     return nullptr;
 }
 
-bool ScreenCapture::read_frame(std::vector<std::uint8_t>& out, std::string& error) {
-    if (impl_->ring.empty()) {
-        error = "capture has no buffers";
-        return false;
+std::shared_ptr<const DmabufImage> ScreenCapture::capture_image(std::string& error) {
+    for (std::size_t offset = 0; offset < impl_->ring.size(); ++offset) {
+        const auto index = (impl_->slot + offset) % impl_->ring.size();
+        if (impl_->ring[index].use_count() != 1)
+            continue;
+        if (!wlcap_capture_slot(*impl_->cap, index, impl_->width, impl_->height, nullptr, error, 0,
+                                nullptr))
+            return {};
+        impl_->slot = static_cast<std::uint32_t>((index + 1) % impl_->ring.size());
+        return impl_->ring[index];
     }
-    const std::size_t index = impl_->slot % impl_->ring.size();
-    // 0 is "wait": see the header, and ADR-0013 Consequence 4 before reaching for a number here.
-    if (!wlcap_capture_slot(*impl_->cap, index, impl_->width, impl_->height, nullptr, error, 0,
-                            nullptr))
-        return false;
-    impl_->slot = (impl_->slot + 1) % static_cast<std::uint32_t>(impl_->ring.size());
+    error = "all capture slots are leased; consumer exceeded snapshot budget";
+    return {};
+}
 
-    // `true`: the compositor wrote these pixels, not us, so the barrier has to acquire queue
-    // ownership. Getting this wrong reads a correct-looking buffer of stale content.
-    // Left in the compositor's own BGRA. See the header: converting here is a full pass over a
-    // buffer most of which is about to be scaled away.
-    return rhi::vk_readback_exported(*impl_->device, impl_->ring[index], true, out, error);
+bool ScreenCapture::read_frame(std::vector<std::uint8_t>& out, std::string& error) {
+    const auto image = capture_image(error);
+    return image && rhi::vk_readback_exported(*impl_->device, *image, true, out, error);
+}
+
+void ScreenCapture::start_images(std::function<void(std::shared_ptr<const DmabufImage>)> on_frame) {
+    if (impl_->thread.joinable())
+        return;
+    impl_->running = true;
+    impl_->thread = std::thread([this, on_frame = std::move(on_frame)] {
+        std::string error;
+        while (impl_->running) {
+            auto image = capture_image(error);
+            if (!image) {
+                if (impl_->running)
+                    lc::warn("capture stopped: {}", error);
+                break;
+            }
+            on_frame(std::move(image));
+        }
+    });
 }
 
 void ScreenCapture::start(std::function<void(std::vector<std::uint8_t>&&)> on_frame) {

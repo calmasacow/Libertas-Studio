@@ -29,6 +29,7 @@ struct DmabufImage {
     std::uint32_t n_planes = 0;
     std::uint32_t offsets[4] = {};
     std::uint32_t strides[4] = {};
+    std::uint32_t drm_format = 0;
 };
 
 /// One plane of a dmabuf frame. Fds here are borrowed unless the owner says otherwise.

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <format>
@@ -45,6 +46,11 @@ void append_u32(std::vector<std::byte>& out, std::uint32_t v) {
         out.push_back(static_cast<std::byte>((v >> shift) & 0xffu));
 }
 
+void append_u64(std::vector<std::byte>& out, std::uint64_t v) {
+    for (int shift = 0; shift < 64; shift += 8)
+        out.push_back(static_cast<std::byte>((v >> shift) & 0xffu));
+}
+
 [[nodiscard]] bool take_u16(std::span<const std::byte> in, std::size_t& at, std::uint16_t& v) {
     if (at + 2 > in.size())
         return false;
@@ -60,6 +66,14 @@ void append_u32(std::vector<std::byte>& out, std::uint32_t v) {
     v = 0;
     for (int shift = 0; shift < 32; shift += 8)
         v |= static_cast<std::uint32_t>(std::to_integer<unsigned>(in[at++])) << shift;
+    return true;
+}
+
+[[nodiscard]] bool take_u64(std::span<const std::byte> in, std::size_t& at, std::uint64_t& v) {
+    if (at + 8 > in.size()) return false;
+    v = 0;
+    for (int shift = 0; shift < 64; shift += 8)
+        v |= static_cast<std::uint64_t>(std::to_integer<unsigned>(in[at++])) << shift;
     return true;
 }
 
@@ -187,7 +201,7 @@ send_frame(lipc::Channel& channel, const ldoc::Id& canvas, const Picture& pictur
     }
 
     std::vector<std::byte> payload;
-    payload.reserve(1 + lc::kUlidLength + 4 + 4 + 4 + 1 + 4);
+    payload.reserve(1 + lc::kUlidLength + 4 + 4 + 4 + 1 + 4 + 8 + 8 + 4 + 4);
     payload.push_back(static_cast<std::byte>(Kind::Frame));
     for (char c : id)
         payload.push_back(static_cast<std::byte>(c));
@@ -200,6 +214,10 @@ send_frame(lipc::Channel& channel, const ldoc::Id& canvas, const Picture& pictur
     append_u32(payload, have_pixels ? picture.stride : 0u);
     payload.push_back(static_cast<std::byte>(picture.status));
     append_u32(payload, static_cast<std::uint32_t>(picture.gaps.size()));
+    append_u64(payload, picture.render_ns);
+    append_u64(payload, picture.rendered_frames);
+    append_u32(payload, picture.fps_num);
+    append_u32(payload, picture.fps_den);
 
     if (fresh) {
         const int raw = slot->fd.get();
@@ -235,7 +253,8 @@ std::expected<void, std::string> PreviewLink::take_hello(int timeout_ms) {
     return {};
 }
 
-std::expected<void, std::string> PreviewLink::send_project(const ldoc::Project& project) {
+std::expected<void, std::string> PreviewLink::send_project(const ldoc::Project& project,
+                                                           std::uint32_t max_edge) {
     // Serialise once. The length in the message has to be the length of the bytes in the
     // memfd, and a second call would be a second document the two could disagree about.
     const std::string project_bytes = ldoc::project_to_json(project);
@@ -282,7 +301,14 @@ std::expected<void, std::string> PreviewLink::send_project(const ldoc::Project& 
             !sent)
             return sent;
     }
-    const std::byte commit[] = {static_cast<std::byte>(Kind::Commit)};
+    return refresh(max_edge);
+}
+
+std::expected<void, std::string> PreviewLink::refresh(std::uint32_t max_edge) {
+    if (max_edge > static_cast<std::uint32_t>(kMaxPreviewEdge))
+        return std::unexpected("preview edge exceeds limit");
+    std::vector<std::byte> commit{static_cast<std::byte>(Kind::Commit)};
+    append_u32(commit, max_edge);
     return channel_.send(commit);
 }
 
@@ -371,12 +397,17 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
     std::uint32_t gaps = 0;
     if (!take_u32(payload, at, gaps))
         return std::unexpected(std::string{"a frame's gap count was cut short"});
-
+    PreviewEvent event;
+    std::uint64_t render_ns = 0, rendered_frames = 0;
+    std::uint32_t fps_num = 0, fps_den = 0;
+    if (!take_u64(payload, at, render_ns) || !take_u64(payload, at, rendered_frames) ||
+        !take_u32(payload, at, fps_num) || !take_u32(payload, at, fps_den) ||
+        at != payload.size())
+        return std::unexpected(std::string{"a frame's render statistics were cut short or malformed"});
     if (width > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ||
         height > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
         return std::unexpected(std::string{"a frame's dimension does not fit"});
 
-    PreviewEvent event;
     event.kind = PreviewEvent::Kind::Frame;
     event.frame.canvas = *canvas;
     event.frame.width = static_cast<std::int32_t>(width);
@@ -384,6 +415,10 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
     event.frame.stride = stride;
     event.frame.status = static_cast<PictureStatus>(status_byte);
     event.frame.gaps = gaps;
+    event.frame.render_ns = render_ns;
+    event.frame.rendered_frames = rendered_frames;
+    event.frame.fps_num = fps_num;
+    event.frame.fps_den = fps_den;
 
     if (stride == 0 || width == 0 || height == 0)
         return event;
@@ -432,10 +467,12 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
 }
 
 std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSource frames,
-                                              FramesDone done, FramesFresh fresh) {
+                                               FramesDone done, FramesFresh fresh,
+                                               CanvasRenderer render) {
     // Set whenever a project or scene message lands, so the first commit after an edit always
     // composites even if no screen has redrawn since.
     bool document_changed = true;
+    std::uint32_t previous_edge = 0;
     std::vector<std::byte> hello;
     hello.push_back(static_cast<std::byte>(Kind::Hello));
     append_u16(hello, kPreviewProtocol);
@@ -444,6 +481,10 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
 
     Assembly assembly;
     std::vector<std::pair<ldoc::Id, Slot>> slots;
+    struct RenderStats {
+        std::uint64_t ns = 0, frames = 0;
+    };
+    std::vector<std::pair<ldoc::Id, RenderStats>> stats;
 
     for (;;) {
         auto ready = channel.wait(-1);
@@ -502,6 +543,18 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
             if (kind != Kind::Commit)
                 continue;
 
+            std::size_t at = 1;
+            std::uint32_t max_edge = 0;
+            if (!take_u32(payload, at, max_edge) || at != payload.size() ||
+                max_edge > static_cast<std::uint32_t>(kMaxPreviewEdge)) {
+                if (auto sent = send_fault(channel, "invalid preview size"); !sent)
+                    return sent;
+                if (auto sent = send_ack(channel); !sent)
+                    return sent;
+                continue;
+            }
+            document_changed = document_changed || max_edge != previous_edge;
+            previous_edge = max_edge;
             if (!assembly.project || !assembly.error.empty()) {
                 const std::string why =
                     assembly.error.empty() ? "a commit arrived before its project" : assembly.error;
@@ -524,15 +577,32 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
             }
             document_changed = false;
             for (const ldoc::Canvas& canvas : assembly.project->canvases) {
-                const Picture picture = composite_canvas(*assembly.project, canvas.id, frames);
-                // Released before the frame is sent, not after: a captured frame is borrowed for
-                // the length of the walk, and holding a capture thread's lock across an IPC write
-                // would stall it on whatever the socket is doing.
-                if (done)
-                    done();
+                const auto started = std::chrono::steady_clock::now();
+                Picture picture =
+                    render ? render(*assembly.project, canvas.id, max_edge)
+                           : preview_size(composite_canvas(*assembly.project, canvas.id, frames),
+                                          max_edge);
+                const auto completed = std::chrono::steady_clock::now();
+                auto found = std::find_if(stats.begin(), stats.end(), [&](const auto& item) {
+                    return item.first == canvas.id;
+                });
+                if (found == stats.end()) {
+                    stats.push_back({canvas.id, RenderStats{}});
+                    found = std::prev(stats.end());
+                }
+                auto& total = found->second;
+                total.ns += static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(completed - started).count());
+                ++total.frames;
+                picture.render_ns = total.ns;
+                picture.rendered_frames = total.frames;
+                picture.fps_num = canvas.fps.valid() ? static_cast<std::uint32_t>(canvas.fps.num) : 0;
+                picture.fps_den = canvas.fps.valid() ? static_cast<std::uint32_t>(canvas.fps.den) : 0;
                 if (auto sent = send_frame(channel, canvas.id, picture, slots); !sent)
                     return sent;
             }
+            if (done)
+                done();
             if (auto sent = send_ack(channel); !sent)
                 return sent;
         }

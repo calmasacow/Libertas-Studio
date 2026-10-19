@@ -18,7 +18,11 @@ pkg_check_modules(LIBDRM REQUIRED IMPORTED_TARGET libdrm)
 
 add_library(lrhi STATIC
     src/vulkan.cpp
+    src/composite.cpp
 )
+include(CompileShader)
+libertas_compile_shader(lrhi shaders/composite.comp)
+libertas_compile_shader(lrhi shaders/preview.comp)
 add_library(libertas::lrhi ALIAS lrhi)
 
 target_include_directories(lrhi
@@ -28,6 +32,6 @@ target_include_directories(lrhi
     PRIVATE src
 )
 target_link_libraries(lrhi
-    PUBLIC libertas::flags libertas::lcapture
+    PUBLIC libertas::flags libertas::lcapture libertas::lcomp
     PRIVATE libertas::lcore Vulkan::Vulkan PkgConfig::LIBDRM
 )

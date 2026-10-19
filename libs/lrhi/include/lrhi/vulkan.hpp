@@ -35,6 +35,7 @@ std::vector<std::uint64_t> vk_supported_modifiers(VkCtx& ctx, std::uint32_t drm_
 
 /// A short description of the selected device, for logging.
 std::string vk_device_name(VkCtx& ctx);
+bool vk_matches_drm_device(VkCtx& ctx, std::uint64_t device);
 
 /// Imports one dmabuf frame as a VkImage and copies it back to host memory, proving the import
 /// produced real pixels. `out` receives width*height*4 bytes in the image's byte order.

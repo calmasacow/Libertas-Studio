@@ -7,12 +7,13 @@
 
 #include <algorithm>
 #include <array>
-#include <filesystem>
-#include <cstdio>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <filesystem>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -341,14 +342,7 @@ bool effect_enabled(const ldoc::Node& node) {
     return std::ranges::any_of(node.effects, [](const ldoc::Effect& e) { return e.enabled; });
 }
 
-struct Px {
-    int x0 = 0;
-    int y0 = 0;
-    int x1 = 0;
-    int y1 = 0;
-
-    [[nodiscard]] bool empty() const { return x1 <= x0 || y1 <= y0; }
-};
+using Px = DrawRect;
 
 /// Where a node's box lands, in pixel edges, half-open.
 ///
@@ -376,7 +370,7 @@ std::optional<Px> place(const ldoc::Node& node, double natural_w, double natural
     return out;
 }
 
-void refuse(Picture& picture, const ldoc::Node& node, GapReason why) {
+void refuse(DrawPlan& picture, const ldoc::Node& node, GapReason why) {
     picture.gaps.push_back(Gap{node.id, node.name, why});
 }
 
@@ -464,10 +458,10 @@ int sample_axis(int i, int dest_n, int src_n, bool flip) {
 ///
 /// Identical arithmetic, in the same order, so the picture does not change: the table is filled
 /// by `sample_axis` itself.
-std::vector<int> axis_map(int dest_n, int src_n, bool flip) {
-    std::vector<int> map(static_cast<std::size_t>(std::max(0, dest_n)));
-    for (int i = 0; i < dest_n; ++i)
-        map[static_cast<std::size_t>(i)] = sample_axis(i, dest_n, src_n, flip);
+std::vector<int> axis_map(int dest_n, int src_n, int begin, int count) {
+    std::vector<int> map(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i)
+        map[static_cast<std::size_t>(i)] = sample_axis(begin + i, dest_n, src_n, false);
     return map;
 }
 
@@ -481,7 +475,7 @@ void blit(Picture& picture, const Px& rect, const Picture& src, double opacity, 
     const int y1 = std::min(picture.height, rect.y1);
     const int dw = rect.x1 - rect.x0;
     const int dh = rect.y1 - rect.y0;
-    if (dw <= 0 || dh <= 0)
+    if (dw <= 0 || dh <= 0 || x1 <= x0 || y1 <= y0)
         return;
     const double covered = std::clamp(opacity, 0.0, 1.0);
     const bool plain = quarter == 0 && !flip_x && !flip_y;
@@ -493,8 +487,8 @@ void blit(Picture& picture, const Px& rect, const Picture& src, double opacity, 
     std::vector<int> map_x;
     std::vector<int> map_y;
     if (plain) {
-        map_x = axis_map(dw, src.width, false);
-        map_y = axis_map(dh, src.height, false);
+        map_x = axis_map(dw, src.width, x0 - rect.x0, x1 - x0);
+        map_y = axis_map(dh, src.height, y0 - rect.y0, y1 - y0);
     }
 
     for (int y = y0; y < y1; ++y) {
@@ -505,8 +499,8 @@ void blit(Picture& picture, const Px& rect, const Picture& src, double opacity, 
             int sx = 0;
             int sy = 0;
             if (plain) {
-                sx = map_x[static_cast<std::size_t>(ix)];
-                sy = map_y[static_cast<std::size_t>(iy)];
+                sx = map_x[static_cast<std::size_t>(x - x0)];
+                sy = map_y[static_cast<std::size_t>(y - y0)];
             } else {
                 switch (quarter) {
                 case 1:
@@ -564,7 +558,7 @@ std::optional<double> setting_number(const ldoc::ParamMap& settings, const char*
 }
 
 struct CanvasTarget {
-    Picture& picture;
+    DrawPlan& picture;
     bool& drew;
     /// Scenes currently being drawn. A precomp that names one of them is a cycle, not a loop.
     std::vector<ldoc::Id>& stack;
@@ -572,6 +566,16 @@ struct CanvasTarget {
     /// is a gap either way; with a frame source it is a gap only until a frame arrives.
     const FrameSource* frames = nullptr;
 };
+
+DrawOp operation(const ldoc::Node& node, const Px& rect, double opacity) {
+    DrawOp op;
+    op.rect = rect;
+    op.opacity = opacity;
+    op.quarter = quarter_turn(node.transform.rotation_deg).value_or(0);
+    op.flip_x = node.transform.scale.x < 0.0;
+    op.flip_y = node.transform.scale.y < 0.0;
+    return op;
+}
 
 void paint_scene(const ldoc::Project& project, const ldoc::Scene& scene, double opacity,
                  CanvasTarget& target);
@@ -647,10 +651,9 @@ void paint_image(const ldoc::Source& src, const ldoc::Node& node, double opacity
     sampled.stride = static_cast<std::uint32_t>(image->width) * 4u;
     sampled.pixels = std::move(image->pixels);
     target.drew = true;
-    // One blend, the same one a colour uses. `alphaLinear` would be a second blend.
-    blit(target.picture, *rect, sampled, opacity,
-         quarter_turn(node.transform.rotation_deg).value_or(0), node.transform.scale.x < 0.0,
-         node.transform.scale.y < 0.0);
+    DrawOp op = operation(node, *rect, opacity);
+    op.image = std::move(sampled);
+    target.picture.ops.push_back(std::move(op));
 }
 
 /// The latest frame of the screen this source names, placed with the same fit as an image.
@@ -666,13 +669,9 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
         refuse(target.picture, node, GapReason::UnsupportedType);
         return;
     }
-    // Empty connector means the first screen (ADR-0041), and the frame source resolves that --
-    // it is the half that knows what the compositor advertised.
-    const auto it = src.settings.find("output");
-    const auto* connector = it == src.settings.end() ? nullptr : std::get_if<std::string>(&it->second);
-    const CapturedPicture frame =
-        (*target.frames)(connector == nullptr ? std::string{} : *connector);
-    if (frame.empty() || frame.width <= 0 || frame.height <= 0) {
+    const CapturedPicture frame = (*target.frames)(src);
+    if (frame.empty() || frame.width <= 0 || frame.height <= 0 || frame.width > kMaxPreviewEdge ||
+        frame.height > kMaxPreviewEdge) {
         refuse(target.picture, node, GapReason::NoFrame);
         return;
     }
@@ -680,7 +679,7 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
     // from it would read past the end. Refused as NoFrame rather than trusted.
     const auto need =
         static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height) * 4u;
-    if (frame.size < need) {
+    if (!frame.device_image && frame.size < need) {
         refuse(target.picture, node, GapReason::NoFrame);
         return;
     }
@@ -699,9 +698,11 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
     sampled.stride = static_cast<std::uint32_t>(frame.width) * 4u;
     sampled.borrowed = frame.pixels;
     target.drew = true;
-    blit(target.picture, *rect, sampled, opacity,
-         quarter_turn(node.transform.rotation_deg).value_or(0), node.transform.scale.x < 0.0,
-         node.transform.scale.y < 0.0, /*swap_rb=*/true);
+    DrawOp op = operation(node, *rect, opacity);
+    op.image = std::move(sampled);
+    op.bgra = true;
+    op.device_image = frame.device_image;
+    target.picture.ops.push_back(std::move(op));
 }
 
 void paint_node(const ldoc::Project& project, const ldoc::Node& node, double parent_opacity,
@@ -756,7 +757,7 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
             paint_image(*src, node, opacity, target);
             return;
         }
-        if (src->type == "source.screen") {
+        if (src->type == "source.screen" || src->type == "source.v4l2") {
             paint_screen(*src, node, opacity, target);
             return;
         }
@@ -783,7 +784,9 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
             return;
         }
         target.drew = true;
-        fill_rect(target.picture, *rect, *colour, opacity);
+        DrawOp op = operation(node, *rect, opacity);
+        op.colour = *colour;
+        target.picture.ops.push_back(std::move(op));
         return;
     }
 
@@ -813,20 +816,16 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
             refuse(target.picture, node, GapReason::NoSize);
             return;
         }
-        Picture offscreen;
+        DrawPlan offscreen;
         offscreen.width = pw;
         offscreen.height = ph;
-        offscreen.stride = static_cast<std::uint32_t>(pw) * 4u;
-        const auto bytes =
-            static_cast<std::uint64_t>(offscreen.stride) * static_cast<std::uint64_t>(ph);
-        offscreen.pixels.assign(static_cast<std::size_t>(bytes), 0);
 
         // A local, not `target.drew`. The inner scene's emptiness is not the outer scene's, and
         // the reference cannot be reseated — assigning through it would wipe a node already
         // drawn behind this precomp.
         bool nested_drew = false;
         target.stack.push_back(inner->id);
-        CanvasTarget nested{offscreen, nested_drew, target.stack};
+        CanvasTarget nested{offscreen, nested_drew, target.stack, target.frames};
         paint_scene(project, *inner, 1.0, nested);
         target.stack.pop_back();
         for (Gap& gap : offscreen.gaps)
@@ -840,9 +839,9 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
             return;
         }
         target.drew = true;
-        blit(target.picture, *rect, offscreen, opacity,
-             quarter_turn(node.transform.rotation_deg).value_or(0), node.transform.scale.x < 0.0,
-             node.transform.scale.y < 0.0);
+        DrawOp op = operation(node, *rect, opacity);
+        op.nested = std::make_shared<DrawPlan>(std::move(offscreen));
+        target.picture.ops.push_back(std::move(op));
         return;
     }
 
@@ -869,9 +868,9 @@ Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id
     return composite_canvas(project, canvas_id, FrameSource{});
 }
 
-Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id,
-                         const FrameSource& frames) {
-    Picture picture;
+DrawPlan plan_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id,
+                     const FrameSource& frames) {
+    DrawPlan picture;
     const ldoc::Canvas* canvas = project.canvas(canvas_id);
     if (!canvas) {
         picture.status = PictureStatus::Unsupported;
@@ -892,9 +891,6 @@ Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id
         picture.status = PictureStatus::Unsupported;
         return picture;
     }
-    picture.stride = static_cast<std::uint32_t>(canvas->width) * 4u;
-    picture.pixels.assign(static_cast<std::size_t>(bytes), 0);
-    fill_opaque_black(picture);
 
     const ldoc::Deck* deck = nullptr;
     for (const ldoc::Deck& candidate : project.decks) {
@@ -926,6 +922,57 @@ Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id
     else
         picture.status = PictureStatus::Complete;
     return picture;
+}
+
+Picture execute_cpu(const DrawPlan& plan, bool transparent) {
+    Picture picture;
+    picture.width = plan.width;
+    picture.height = plan.height;
+    picture.status = plan.status;
+    picture.gaps = plan.gaps;
+    if (plan.status == PictureStatus::Unsupported)
+        return picture;
+    picture.stride = static_cast<std::uint32_t>(plan.width) * 4u;
+    picture.pixels.assign(
+        static_cast<std::size_t>(picture.stride) * static_cast<std::size_t>(plan.height), 0);
+    if (!transparent)
+        fill_opaque_black(picture);
+    for (const DrawOp& op : plan.ops) {
+        if (op.device_image)
+            throw std::invalid_argument("CPU executor requires host pixels, not a device image");
+        if (op.colour) {
+            fill_rect(picture, op.rect, *op.colour, op.opacity);
+        } else if (op.nested) {
+            const Picture nested = execute_cpu(*op.nested, true);
+            blit(picture, op.rect, nested, op.opacity, op.quarter, op.flip_x, op.flip_y);
+        } else if (op.image.read_from() && !op.device_image) {
+            blit(picture, op.rect, op.image, op.opacity, op.quarter, op.flip_x, op.flip_y, op.bgra);
+        }
+    }
+    return picture;
+}
+
+Picture composite_canvas(const ldoc::Project& project, const ldoc::Id& canvas,
+                         const FrameSource& frames) {
+    return execute_cpu(plan_canvas(project, canvas, frames));
+}
+
+Picture preview_size(Picture picture, std::uint32_t max_edge) {
+    const int edge = std::max(picture.width, picture.height);
+    if (!max_edge || edge <= 0 || max_edge >= static_cast<std::uint32_t>(edge) ||
+        picture.pixels.empty())
+        return picture;
+    Picture out;
+    out.width =
+        std::max(1, static_cast<int>(static_cast<std::int64_t>(picture.width) * max_edge / edge));
+    out.height =
+        std::max(1, static_cast<int>(static_cast<std::int64_t>(picture.height) * max_edge / edge));
+    out.stride = static_cast<std::uint32_t>(out.width) * 4u;
+    out.status = picture.status;
+    out.gaps = std::move(picture.gaps);
+    out.pixels.resize(static_cast<std::size_t>(out.stride) * static_cast<std::size_t>(out.height));
+    blit(out, {0, 0, out.width, out.height}, picture, 1, 0, false, false);
+    return out;
 }
 
 } // namespace lcomp

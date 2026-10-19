@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -93,6 +94,10 @@ struct Picture {
     }
     PictureStatus status = PictureStatus::NoProgram;
     std::vector<Gap> gaps;
+    std::uint64_t render_ns = 0;
+    std::uint64_t rendered_frames = 0;
+    std::uint32_t fps_num = 0;
+    std::uint32_t fps_den = 0;
 };
 
 /// The largest edge this preview will allocate. A corrupt document does not get to ask for
@@ -146,14 +151,9 @@ struct SolvedFrame {
                                                           double x, double y, double width,
                                                           double height);
 
-/// A captured frame, as the compositor rendered it and the capture path read it back.
-///
-/// Straight sRGB8 like `Picture`, because that is what the preview draws and what `blit` samples.
-/// Deliberately a plain buffer and not a handle: `lcomp` owns no device (ADR-0005 puts the GPU in
-/// `libertas-render`, ADR-0040 kept it out of this library), so whoever has the device reads the
-/// frame back and hands the pixels in. That keeps one scene walk rather than a second one on the
-/// GPU that has to agree with this one -- which is the disagreement ADR-0040's last consequence
-/// warns about.
+/// A captured frame borrowed for the lifetime of one draw plan and its execution.
+/// CPU providers return tightly packed BGRA8; GPU providers return a native image description.
+/// The scene walk only needs dimensions and availability. It never interprets the native handle.
 struct CapturedPicture {
     std::int32_t width = 0;
     std::int32_t height = 0;
@@ -166,17 +166,60 @@ struct CapturedPicture {
     const std::uint8_t* pixels = nullptr;
     std::size_t size = 0;
 
-    [[nodiscard]] bool empty() const { return pixels == nullptr || size == 0; }
+    /// Borrowed native image description, understood only by the supplying GPU backend.
+    /// Its lease must outlive execution of the draw plan. CPU callers supply pixels instead.
+    const void* device_image = nullptr;
+
+    [[nodiscard]] bool empty() const { return (pixels == nullptr || size == 0) && !device_image; }
 };
 
-/// Asked for the latest frame of the screen a source names, by connector ("DP-1", or empty for
-/// the first screen -- ADR-0041).
+/// Asked for the latest frame of a capture source, including its device and mode settings.
 ///
 /// Returning an empty picture is the normal answer, not an error: capture is damage-driven
 /// (ADR-0013), so a screen nobody has touched has sent nothing, and a source whose capture has
 /// not started yet has nothing either. Both are gaps in the picture, counted in the caption, for
 /// the same reason an unreadable image is -- the alternative is inventing a frame.
-using FrameSource = std::function<CapturedPicture(const std::string& connector)>;
+using FrameSource = std::function<CapturedPicture(const ldoc::Source& source)>;
+
+struct DrawRect {
+    int x0 = 0;
+    int y0 = 0;
+    int x1 = 0;
+    int y1 = 0;
+
+    [[nodiscard]] bool empty() const { return x1 <= x0 || y1 <= y0; }
+};
+
+struct DrawPlan;
+
+/// Resolved pixels and geometry; executors never interpret document nodes (ADR-0042).
+struct DrawOp {
+    DrawRect rect;
+    double opacity = 1;
+    int quarter = 0;
+    bool flip_x = false;
+    bool flip_y = false;
+    bool bgra = false;
+    std::optional<ldoc::Rgba> colour;
+    Picture image;
+    const void* device_image = nullptr;
+    std::shared_ptr<DrawPlan> nested;
+};
+
+struct DrawPlan {
+    int width = 0;
+    int height = 0;
+    PictureStatus status = PictureStatus::NoProgram;
+    std::vector<Gap> gaps;
+    std::vector<DrawOp> ops;
+};
+
+[[nodiscard]] DrawPlan plan_canvas(const ldoc::Project& project, const ldoc::Id& canvas,
+                                   const FrameSource& frames = {});
+[[nodiscard]] Picture execute_cpu(const DrawPlan& plan, bool transparent = false);
+
+/// Fit a completed canvas within an edge budget. Zero preserves its size.
+[[nodiscard]] Picture preview_size(Picture picture, std::uint32_t max_edge);
 
 /// Draw the program scene of `canvas` into a new picture.
 ///

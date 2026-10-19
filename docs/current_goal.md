@@ -4,6 +4,99 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Source expansion and performance pass, 2026-10-19
+
+The GPU, render statistics and Elgato work below is the validated baseline for this pass.
+The warning-free `-Werror` build and all 26 tests passed again before the baseline commit.
+Next: measure and reduce render costs, finish Linux source backends and their transform menus,
+then import OBS scene collections. Commit and push each validated section. macOS-only sources
+are excluded at the operator's request; use Linux equivalents where available.
+
+## Video capture update, 2026-10-18
+
+ADR-0044 adds `source.v4l2` capture through native V4L2 streaming and libswscale BGRA
+conversion. Add **Video Capture**, select a device, resolution and frame rate. Stable
+device paths exclude metadata nodes. Explicit modes fail instead of silently downgrading.
+CPU and GPU consume the same leased snapshot through the shared scene walk; duplicate
+placements cannot observe different capture frames within a render commit.
+
+The attached Elgato 4K X negotiated **2560x1440 at 60/1 fps**. The real capture-thread check
+measured **59.39 fps over 181 frames**, including BGRA conversion, while retaining an older
+frame and verifying it remained immutable. Real renderer-process checks passed with both
+CPU and RTX 2070 GPU backends, including direct and nested placements. These measurements
+describe acquisition, not end-to-end latency or sustained 4K canvas throughput.
+The build is warning-free with `LIBERTAS_WERROR=ON`; all 26 CTest entries pass with
+`LIBERTAS_TEST_GPU=1`, including the headless UI check.
+
+This slice supports raw SDR NV12, YUYV, YUV420 and RGB/BGR24. Audio, compressed-only devices,
+HDR, automatic reconnect and USB zero-copy remain unimplemented. libswscale development
+files are now a build dependency. Hardware checks run sequentially because capture is exclusive:
+
+```sh
+LIBERTAS_TEST_VIDEO=/dev/video2 build-make/tests/unit/test_video
+LIBERTAS_RENDER_BACKEND=cpu LIBERTAS_TEST_VIDEO=/dev/video2 build-make/tests/unit/test_preview
+LIBERTAS_RENDER_BACKEND=gpu LIBERTAS_TEST_VIDEO=/dev/video2 build-make/tests/unit/test_preview
+```
+
+## GPU render path update, 2026-10-18
+
+ADR-0042 and its implementation were developed from `main` at `57ce881` and are included
+in the validated baseline described above. The earlier clean-tree statement below describes
+the CPU handoff. `AGENTS.md` was already untracked before the GPU work.
+
+- `lcomp::plan_canvas` is the one scene walk. CPU and Vulkan execute its resolved operations;
+  transparent precomps, source availability, gaps, placement and ordering are shared.
+- `lrhi::GpuCompositor` composites at canvas size in scene-linear RGBA16F. A separate GPU pass
+  produces sRGB8 at the requested preview size; only that reduced buffer is read back.
+- Capture publishes leased dmabuf slots. A render commit holds one snapshot per connector
+  across repeated placements, nested scenes and canvases. Capture threads do no Vulkan work.
+- Preview protocol v2 carries a maximum preview edge. QML reports its physical display size;
+  refresh-only commits reuse the document and unchanged frames receive only an Ack. The UI
+  retains its last image on that Ack. This also fixes the old freshness skip: timer ticks used
+  to resend the document and mark it changed every time.
+- Offscreen runs use CPU. Normal runs try Vulkan, log failure, and fall back to CPU. Set
+  `LIBERTAS_RENDER_BACKEND=cpu` or `gpu` to force a backend; `gpu` fails instead of silently
+  falling back. `LIBERTAS_RENDER_DEVICE=226:128` selects by DRM device identity (`226:129` is
+  Intel here). Cross-device capture is explicitly refused until validated.
+
+### Evidence and checks
+
+The original suite passed 24/24 before changes. The expanded suite passes 25/25 when hardware
+checks are enabled with `LIBERTAS_TEST_GPU=1`; without that variable the GPU test is skipped.
+The real process check also runs with a required GPU. Hardware parity checks pass on both RTX
+2070 and Intel UHD 630, including rotations, flips, opacity, nested scenes and reduced preview.
+CPU retains its sRGB8 intermediate rounding; GPU retains half-float linear intermediates. The
+tested scenes allow at most two byte values of channel error, not a universal bound for an
+arbitrary number of translucent layers.
+
+Real captures on HDMI-A-1 and HDMI-A-2 pass pixel comparison and Vulkan synchronization
+validation. Repeated rendering of one captured frame, including a 640-edge preview readback,
+measured **1.30 ms at 2560x1440** and **1.87 ms at 3840x2160**, averaged over 60 frames.
+The final 4K run with producer-fence waiting and synchronization validation measured 1.67 ms.
+These are composite/readback timings, **not sustained capture throughput**. A separate real
+process check keeps capture running and verifies direct and repeated nested placements read
+identical snapshots. An unavailable DRM device also passes the CPU fallback process check.
+
+```sh
+cmake --build build-make -j 8
+LIBERTAS_TEST_GPU=1 ctest --test-dir build-make --output-on-failure
+LIBERTAS_RENDER_BACKEND=gpu LIBERTAS_TEST_CAPTURE=HDMI-A-2 build-make/tests/unit/test_preview
+LIBERTAS_TEST_GPU=1 LIBERTAS_TEST_CAPTURE=HDMI-A-2 build-make/tests/unit/test_gpu_composite
+LIBERTAS_TEST_GPU=1 LIBERTAS_RENDER_DEVICE=226:129 build-make/tests/unit/test_gpu_composite
+```
+
+### What follows this slice
+
+Encode/output integration is still absent. The full-size linear target stays in the render
+process, but an encoder handoff API is not exposed yet. ADR-0019's converted host-memory
+transfer to a secondary encoder still needs integration and measurement. Cross-device capture
+is rejected rather than assumed to work. A timed-out GPU fence terminates the render process
+without recycling potentially live resources; automatic device-loss recovery still belongs to
+the future supervisor/output work. The decoded-image upload path currently uploads each drawn
+image per composite; profile a real image-heavy show before adding a texture cache.
+
+## Previous CPU handoff
+
 Written 2026-10-18, at the end of a session that got a real screen drawing in the Program panel
 and then went looking for why it is slow. Read this before picking the work up elsewhere.
 

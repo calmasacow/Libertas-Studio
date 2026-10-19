@@ -12,22 +12,19 @@
 //   * the first barrier is a queue-family *acquire* from VK_QUEUE_FAMILY_FOREIGN_EXT, which is what
 //     preserves the external writer's contents.
 
-#include <lrhi/vulkan.hpp>
-
 #include "vk_ctx_internal.hpp"
-
-
-#include <lcore/log.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <drm_fourcc.h>
 #include <format>
-
+#include <poll.h>
+#include <lcore/log.hpp>
+#include <lrhi/vulkan.hpp>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 #include <vulkan/vulkan.h>
-
-#include <drm_fourcc.h>
 
 namespace libertas::rhi {
 
@@ -166,7 +163,8 @@ VkCtxPtr vk_init(const std::string& prefer_drm_node, std::string& error) {
     vkGetPhysicalDeviceQueueFamilyProperties(chosen, &qn, qfp.data());
     bool found_q = false;
     for (std::uint32_t i = 0; i < qn; ++i) {
-        if ((qfp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0u) {
+        constexpr auto required = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+        if ((qfp[i].queueFlags & required) == required) {
             ctx->queue_family = i;
             found_q = true;
             break;
@@ -199,6 +197,12 @@ VkCtxPtr vk_init(const std::string& prefer_drm_node, std::string& error) {
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = static_cast<std::uint32_t>(dev_exts.size());
     dci.ppEnabledExtensionNames = dev_exts.data();
+    VkPhysicalDeviceFeatures features{};
+    vkGetPhysicalDeviceFeatures(chosen, &features);
+    VkPhysicalDeviceFeatures enabled{};
+    enabled.shaderInt64 = features.shaderInt64;
+    enabled.shaderStorageImageExtendedFormats = features.shaderStorageImageExtendedFormats;
+    dci.pEnabledFeatures = &enabled;
 
     if (VkResult r = vkCreateDevice(chosen, &dci, nullptr, &ctx->device); r != VK_SUCCESS) {
         error = std::format("vkCreateDevice failed ({})", static_cast<int>(r));
@@ -227,6 +231,21 @@ VkCtxPtr vk_init(const std::string& prefer_drm_node, std::string& error) {
         return nullptr;
     }
     return ctx;
+}
+
+bool vk_matches_drm_device(VkCtx& ctx, std::uint64_t device) {
+    VkPhysicalDeviceDrmPropertiesEXT drm{};
+    drm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+    VkPhysicalDeviceProperties2 props{};
+    props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props.pNext = &drm;
+    vkGetPhysicalDeviceProperties2(ctx.phys, &props);
+    return (drm.hasRender && device == static_cast<std::uint64_t>(
+                                           makedev(static_cast<unsigned>(drm.renderMajor),
+                                                   static_cast<unsigned>(drm.renderMinor)))) ||
+           (drm.hasPrimary &&
+            device == static_cast<std::uint64_t>(makedev(static_cast<unsigned>(drm.primaryMajor),
+                                                         static_cast<unsigned>(drm.primaryMinor))));
 }
 
 void vk_destroy(VkCtx* ctx) {
@@ -418,7 +437,7 @@ bool readback_image(VkCtx& ctx, VkImage image, std::uint32_t width, std::uint32_
     acquire.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     acquire.srcAccessMask = 0;
     acquire.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    acquire.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    acquire.oldLayout = written_by_foreign ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
     acquire.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     if (written_by_foreign) {
         acquire.srcQueueFamilyIndex =
@@ -441,6 +460,19 @@ bool readback_image(VkCtx& ctx, VkImage image, std::uint32_t width, std::uint32_
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copy.imageExtent = {width, height, 1};
     vkCmdCopyImageToBuffer(st.cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, st.buffer, 1, &copy);
+
+    if (written_by_foreign) {
+        VkImageMemoryBarrier release = acquire;
+        release.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        release.dstAccessMask = 0;
+        release.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        release.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        release.srcQueueFamilyIndex = ctx.queue_family;
+        release.dstQueueFamilyIndex = acquire.srcQueueFamilyIndex;
+        vkCmdPipelineBarrier(st.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                             &release);
+    }
 
     vkEndCommandBuffer(st.cmd);
 
@@ -790,6 +822,7 @@ bool vk_create_exportable(VkCtx& ctx, std::uint32_t width, std::uint32_t height,
     out.height = height;
     out.modifier = chosen.drmFormatModifier;
     out.n_planes = planes;
+    out.drm_format = drm_format;
     return true;
 }
 
@@ -820,8 +853,25 @@ std::string vk_readback_note(VkCtx& ctx) {
 
 bool vk_readback_exported(VkCtx& ctx, const VkExportedImage& img, bool written_by_foreign,
                           std::vector<std::uint8_t>& out, std::string& error) {
-    return readback_image(ctx, static_cast<VkImage>(img.image), img.width, img.height,
-                          written_by_foreign, out, error);
+    if (written_by_foreign) {
+        pollfd ready{img.dmabuf_fd, POLLIN, 0};
+        if (::poll(&ready, 1, 2000) <= 0 || (ready.revents & POLLIN) == 0) {
+            error = "capture producer fence did not signal";
+            return false;
+        }
+    }
+    if (!readback_image(ctx, static_cast<VkImage>(img.image), img.width, img.height,
+                        written_by_foreign, out, error))
+        return false;
+    const bool swap = img.drm_format == DRM_FORMAT_ABGR8888 || img.drm_format == DRM_FORMAT_XBGR8888;
+    const bool opaque = img.drm_format == DRM_FORMAT_XRGB8888 || img.drm_format == DRM_FORMAT_XBGR8888;
+    if (swap || opaque) {
+        for (std::size_t i = 0; i < out.size(); i += 4) {
+            if (swap) std::swap(out[i], out[i + 2]);
+            if (opaque) out[i + 3] = 255;
+        }
+    }
+    return true;
 }
 
 
