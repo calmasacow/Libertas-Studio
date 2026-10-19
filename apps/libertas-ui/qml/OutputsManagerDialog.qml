@@ -222,13 +222,41 @@ Item {
                             Document.setOutputEncodingOptions(outputId, rate, preset, keyframeMs);
                         }
 
-                        ToolButton {
+                        Row {
                             width: parent.width
                             height: 32
-                            label: output.name
-                            tip: qsTr("Settings for %1").arg(output.name)
-                            active: output.expanded
-                            onClicked: dialog.selectedOutputId = output.expanded ? "" : output.outputId
+                            spacing: 6
+                            ToolButton {
+                                width: parent.width - 90
+                                height: parent.height
+                                label: output.name
+                                tip: qsTr("Settings for %1").arg(output.name)
+                                active: output.expanded
+                                onClicked: dialog.selectedOutputId = output.expanded ? "" : output.outputId
+                            }
+                            ToolButton {
+                                objectName: "removeManagedOutput"
+                                property string outputId: output.outputId
+                                width: 84
+                                height: parent.height
+                                label: qsTr("Remove")
+                                tip: qsTr("Remove %1 (can be undone)").arg(output.name)
+                                onClicked: {
+                                    if (dialog.selectedOutputId === output.outputId) {
+                                        dialog.selectedOutputId = "";
+                                        dialog.selectedDestinationId = "";
+                                    }
+                                    Document.removeOutput(output.outputId);
+                                }
+                            }
+                        }
+                        SettingText {
+                            width: parent.width
+                            visible: output.expanded
+                            label: qsTr("Name")
+                            inputName: "managedOutputName"
+                            text: output.name
+                            onCommitted: value => Document.renameOutput(output.outputId, value)
                         }
                         CheckLabel {
                             visible: output.expanded

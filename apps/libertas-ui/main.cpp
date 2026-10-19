@@ -3035,6 +3035,15 @@ int main(int argc, char** argv) {
                     QCoreApplication::sendEvent(window, &enter);
                     settle();
                 };
+                auto* outputName = visibleControl("managedOutputName");
+                report(outputName != nullptr, "output Name is available without opening destination settings");
+                if (outputName) {
+                    const auto previous = outputName->property("text").toString();
+                    editText(outputName, QStringLiteral("Renamed output"));
+                    report(rows.front()->property("name").toString() == "Renamed output",
+                           "manager Name field changes the output dock label");
+                    editText(outputName, previous);
+                }
                 auto* preset = visibleControl("outputPreset");
                 report(preset != nullptr, "selected encode exposes editable preset settings");
                 if (preset) {
@@ -3119,6 +3128,24 @@ int main(int argc, char** argv) {
                                    "saving clears the key from the editor");
                         }
                     }
+                }
+                QQuickItem* remove = nullptr;
+                for (auto* button : collect(manager, QStringLiteral("removeManagedOutput"))) {
+                    if (button->property("outputId").toString() == selected)
+                        remove = button;
+                }
+                report(remove != nullptr, "every output has a Remove button in the manager");
+                if (remove) {
+                    const auto count = document.outputsModel()->rowCount();
+                    reveal(remove);
+                    click(remove);
+                    report(document.outputsModel()->rowCount() == count - 1 &&
+                               manager->property("selectedOutputId").toString().isEmpty(),
+                           "manager Remove deletes the selected output and clears its editor");
+                    document.undo();
+                    settle();
+                    report(document.outputsModel()->rowCount() == count,
+                           "removing an output from the manager can be undone");
                 }
                 QMetaObject::invokeMethod(manager, "close");
                 click(gears.front());
