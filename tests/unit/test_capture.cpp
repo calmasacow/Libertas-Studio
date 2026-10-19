@@ -17,6 +17,7 @@
 
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 namespace {
 
@@ -29,6 +30,19 @@ std::vector<libertas::capture::WlOutputInfo> three_screens() {
 }
 
 } // namespace
+
+LTEST_CASE(live_window_list_has_capture_dimensions) {
+    if (!std::getenv("LIBERTAS_TEST_WINDOWS")) return;
+    std::string error;
+    auto windows = libertas::capture::list_windows(error);
+    REQUIRE_MSG(!windows.empty(), "{}", error);
+    for (const auto& window : windows)
+        std::fprintf(stderr, "window %s %s [%s]\n", window.id.c_str(), window.title.c_str(), window.app_id.c_str());
+    int width = 0, height = 0;
+    REQUIRE_MSG(libertas::capture::window_size(windows.front().id, width, height, error), "{}", error);
+    CHECK(width > 0);
+    CHECK(height > 0);
+}
 
 LTEST_CASE(a_stored_connector_picks_that_screen_wherever_it_sits_in_the_list) {
     std::string error = "untouched";

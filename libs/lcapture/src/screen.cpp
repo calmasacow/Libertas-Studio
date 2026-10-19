@@ -60,7 +60,7 @@ std::uint32_t ScreenCapture::width() const { return impl_->width; }
 std::uint32_t ScreenCapture::height() const { return impl_->height; }
 
 std::unique_ptr<ScreenCapture> ScreenCapture::open(rhi::VkCtx& device, const std::string& connector,
-                                                   bool with_cursor, std::string& error) {
+                                                   bool with_cursor, std::string& error, bool window) {
     auto self = std::unique_ptr<ScreenCapture>(new ScreenCapture());
     self->impl_->device = &device;
 
@@ -69,7 +69,7 @@ std::unique_ptr<ScreenCapture> ScreenCapture::open(rhi::VkCtx& device, const std
         return nullptr;
 
     WlCapCaps caps;
-    if (!wlcap_begin_session(*self->impl_->cap, connector, with_cursor, caps, error))
+    if (!wlcap_begin_session(*self->impl_->cap, connector, with_cursor, caps, error, window))
         return nullptr;
     if (!rhi::vk_matches_drm_device(device, caps.dmabuf_device)) {
         error = "capture compositor uses another DRM device; cross-device capture is not validated";
@@ -163,6 +163,7 @@ void ScreenCapture::start_images(std::function<void(std::shared_ptr<const Dmabuf
             }
             on_frame(std::move(image));
         }
+        on_frame({});
     });
 }
 

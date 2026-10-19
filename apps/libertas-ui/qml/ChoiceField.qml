@@ -17,6 +17,7 @@ Item {
 
     required property string label
     property var choices: []
+    property var choiceLabels: ({})
     property string value: ""
     /// See NumberField: a dialog can afford a wider caption column than a docked panel can.
     property int labelWidth: 54
@@ -59,7 +60,7 @@ Item {
             anchors.leftMargin: 5
             anchors.right: arrow.left
             anchors.verticalCenter: parent.verticalCenter
-            text: field.value
+            text: field.choiceLabels[field.value] || field.value
             font.pixelSize: 11
             color: field.enabled ? Theme.c.text : Theme.c.textMuted
             elide: Text.ElideRight
@@ -150,7 +151,7 @@ Item {
                     anchors.left: parent.left
                     anchors.leftMargin: 7
                     anchors.verticalCenter: parent.verticalCenter
-                    text: choice.modelData
+                    text: field.choiceLabels[choice.modelData] || choice.modelData
                     font.pixelSize: 11
                     color: choice.modelData === field.value ? Theme.c.window : Theme.c.text
                 }

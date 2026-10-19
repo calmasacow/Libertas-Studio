@@ -105,6 +105,7 @@ Item {
             labelWidth: row.labelWidth
             labelAlign: Text.AlignRight
             choices: row.field.choices
+            choiceLabels: row.field.choiceLabels || ({})
             value: row.currentValue === undefined ? "" : String(row.currentValue)
             onCommitted: newValue => row.committed(newValue)
         }

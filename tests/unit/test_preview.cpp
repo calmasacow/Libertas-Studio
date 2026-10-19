@@ -259,7 +259,8 @@ LTEST_CASE(text_source_crosses_worker_and_renderer_and_obeys_placement) {
 LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
     const char* connector = std::getenv("LIBERTAS_TEST_CAPTURE");
     const char* video = std::getenv("LIBERTAS_TEST_VIDEO");
-    if (!connector && !video)
+    const char* window = std::getenv("LIBERTAS_TEST_WINDOW");
+    if (!connector && !video && !window)
         return;
     auto ends = lipc::Channel::pair();
     REQUIRE(ends.has_value());
@@ -268,8 +269,9 @@ LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
     lcomp::PreviewLink link{std::move(ends->first)};
     REQUIRE(link.take_hello(2000).has_value());
     auto source = colour_source(0, 0, 0);
-    source.type = video ? "source.v4l2" : "source.screen";
-    if (video) {
+    source.type = window ? "source.window" : video ? "source.v4l2" : "source.screen";
+    if (window) source.settings["window"] = std::string(window);
+    else if (video) {
         source.settings["device"] = std::string(video);
         source.settings["resolution"] = std::string("2560x1440");
         source.settings["frameRate"] = std::string("60");
@@ -314,7 +316,7 @@ LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
 }
 
 int main() {
-    if (!std::getenv("LIBERTAS_TEST_CAPTURE") && !std::getenv("LIBERTAS_TEST_VIDEO"))
+    if (!std::getenv("LIBERTAS_TEST_CAPTURE") && !std::getenv("LIBERTAS_TEST_VIDEO") && !std::getenv("LIBERTAS_TEST_WINDOW"))
         std::erase_if(ltest::registry(), [](const auto& test) {
             return test.name == "capture_reuses_one_snapshot_across_direct_and_nested_placements";
         });

@@ -23,6 +23,12 @@ struct WlOutputInfo {
     std::int32_t refresh_mhz = 0;
 };
 
+struct WlWindowInfo {
+    std::string id, title, app_id;
+};
+std::vector<WlWindowInfo> list_windows(std::string& error);
+bool window_size(const std::string& id, int& width, int& height, std::string& error);
+
 /// A DRM format plus the modifiers the compositor will accept for it.
 struct WlCapFormat {
     std::uint32_t drm_format = 0;
@@ -71,7 +77,7 @@ const std::vector<WlOutputInfo>& wlcap_outputs(WlCap& cap);
 /// Creates a capture session for `output_name` (empty = the first output) and waits for the
 /// compositor to describe it. No picker, no dialog, no user interaction.
 bool wlcap_begin_session(WlCap& cap, const std::string& output_name, bool with_cursor,
-                         WlCapCaps& out, std::string& error);
+                         WlCapCaps& out, std::string& error, bool window = false);
 
 /// Wraps an exported Vulkan image as a wl_buffer and captures exactly one frame into it.
 /// On success the VkImage holds the screen contents. Blocks until `ready` or `failed`.

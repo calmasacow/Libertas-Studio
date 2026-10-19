@@ -31,6 +31,7 @@
 #include <wayland-client.h>
 
 #include "ext-image-capture-source-v1-client-protocol.h"
+#include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "linux-dmabuf-v1-client-protocol.h"
 
@@ -40,6 +41,14 @@ struct WlCap {
     wl_display* display = nullptr;
     wl_registry* registry = nullptr;
     ext_output_image_capture_source_manager_v1* source_mgr = nullptr;
+    ext_foreign_toplevel_image_capture_source_manager_v1* window_mgr = nullptr;
+    ext_foreign_toplevel_list_v1* window_list = nullptr;
+    struct Window {
+        WlWindowInfo info;
+        ext_foreign_toplevel_handle_v1* handle = nullptr;
+        bool closed = false;
+    };
+    std::vector<std::unique_ptr<Window>> windows;
     ext_image_copy_capture_manager_v1* capture_mgr = nullptr;
     zwp_linux_dmabuf_v1* dmabuf = nullptr;
 
@@ -215,6 +224,30 @@ const char* frame_failure_str(std::uint32_t reason) {
 
 // ---------------------------------------------------------------------------- registry
 
+void window_closed(void* data, ext_foreign_toplevel_handle_v1*) {
+    static_cast<WlCap::Window*>(data)->closed = true;
+}
+void window_done(void*, ext_foreign_toplevel_handle_v1*) {}
+void window_title(void* data, ext_foreign_toplevel_handle_v1*, const char* title) {
+    static_cast<WlCap::Window*>(data)->info.title = title;
+}
+void window_app(void* data, ext_foreign_toplevel_handle_v1*, const char* app) {
+    static_cast<WlCap::Window*>(data)->info.app_id = app;
+}
+void window_id(void* data, ext_foreign_toplevel_handle_v1*, const char* id) {
+    static_cast<WlCap::Window*>(data)->info.id = id;
+}
+constexpr ext_foreign_toplevel_handle_v1_listener kWindowListener = {
+    window_closed, window_done, window_title, window_app, window_id};
+void window_added(void* data, ext_foreign_toplevel_list_v1*, ext_foreign_toplevel_handle_v1* handle) {
+    auto window = std::make_unique<WlCap::Window>();
+    window->handle = handle;
+    ext_foreign_toplevel_handle_v1_add_listener(handle, &kWindowListener, window.get());
+    static_cast<WlCap*>(data)->windows.push_back(std::move(window));
+}
+void window_list_done(void*, ext_foreign_toplevel_list_v1*) {}
+constexpr ext_foreign_toplevel_list_v1_listener kWindowListListener = {window_added, window_list_done};
+
 void on_global(void* data, wl_registry* reg, std::uint32_t id, const char* iface,
                std::uint32_t version) {
     auto* cap = static_cast<WlCap*>(data);
@@ -231,6 +264,13 @@ void on_global(void* data, wl_registry* reg, std::uint32_t id, const char* iface
     } else if (name == ext_output_image_capture_source_manager_v1_interface.name) {
         cap->source_mgr = static_cast<ext_output_image_capture_source_manager_v1*>(
             wl_registry_bind(reg, id, &ext_output_image_capture_source_manager_v1_interface, 1));
+    } else if (name == ext_foreign_toplevel_image_capture_source_manager_v1_interface.name) {
+        cap->window_mgr = static_cast<ext_foreign_toplevel_image_capture_source_manager_v1*>(
+            wl_registry_bind(reg, id, &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1));
+    } else if (name == ext_foreign_toplevel_list_v1_interface.name) {
+        cap->window_list = static_cast<ext_foreign_toplevel_list_v1*>(
+            wl_registry_bind(reg, id, &ext_foreign_toplevel_list_v1_interface, 1));
+        ext_foreign_toplevel_list_v1_add_listener(cap->window_list, &kWindowListListener, cap);
     } else if (name == ext_image_copy_capture_manager_v1_interface.name) {
         cap->capture_mgr = static_cast<ext_image_copy_capture_manager_v1*>(
             wl_registry_bind(reg, id, &ext_image_copy_capture_manager_v1_interface, 1));
@@ -317,6 +357,30 @@ WlCapPtr wlcap_open(std::string& error) {
 
 const std::vector<WlOutputInfo>& wlcap_outputs(WlCap& cap) { return cap.outputs; }
 
+std::vector<WlWindowInfo> list_windows(std::string& error) {
+    auto cap = wlcap_open(error);
+    if (!cap) return {};
+    if (!cap->window_mgr || !cap->window_list) {
+        error = "compositor does not support window capture";
+        return {};
+    }
+    wl_display_roundtrip(cap->display);
+    std::vector<WlWindowInfo> result;
+    for (const auto& window : cap->windows)
+        if (!window->closed && !window->info.id.empty()) result.push_back(window->info);
+    return result;
+}
+
+bool window_size(const std::string& id, int& width, int& height, std::string& error) {
+    auto cap = wlcap_open(error);
+    if (!cap) return false;
+    WlCapCaps caps;
+    if (!wlcap_begin_session(*cap, id, false, caps, error, true)) return false;
+    width = static_cast<int>(caps.width);
+    height = static_cast<int>(caps.height);
+    return width > 0 && height > 0;
+}
+
 std::optional<std::size_t> wlcap_select_output(const std::vector<WlOutputInfo>& outputs,
                                                const std::string& name, std::string& error) {
     if (outputs.empty()) {
@@ -343,7 +407,20 @@ std::optional<std::size_t> wlcap_select_output(const std::vector<WlOutputInfo>& 
 }
 
 bool wlcap_begin_session(WlCap& cap, const std::string& output_name, bool with_cursor,
-                         WlCapCaps& out, std::string& error) {
+                         WlCapCaps& out, std::string& error, bool window) {
+    if (window) {
+        if (!cap.window_mgr || !cap.window_list) {
+            error = "compositor does not support window capture";
+            return false;
+        }
+        wl_display_roundtrip(cap.display);
+        auto found = std::find_if(cap.windows.begin(), cap.windows.end(), [&](const auto& item) {
+            return !item->closed && item->info.id == output_name;
+        });
+        if (found == cap.windows.end()) { error = "selected window is no longer open"; return false; }
+        cap.source = ext_foreign_toplevel_image_capture_source_manager_v1_create_source(
+            cap.window_mgr, (*found)->handle);
+    } else {
     const std::optional<std::size_t> chosen =
         wlcap_select_output(cap.outputs, output_name, error);
     if (!chosen)
@@ -356,6 +433,7 @@ bool wlcap_begin_session(WlCap& cap, const std::string& output_name, bool with_c
 
     cap.source = ext_output_image_capture_source_manager_v1_create_source(
         cap.source_mgr, cap.output_proxies[index]);
+    }
     const std::uint32_t options =
         with_cursor
             ? static_cast<std::uint32_t>(EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS)
@@ -601,6 +679,10 @@ void wlcap_close(WlCap* cap) {
         ext_image_capture_source_v1_destroy(cap->source);
     if (cap->source_mgr != nullptr)
         ext_output_image_capture_source_manager_v1_destroy(cap->source_mgr);
+    for (const auto& window : cap->windows)
+        ext_foreign_toplevel_handle_v1_destroy(window->handle);
+    if (cap->window_list) ext_foreign_toplevel_list_v1_destroy(cap->window_list);
+    if (cap->window_mgr) ext_foreign_toplevel_image_capture_source_manager_v1_destroy(cap->window_mgr);
     if (cap->capture_mgr != nullptr)
         ext_image_copy_capture_manager_v1_destroy(cap->capture_mgr);
     if (cap->dmabuf != nullptr)

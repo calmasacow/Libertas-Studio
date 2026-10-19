@@ -428,7 +428,7 @@ const ldoc::Scene* program_scene(const ldoc::Project& project, const ldoc::Id& c
 /// is a preview that does not move until something is edited; the other way it is a timer
 /// recompositing a still picture for ever.
 bool is_live_source(std::string_view type) {
-    return type == "source.screen" || type == "source.window" || type == "source.v4l2" ||
+    return type == "source.screen" || type == "source.window" || type == "source.game" || type == "source.v4l2" ||
            type == "source.browser" || type == "source.media" || type == "source.text" ||
            type == "source.slideshow" || type == "source.playlist";
 }
@@ -437,6 +437,7 @@ bool is_live_source(std::string_view type) {
 /// needs the monitor list.
 bool screen_size(const ldoc::Source& src, double& width, double& height);
 bool video_size(const ldoc::Source& src, double& width, double& height);
+bool window_size(const ldoc::Source& src, double& width, double& height);
 
 /// Natural size for a kind the compositor actually paints. Anything else has no rectangle.
 bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, const ldoc::Node& node,
@@ -473,6 +474,8 @@ bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, cons
             return screen_size(*src, width, height);
         if (src->type == "source.v4l2")
             return video_size(*src, width, height);
+        if (src->type == "source.window" || src->type == "source.game")
+            return window_size(*src, width, height);
         if (src->type == "source.text" || src->type == "source.media" ||
             src->type == "source.slideshow" || src->type == "source.playlist" || src->type == "source.browser") {
             width = number_setting(src->settings, "width").value_or(1920);
@@ -1554,10 +1557,10 @@ constexpr FieldSpec kScreen[] = {
 };
 
 constexpr FieldSpec kWindow[] = {
-    {"", "Which window is chosen in the portal's own picker when capture starts. A Wayland "
-         "client cannot enumerate or choose one for itself (ADR-0003).", "note"},
+    {"", "Capture a window through the Wayland compositor. Game Capture uses this same path. "
+         "Choose it again after the application closes and reopens.", "note"},
+    {"window", "Window", "choice"},
     {"showCursor", "Show the cursor", "bool", "", true},
-    {"pauseWhenHidden", "Stop capturing while the source is not on screen", "bool", "", true},
 };
 
 constexpr FieldSpec kCamera[] = {
@@ -1665,6 +1668,34 @@ const std::vector<libertas::capture::VideoDevice>& videos_now() {
     return cached;
 }
 
+const std::vector<libertas::capture::WlWindowInfo>& windows_now() {
+    static std::vector<libertas::capture::WlWindowInfo> cached;
+    static QElapsedTimer age;
+    if (!age.isValid() || age.elapsed() >= 500) {
+        std::string error;
+        cached = libertas::capture::list_windows(error);
+        age.start();
+    }
+    return cached;
+}
+
+bool window_size(const ldoc::Source& source, double& width, double& height) {
+    const auto it = source.settings.find("window");
+    const auto* id = it == source.settings.end() ? nullptr : std::get_if<std::string>(&it->second);
+    if (!id || id->empty()) return false;
+    struct Size { QElapsedTimer age; int width = 0, height = 0; };
+    static std::map<std::string, Size> sizes;
+    if (sizes.size() > 128) sizes.clear();
+    auto& size = sizes[*id];
+    if (!size.age.isValid() || size.age.elapsed() >= 500) {
+        std::string error;
+        (void)libertas::capture::window_size(*id, size.width, size.height, error);
+        size.age.start();
+    }
+    width = size.width; height = size.height;
+    return width > 0 && height > 0;
+}
+
 bool video_size(const ldoc::Source& src, double& width, double& height) {
     const auto size = src.settings.find("resolution");
     if (size != src.settings.end()) {
@@ -1701,7 +1732,7 @@ std::span<const FieldSpec> schema_for(std::string_view type) {
     if (type == "source.text")         return kText;
     if (type == "source.color")        return kColour;
     if (type == "source.screen")       return kScreen;
-    if (type == "source.window")       return kWindow;
+    if (type == "source.window" || type == "source.game") return kWindow;
     if (type == "source.v4l2")         return kCamera;
     if (type == "source.browser")      return kBrowser;
     if (type == "source.audio-input")  return kAudioInput;
@@ -1806,6 +1837,7 @@ QVariantList Document::sourceTypes() const {
         {"source.color", "Colour", "\u25A0"},
         {"source.screen", "Screen", "\u25AD"},
         {"source.window", "Window", "\u2750"},
+        {"source.game", "Game Capture (Wayland window)", "\u2750"},
         {"source.v4l2", "Video Capture", "\u25C9"},
         {"source.browser", "Browser", "\u25CD"},
         {"source.audio-input", "Audio Input", "\u266A"},
@@ -2040,6 +2072,15 @@ QVariantList Document::sourceSettingsSchema(const QString& type) const {
             options.clear();
             for (const auto& device : videos_now()) options.append(QString::fromStdString(device.path));
             m["value"] = options.isEmpty() ? QString{} : options.front();
+        }
+        if (std::string_view{f.key} == "window") {
+            QVariantMap labels;
+            for (const auto& window : windows_now()) {
+                const auto id = QString::fromStdString(window.id);
+                options.append(id);
+                labels[id] = QString::fromStdString(window.title + " [" + window.app_id + "]");
+            }
+            m["choiceLabels"] = labels;
         }
         m["choices"] = options;
         out.append(m);

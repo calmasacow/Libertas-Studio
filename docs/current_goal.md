@@ -41,6 +41,17 @@ rendering currently uses software frames and a host upload; profile before addin
 Sources restart when reactivated. Browser and media audio routing is not yet implemented.
 Qt Multimedia and Qt WebEngine development packages are additional build requirements.
 
+### Window and game capture
+
+Window and Game Capture use `ext_foreign_toplevel_list_v1` plus
+`ext_foreign_toplevel_image_capture_source_manager_v1`. The selector displays title and app ID
+while storing the exact window identity. Closing and reopening an application requires selecting
+its new identity. Dimensions come from the compositor and cursor preference is honored. A
+stopped window session clears the old frame and retries at one-second intervals, including
+size renegotiation. On this Hyprland session, both CPU and GPU process checks captured a real
+2536x1390 window and verified shared snapshots across direct/nested placements. Game Capture
+uses this same native window path; it is not an injected game graphics hook.
+
 ## Video capture update, 2026-10-18
 
 ADR-0044 adds `source.v4l2` capture through native V4L2 streaming and libswscale BGRA

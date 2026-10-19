@@ -94,7 +94,8 @@ class Renderer {
         }
         for (const auto& [name, session] : sessions_) {
             std::lock_guard lock(session->mu);
-            if (session->sequence != session->drawn)
+            if (session->sequence != session->drawn ||
+                (session->retry && std::chrono::steady_clock::now() >= session->retry_at))
                 return true;
         }
         return false;
@@ -193,7 +194,12 @@ class Renderer {
         if (source.type == "source.text" || source.type == "source.media" ||
             source.type == "source.slideshow" || source.type == "source.playlist" || source.type == "source.browser")
             return worker_frame(source);
-        if (source.type != "source.v4l2") return frame(setting(source, "output"), gpu);
+        if (source.type != "source.v4l2") {
+            const bool window = source.type == "source.window" || source.type == "source.game";
+            const auto cursor = source.settings.find("showCursor");
+            const auto* enabled = cursor == source.settings.end() ? nullptr : std::get_if<bool>(&cursor->second);
+            return frame(setting(source, window ? "window" : "output"), gpu, window, !enabled || *enabled);
+        }
         const auto id = source.id.to_string();
         video_wanted_.insert(id);
         auto existing = videos_.find(id);
@@ -232,6 +238,8 @@ class Renderer {
         std::mutex mu;
         std::shared_ptr<const libertas::capture::DmabufImage> last;
         std::uint64_t sequence = 0, drawn = 0;
+        bool retry = false;
+        std::chrono::steady_clock::time_point retry_at;
         std::unique_ptr<libertas::capture::ScreenCapture> capture;
 
         ~Session() {
@@ -276,22 +284,35 @@ class Renderer {
         return bool(device_);
     }
 
-    lcomp::CapturedPicture frame(const std::string& connector, bool gpu) {
+    lcomp::CapturedPicture frame(const std::string& target, bool gpu, bool window, bool cursor) {
+        const std::string connector = (window ? "window:" : "screen:") + target + (cursor ? ":cursor" : ":bare");
         if (capture_failed_)
             return {};
         wanted_.insert(connector);
+        if (auto it = sessions_.find(connector); it != sessions_.end()) {
+            bool reopen = false;
+            {
+                std::lock_guard lock(it->second->mu);
+                reopen = it->second->retry && std::chrono::steady_clock::now() >= it->second->retry_at;
+            }
+            if (reopen) { held_.erase(connector); sessions_.erase(it); }
+        }
         if (!sessions_.contains(connector)) {
             auto session = std::make_unique<Session>();
             if (device()) {
                 std::string error;
                 session->capture =
-                    libertas::capture::ScreenCapture::open(*device_, connector, true, error);
-                if (!session->capture)
+                    libertas::capture::ScreenCapture::open(*device_, target, cursor, error, window);
+                if (!session->capture) {
                     lc::warn("cannot capture {}: {}", connector, error);
-                else {
+                    session->retry = window;
+                    session->retry_at = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                } else {
                     Session* ptr = session.get();
-                    session->capture->start_images([ptr](auto image) {
+                    session->capture->start_images([ptr, window](auto image) {
                         std::lock_guard lock(ptr->mu);
+                        ptr->retry = window && !image;
+                        ptr->retry_at = std::chrono::steady_clock::now() + std::chrono::seconds(1);
                         ptr->last = std::move(image);
                         ++ptr->sequence;
                     });

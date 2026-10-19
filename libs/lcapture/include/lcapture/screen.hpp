@@ -38,7 +38,7 @@ public:
     /// output is not there, or no modifier is common to the compositor and the device. All three
     /// are things the caller reports rather than retries.
     static std::unique_ptr<ScreenCapture> open(rhi::VkCtx& device, const std::string& connector,
-                                               bool with_cursor, std::string& error);
+                                               bool with_cursor, std::string& error, bool window = false);
 
     ~ScreenCapture();
     ScreenCapture(const ScreenCapture&) = delete;
