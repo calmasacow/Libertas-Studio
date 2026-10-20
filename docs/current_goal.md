@@ -4,6 +4,19 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Scene clicks activate Program, 2026-10-19
+
+ADR-0055 makes left-clicking a scene in Scenes or Favourites activate Program
+immediately on that scene's canvas. Preview and Take are not required. Right-click
+still selects for context actions; internal selection APIs remain selection-only.
+Repeated clicks on the active scene add no undo entry.
+
+Secondary canvases acquire an undoable, journaled deck on first activation. Canvas
+removal includes its decks in the existing atomic removal command. The UI self-check
+clicks real scene rows, verifies rendered colors, checks activation undo and verifies
+that a secondary-canvas favourite leaves Main's Program unchanged. Command tests
+cover deck lifecycle undo/redo and journal serialization.
+
 ## Preview cadence correction, 2026-10-19
 
 ADR-0054 coalesces busy preview ticks into one refresh sent on acknowledgment,

@@ -59,7 +59,7 @@ Item {
 
                 anchors.fill: parent
                 hoverEnabled: true
-                onClicked: Document.selectScene(row.sceneId)
+                onClicked: Document.activateScene(row.sceneId)
             }
 
             Text {

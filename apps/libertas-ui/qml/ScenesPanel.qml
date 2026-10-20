@@ -120,9 +120,11 @@ Item {
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
                 onClicked: (ev) => {
-                    Document.selectSceneOn(panel.canvasId, row.sceneId);
-                    if (ev.button !== Qt.RightButton)
+                    if (ev.button !== Qt.RightButton) {
+                        Document.activateScene(row.sceneId);
                         return;
+                    }
+                    Document.selectSceneOn(panel.canvasId, row.sceneId);
                     const at = mapToItem(sceneMenu, ev.x, ev.y);
                     const rows = [{
                         text: qsTr("Copy scene"),

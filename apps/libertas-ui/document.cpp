@@ -1227,6 +1227,8 @@ void Document::removeCanvas(const QString& id) {
     if (!parsed) return;
     const auto& p = session_->project();
     std::vector<ldoc::Command> steps;
+    for (const auto& deck : p.decks)
+        if (deck.canvas == *parsed) steps.push_back(ldoc::RemoveDeck{deck.id});
     for (const auto& e : p.encodes) {
         if (e.canvas != *parsed) continue;
         for (const auto& o : p.outputs)
@@ -1394,6 +1396,36 @@ void Document::commitSceneLinks(const QString& sceneId, const QStringList& mainS
 }
 
 // ---- scenes -----------------------------------------------------------------------------------
+
+void Document::activateScene(const QString& id) {
+    const auto parsed = parse_id(id);
+    const auto& project = session_->project();
+    const auto* scene = parsed ? project.scene(*parsed) : nullptr;
+    if (!scene) return;
+    const auto canvas = scene->canvas;
+    const auto* surface = project.canvas(canvas);
+    if (!surface) {
+        emit notice(QStringLiteral("This scene's canvas is missing."));
+        return;
+    }
+    std::optional<ldoc::Command> command;
+    for (const auto& deck : project.decks) {
+        if (deck.canvas != canvas) continue;
+        if (deck.program_scene != parsed)
+            command = ldoc::SetDeckProgram{deck.id, *parsed};
+        selectSceneOn(id_str(canvas), id);
+        if (command) run(*command);
+        return;
+    }
+    ldoc::Deck deck;
+    deck.id = ldoc::Id::generate();
+    deck.name = surface->name;
+    deck.canvas = canvas;
+    deck.program_scene = *parsed;
+    const auto index = project.decks.size();
+    selectSceneOn(id_str(canvas), id);
+    run(ldoc::AddDeck{std::move(deck), index});
+}
 
 void Document::addScene(const QString& name) {
     addSceneOn(current_canvas_, name);

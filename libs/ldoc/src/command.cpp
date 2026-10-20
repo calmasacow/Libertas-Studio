@@ -187,6 +187,8 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetNodeLayout>) return "node.set-layout";
             else if constexpr (std::is_same_v<T, SetNodeBlend>) return "node.set-blend";
             else if constexpr (std::is_same_v<T, SetNodeAudio>) return "node.set-audio";
+            else if constexpr (std::is_same_v<T, AddDeck>) return "deck.add";
+            else if constexpr (std::is_same_v<T, RemoveDeck>) return "deck.remove";
             else if constexpr (std::is_same_v<T, SetDeck>) return "deck.set";
             else if constexpr (std::is_same_v<T, SetSceneFavourite>) return "scene.set-favourite";
             else if constexpr (std::is_same_v<T, Batch>) return "batch";
@@ -255,6 +257,10 @@ std::string describe(const Command& command) {
                 return "Change blending";
             else if constexpr (std::is_same_v<T, SetNodeAudio>)
                 return c.audio.bus ? "Route source audio" : "Unroute source audio";
+            else if constexpr (std::is_same_v<T, AddDeck>)
+                return std::format("Add deck {}", quoted(c.value.name));
+            else if constexpr (std::is_same_v<T, RemoveDeck>)
+                return "Remove deck";
             else if constexpr (std::is_same_v<T, SetDeck>)
                 return std::format("Configure deck {}", quoted(c.value.name));
             else if constexpr (std::is_same_v<T, SetSceneFavourite>)
@@ -1117,6 +1123,28 @@ struct Apply {
             return std::unexpected(scene.error());
         Applied out{SetSceneFavourite{c.scene, (*scene)->favourite}, describe(c)};
         (*scene)->favourite = c.favourite;
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const AddDeck& c) const {
+        if (c.index > p.decks.size() || c.value.id.is_nil() || all_ids(p).contains(c.value.id))
+            return std::unexpected("invalid or duplicate deck identity or position");
+        if (!p.canvas(c.value.canvas) || c.value.transition_ms < 0)
+            return std::unexpected("a deck needs a canvas and a nonnegative transition duration");
+        for (const auto& deck : p.decks)
+            if (deck.canvas == c.value.canvas)
+                return std::unexpected("this canvas already has a deck");
+        Applied out{RemoveDeck{c.value.id}, describe(c)};
+        p.decks.insert(p.decks.begin() + static_cast<std::ptrdiff_t>(c.index), c.value);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const RemoveDeck& c) const {
+        const auto it = std::find_if(p.decks.begin(), p.decks.end(),
+                                    [&](const Deck& deck) { return deck.id == c.deck; });
+        if (it == p.decks.end()) return std::unexpected("there is no such deck");
+        Applied out{AddDeck{*it, static_cast<std::size_t>(it - p.decks.begin())}, describe(c)};
+        p.decks.erase(it);
         return out;
     }
 

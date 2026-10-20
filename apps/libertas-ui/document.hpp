@@ -220,6 +220,7 @@ public:
     // ---- selection (UI state, not document state) -------------------------------------------
 
     Q_INVOKABLE void selectScene(const QString& id);
+    Q_INVOKABLE void activateScene(const QString& id);
     Q_INVOKABLE void selectNode(const QString& id);
     Q_INVOKABLE void selectCanvas(const QString& id);
 

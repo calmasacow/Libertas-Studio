@@ -176,6 +176,19 @@ Jv body(const SetSceneFavourite& c) {
     return o;
 }
 
+Jv body(const AddDeck& c) {
+    Jv o{Json::objectValue};
+    o["deck"] = detail::enc(c.value);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RemoveDeck& c) {
+    Jv o{Json::objectValue};
+    o["deck"] = detail::enc(c.deck);
+    return o;
+}
+
 Jv body(const SetDeck& c) {
     Jv o{Json::objectValue};
     o["deck"] = detail::enc(c.value);
@@ -463,6 +476,11 @@ std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
     } else if (name == "scene.set-favourite") {
         out = SetSceneFavourite{rd.id(o, "scene", path),
                                 rd.boolean(o, "favourite", path, true)};
+    } else if (name == "deck.add") {
+        const Jv* d = rd.object(o, "deck", path);
+        out = AddDeck{d ? detail::dec_deck(rd, *d, path) : Deck{}, dec_index(rd, o, "index", path)};
+    } else if (name == "deck.remove") {
+        out = RemoveDeck{rd.id(o, "deck", path)};
     } else if (name == "deck.set") {
         const Jv* d = rd.object(o, "deck", path);
         out = SetDeck{d ? detail::dec_deck(rd, *d, path) : Deck{}};

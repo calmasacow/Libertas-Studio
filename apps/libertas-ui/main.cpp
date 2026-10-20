@@ -832,6 +832,98 @@ int main(int argc, char** argv) {
         report(theme.colors().contains(QStringLiteral("dropFill")), "including the drop overlay fill");
 
         // ---- the document panels ------------------------------------------------------------
+        {
+            const auto original = document.projectForBindings();
+            const auto originalSelection = document.selectedScene();
+            const auto mainCanvas = document.canvasIds().front();
+            document.selectCanvas(mainCanvas);
+            document.addScene(QStringLiteral("Click activation red"));
+            const auto redScene = document.selectedScene();
+            document.addNewSourceToScene(QStringLiteral("Red"), QStringLiteral("source.color"));
+            auto sourceId = document.nodeProperties().value("sourceId").toString();
+            document.applySourceSettings(sourceId, {}, {{"color", "#ff0000"}, {"width", 1920}, {"height", 1080}});
+            document.addScene(QStringLiteral("Click activation blue"));
+            const auto blueScene = document.selectedScene();
+            document.addNewSourceToScene(QStringLiteral("Blue"), QStringLiteral("source.color"));
+            sourceId = document.nodeProperties().value("sourceId").toString();
+            document.applySourceSettings(sourceId, {}, {{"color", "#0000ff"}, {"width", 1920}, {"height", 1080}});
+            document.setSceneFavourite(blueScene, true);
+            const auto programSceneFor = [&](const QString& canvas) {
+                for (const auto& deck : document.projectForBindings().decks)
+                    if (QString::fromStdString(deck.canvas.to_string()) == canvas && deck.program_scene)
+                        return QString::fromStdString(deck.program_scene->to_string());
+                return QString{};
+            };
+            const auto clickScene = [&](const char* rowName, const QString& scene,
+                                        Qt::MouseButton button = Qt::LeftButton) {
+                for (auto* row : collect(window->contentItem(), QString::fromLatin1(rowName))) {
+                    if (!row->isVisible() || row->property("sceneId").toString() != scene) continue;
+                    const auto at = row->mapToScene(QPointF(20, row->height()/2));
+                    post(QEvent::MouseButtonPress, at, button, button);
+                    post(QEvent::MouseButtonRelease, at, button, Qt::NoButton);
+                    settle();
+                    return true;
+                }
+                return false;
+            };
+            const auto renderedColour = [&](bool red) {
+                auto* provider = static_cast<QQuickImageProvider*>(engine.imageProvider("program"));
+                for (int i = 0; i < 50; ++i) {
+                    const auto image = provider->requestImage(mainCanvas, nullptr, {});
+                    if (!image.isNull()) {
+                        const auto pixel = image.pixel(0, 0);
+                        if (red ? qRed(pixel) > 240 && qBlue(pixel) < 20
+                                : qBlue(pixel) > 240 && qRed(pixel) < 20) return true;
+                    }
+                    pump(20);
+                }
+                return false;
+            };
+            workspace.activate(QStringLiteral("scenes"));
+            settle();
+            report(clickScene("sceneRow", redScene) && programSceneFor(mainCanvas) == redScene &&
+                       document.selectedScene() == redScene && renderedColour(true),
+                   "clicking Scenes activates and renders Program immediately without Preview or Take");
+            const auto activeRevision = document.revision();
+            report(clickScene("sceneRow", redScene) && document.revision() == activeRevision,
+                   "clicking the active scene adds no undo entry");
+            report(clickScene("sceneRow", blueScene, Qt::RightButton) &&
+                       document.selectedScene() == blueScene && programSceneFor(mainCanvas) == redScene,
+                   "right-click selects a scene for context actions without switching Program");
+            QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &escape);
+            workspace.openPanel(QStringLiteral("favourites"));
+            workspace.activate(QStringLiteral("favourites"));
+            settle();
+            report(clickScene("favouriteRow", blueScene) && programSceneFor(mainCanvas) == blueScene &&
+                       document.selectedScene() == blueScene && renderedColour(false),
+                   "clicking Favourites activates and renders Program immediately");
+            document.undo();
+            settle();
+            report(programSceneFor(mainCanvas) == redScene && renderedColour(true),
+                   "a scene activation undoes in one step");
+            document.addCanvas(QStringLiteral("Click portrait"), true);
+            const auto portraitCanvas = document.currentCanvas();
+            document.addScene(QStringLiteral("Portrait favourite"));
+            const auto portraitScene = document.selectedScene();
+            document.setSceneFavourite(portraitScene, true);
+            workspace.activate(QStringLiteral("favourites"));
+            settle();
+            report(clickScene("favouriteRow", portraitScene) && programSceneFor(portraitCanvas) == portraitScene &&
+                       programSceneFor(mainCanvas) == redScene && document.currentCanvas() == portraitCanvas,
+                   "secondary-canvas favourites activate their own Program and preserve Main");
+            document.undo();
+            settle();
+            report(programSceneFor(portraitCanvas).isEmpty(), "first activation's deck creation is undoable");
+            int undoGuard = 0;
+            while (document.projectForBindings() != original && document.canUndo() && undoGuard++ < 30)
+                document.undo();
+            report(document.projectForBindings() == original, "scene-click fixtures undo completely");
+            document.selectScene(originalSelection);
+            workspace.closePanel(QStringLiteral("favourites"));
+            workspace.activate(QStringLiteral("scenes"));
+            settle();
+        }
         //
         // Driven through the same API QML drives, which is the whole point: the UI holds no
         // mutable Project and every one of these is a command going to the session.

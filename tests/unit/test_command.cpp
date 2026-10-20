@@ -171,6 +171,10 @@ void check_reversible(const char* what,
 }
 
 std::vector<Command> every_command_shape(const Fixture& f) {
+    Deck addedDeck;
+    addedDeck.id = Id::generate();
+    addedDeck.canvas = f.spare_canvas;
+    addedDeck.name = "Secondary";
     Scene fresh;
     fresh.id = Id::generate();
     fresh.name = "Added";
@@ -286,6 +290,8 @@ std::vector<Command> every_command_shape(const Fixture& f) {
                    "Rename and star"),
         SetNodeAudio{f.scene, f.loose, routed},
         SetDeck{studio},
+        AddDeck{addedDeck, f.project.decks.size()},
+        RemoveDeck{f.deck},
         AddBus{submix, 0},
         RemoveBus{f.existing_bus},
         SetBus{louder},
@@ -516,6 +522,9 @@ LTEST_CASE(a_refused_command_changes_nothing) {
         RemoveEffect{f.scene, f.loose, nowhere},
         SetDeckProgram{nowhere, std::nullopt},
         SetDeckPreview{nowhere, std::nullopt},
+        AddDeck{Deck{}, 0},
+        AddDeck{f.project.decks.front(), 0},
+        RemoveDeck{nowhere},
         AddSceneLink{SceneLink{Id::generate(), f.scene, nowhere}, 0},
         AddSceneLink{SceneLink{Id::generate(), f.scene, f.spare_scene}, 0},
         AddSceneLink{SceneLink{Id::generate(), f.scene, f.vertical_scene}, 0},

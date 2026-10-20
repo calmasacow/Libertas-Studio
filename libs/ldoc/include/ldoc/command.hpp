@@ -338,14 +338,24 @@ struct SetProjectSettings {
 
 /// A deck's own configuration: its name, its canvas, studio mode, and which transition it uses.
 ///
-/// There is no AddDeck or RemoveDeck. A deck is one program path for one canvas, so its existence
-/// follows from the canvas list rather than being something an operator creates. The scenes it
+/// A deck is one program path for one canvas. The scenes it
 /// points at are references and are set by SetDeckProgram/SetDeckPreview; its canvas is a
 /// precondition, because a deck with no canvas has nothing to put on screen and validate() calls
 /// that an error.
 struct SetDeck {
     Deck value;
     friend bool operator==(const SetDeck&, const SetDeck&) = default;
+};
+
+struct AddDeck {
+    Deck value;
+    std::size_t index = 0;
+    friend bool operator==(const AddDeck&, const AddDeck&) = default;
+};
+
+struct RemoveDeck {
+    Id deck;
+    friend bool operator==(const RemoveDeck&, const RemoveDeck&) = default;
 };
 
 struct SetDeckProgram {
@@ -409,7 +419,7 @@ using Command =
                  SetSceneFavourite, AddNode, RemoveNode,
                  MoveNode, RenameNode, SetNodeVisible, SetNodeLocked, SetNodeTransform,
                  SetNodeLayout, SetNodeBlend, SetNodeAudio, AddEffect,
-                 RemoveEffect, SetEffectParams, SetEffectEnabled, SetDeck, SetDeckProgram,
+                 RemoveEffect, SetEffectParams, SetEffectEnabled, SetDeck, AddDeck, RemoveDeck, SetDeckProgram,
                  SetDeckPreview, AddSceneLink, RemoveSceneLink,
                  SetCanvasEmergencyScene, SetNodeSource, AddSource, RemoveSource, SetSource,
                  AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus, SetBus, AddOutput,
