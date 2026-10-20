@@ -54,17 +54,19 @@ all modes, alpha, opacity, transformed/nested groups, and OBS round trips. Valid
 warning-free `-Werror` build and all 29 tests passed with GPU checks enabled. The UI
 check clicks each Properties option and verifies actual renderer pixels and handles.
 
-## Follow-up: plugin support and OBS porting
+## Plugin support investigation, 2026-10-20
 
-After the current source/import/render/audio/countdown work, investigate a plugin
-architecture that makes common OBS plugins inexpensive to port. Inventory actual
-OBS APIs used by representative plugins before designing an SDK or compatibility
-layer. Review source/filter/transition/audio hooks, GPU resource access, Qt docks,
-settings/properties, persistence, hotkeys, packaging, licensing and crash isolation.
-Reconcile the design with existing no-libobs and process-isolation decisions in a
-new ADR. Identify supported API subsets, required adapters and plugin classes that
-cannot be supported cheaply; do not promise binary compatibility without evidence.
-This investigation follows the current work, at the operator's request.
+The operator moved this investigation immediately after monitoring output, which
+is implemented and pushed. Proposed ADR-0062 inventories actual worker transport,
+OBS extension interfaces, Source Clone and Countdown dependencies. It recommends
+native versioned contracts across control/UI/media, retaining no libobs and no
+in-process native plugins. Countdown and clone/filter implementations should prove
+the contracts before publishing an experimental SDK. Existing Qt docks and graphics
+callbacks need adaptation; unchanged OBS binaries are not supported. Wasm, shader
+manifests, plugin discovery and permission enforcement remain future implementation,
+not existing capabilities. The ADR includes delivery gates and the full extension
+surface: sources, filters, transitions, audio, encoders, outputs, services and tools.
+The source/import fidelity backlog below remains pending where not marked complete.
 
 ## OBS collection fidelity backlog, 2026-10-19
 
