@@ -2093,6 +2093,9 @@ int main(int argc, char** argv) {
                                     QStringLiteral("stripMenuItem")).isEmpty(),
                            "right-clicking it opens a menu");
 
+                    document.renameSource(clicked, QStringLiteral("Elgato Audio"));
+                    settle();
+
                     const QList<QQuickItem*> items =
                         collect(window->contentItem(), QStringLiteral("stripMenuItem"));
                     if (!items.isEmpty()) {
@@ -2108,6 +2111,8 @@ int main(int argc, char** argv) {
                     report(mgr->property("deleteStage").toInt() == 1 &&
                                before_confirm == document.sourcesModel()->rowCount(),
                            "which asks first and deletes nothing yet");
+                    report(mgr->property("deleting").toString() == clicked,
+                           "delete menu retains source identity when its tile is refreshed");
 
                     // In use, so the first press only advances to the step that names the
                     // scenes. The destructive press is never the one aimed at the menu item.
@@ -2137,6 +2142,21 @@ int main(int argc, char** argv) {
                         stale_tile = stale_tile ||
                                      item->property("modelData").toMap().value("id").toString() == clicked;
                     report(!stale_tile, "deleted source disappears from the open category immediately");
+                    bool stale_row = false;
+                    for (QQuickItem* item :
+                         collect(window->contentItem(), QStringLiteral("sourceRow")))
+                        stale_row = stale_row || item->property("sourceId").toString() == clicked;
+                    report(!stale_row && document.sourceDetails(clicked).isEmpty(),
+                           "deleted source leaves no scene row or source record");
+                    QMetaObject::invokeMethod(mgr, "close");
+                    QMetaObject::invokeMethod(mgr, "open");
+                    settle();
+                    bool resurrected = false;
+                    for (QQuickItem* item :
+                         collect(window->contentItem(), QStringLiteral("existingSourceTile")))
+                        resurrected = resurrected ||
+                            item->property("modelData").toMap().value("id").toString() == clicked;
+                    report(!resurrected, "deleted source stays absent after reopening Recently Created");
                     document.undo();
                     settle();
                     document.removeSourceAndUses(clicked);

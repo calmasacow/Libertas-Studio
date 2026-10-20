@@ -48,6 +48,14 @@ Item {
         dialog.deleteStage = 0;
     }
 
+    function showSourceMenu(x, y, sourceId, sourceName) {
+        sourceMenu.popup(x, y, [{
+            text: qsTr("Delete source"),
+            checked: false,
+            action: () => dialog.askDelete(sourceId, sourceName)
+        }]);
+    }
+
     signal closed
     /// A source was just created, as opposed to an existing one being placed. Its settings
     /// are still the defaults, so the panel that owns this dialog opens them.
@@ -60,11 +68,14 @@ Item {
     function open() {
         dialog.selectedType = "";
         dialog.selectedSource = "";
+        dialog.refreshSources();
         dialog.visible = true;
         dialog.forceActiveFocus();
     }
 
     function close() {
+        sourceMenu.close();
+        dialog.cancelDelete();
         dialog.visible = false;
         dialog.closed();
     }
@@ -90,6 +101,8 @@ Item {
         ? Document.recentSources(24)
         : dialog.pickingScene ? Document.scenesForPrecomp()
                               : Document.sourcesOfType(dialog.selectedType);
+        if (!dialog.shownSources.some(source => source.id === dialog.selectedSource))
+            dialog.selectedSource = "";
     }
 
     onSelectedTypeChanged: refreshSources()
@@ -479,15 +492,10 @@ Item {
                                         dialog.selectedSource = tile.modelData.id;
                                         if (ev.button === Qt.RightButton &&
                                             !dialog.pickingScene)
-                                            sourceMenu.popup(
+                                            dialog.showSourceMenu(
                                                 tile.mapToItem(dialog, ev.x, ev.y).x,
                                                 tile.mapToItem(dialog, ev.x, ev.y).y,
-                                                [{
-                                                    text: qsTr("Delete source"),
-                                                    checked: false,
-                                                    action: () => dialog.askDelete(
-                                                        tile.modelData.id, tile.modelData.name)
-                                                }]);
+                                                tile.modelData.id, tile.modelData.name);
                                     }
                                     onDoubleClicked: {
                                         if (dialog.pickingScene)
