@@ -26,7 +26,7 @@ namespace {
 
 std::filesystem::path g_renderer;
 
-QImage image_from(const lcomp::PreviewFrame& frame) {
+QImage image_from(lcomp::PreviewFrame& frame) {
     if (frame.width <= 0 || frame.height <= 0 || frame.stride == 0)
         return {};
     if (frame.stride > static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
@@ -39,11 +39,14 @@ QImage image_from(const lcomp::PreviewFrame& frame) {
     const std::size_t bytes = static_cast<std::size_t>(frame.stride) * rows;
     if (frame.pixels.size() < bytes)
         return {};
-    // Copy. The vector is about to be discarded, and a QImage must not alias it. Format_RGBA8888
-    // is straight bytes in our order; the premultiplied format would darken a partial pixel.
-    const QImage view(frame.pixels.data(), frame.width, frame.height,
-                      static_cast<int>(frame.stride), QImage::Format_RGBA8888);
-    return view.copy();
+    // The image owns decoded storage, never the renderer's reusable shared mapping.
+    auto pixels = std::make_unique<std::vector<std::uint8_t>>(std::move(frame.pixels));
+    const QImage image(static_cast<const uchar*>(pixels->data()), frame.width, frame.height,
+                       static_cast<int>(frame.stride), QImage::Format_RGBA8888,
+                       [](void* data) { delete static_cast<std::vector<std::uint8_t>*>(data); },
+                       pixels.get());
+    pixels.release();
+    return image;
 }
 
 } // namespace
@@ -74,6 +77,7 @@ struct Preview::Link {
     bool dirty = false;
     bool have_pending = false;
     bool refresh_only = false;
+    bool refresh_pending = false;
     /// Set when this commit was a fault, so its ack does not publish a picture of the last one.
     bool failed = false;
     ldoc::Project pending;
@@ -240,12 +244,14 @@ QString Preview::caption(const QString& canvasId) const {
 
 void Preview::setLive(bool live, ldoc::Fps rate) {
     if (!live) {
+        if (link_) link_->refresh_pending = false;
         if (live_ != nullptr)
             live_->stop();
         return;
     }
     if (live_ == nullptr) {
         live_ = new QTimer(this);
+        live_->setTimerType(Qt::PreciseTimer);
         QObject::connect(live_, &QTimer::timeout, this, [this] { tick(); });
     }
     // Rounded to whole milliseconds because QTimer has nothing finer, which is a rounding of
@@ -260,14 +266,16 @@ void Preview::setLive(bool live, ldoc::Fps rate) {
 /// Republish the document we already have, so the renderer composites it against whatever its
 /// capture has since received.
 ///
-/// Nothing is marked dirty and no command runs: this is the same snapshot going round again. If
-/// one is already in flight the normal in-flight rule applies and this tick is dropped rather
-/// than queued -- a preview that fell behind should skip to the newest frame, not play catch-up.
+/// Nothing is marked dirty and no command runs: this is the same snapshot going round again.
+/// Coalesce busy ticks into one refresh on acknowledgment: draw the newest frame without
+/// waiting another timer interval or accumulating a backlog.
 void Preview::tick() {
     if (!link_ || !link_->alive)
         return;
-    if (link_->in_flight)
+    if (link_->in_flight) {
+        link_->refresh_pending = true;
         return;
+    }
     if (latest_.canvases.empty())
         return;
     link_->refresh_only = true;
@@ -374,6 +382,7 @@ void Preview::try_send() {
     }
     if (link_->write != nullptr)
         link_->write->setEnabled(false);
+    link_->refresh_pending = false;
     link_->in_flight = true;
     link_->dirty = false;
     link_->sent.clear();
@@ -393,7 +402,7 @@ void Preview::on_readable() {
         }
         if (!event->has_value())
             return;
-        const lcomp::PreviewEvent& got = **event;
+        lcomp::PreviewEvent& got = **event;
         switch (got.kind) {
         case lcomp::PreviewEvent::Kind::Pcm:
             lose(QStringLiteral("Unexpected PCM on the UI channel."));
@@ -447,6 +456,10 @@ void Preview::on_readable() {
             }
             if (link_->dirty)
                 try_send();
+            else if (link_->refresh_pending) {
+                link_->refresh_only = true;
+                try_send();
+            }
             break;
         }
         case lcomp::PreviewEvent::Kind::PeerGone:

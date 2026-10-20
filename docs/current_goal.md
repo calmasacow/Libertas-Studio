@@ -4,6 +4,22 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Preview cadence correction, 2026-10-19
+
+ADR-0054 coalesces busy preview ticks into one refresh sent on acknowledgment,
+without a growing queue or another full timer wait. Qt uses precise timer ticks.
+Decoded pixels transfer into QImage ownership, removing one full-image copy while
+keeping previously published images immutable. Unchanged-source skipping remains.
+
+Live screen-capture profiling at a 2280x1282 preview found GPU work mostly 4-9 ms
+and request round trips reaching 66-95 ms. CPU samples were dominated by copying.
+Before/after samples measured average preview round trips of 12.31/11.07 ms;
+these are sequential live observations, not a controlled benchmark or latency guarantee.
+The operator reports noticeably smoother motion. A post-change panel sample showed
+7.15 ms average rendering and zero overruns over 908 renders since reset.
+Temporary stage probes were removed. The UI check stresses busy refreshes, preserves
+an old image across a new rendered frame, and verifies stopping leaves no backlog.
+
 ## Render-lag accounting correction, 2026-10-19
 
 ADR-0053 replaces UI busy-request ticks with renderer-measured composite overruns.

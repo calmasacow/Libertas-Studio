@@ -22,6 +22,7 @@
 #include <QEventLoop>
 #include <QImage>
 #include <QQuickItem>
+#include <QQuickImageProvider>
 #include <QWheelEvent>
 #include <QSize>
 #include <QSet>
@@ -638,6 +639,28 @@ int main(int argc, char** argv) {
             }
             report(preview.hasFrame(QString{}) && retained_red,
                    "unchanged refresh acknowledgements keep the real program picture visible");
+            auto* provider = static_cast<QQuickImageProvider*>(engine.imageProvider("program"));
+            const auto imageKey = preview.canvasKey(QString{});
+            const QImage previousImage = provider->requestImage(imageKey, nullptr, {});
+            preview.setLive(true, {1000, 1});
+            settings[QStringLiteral("color")] = QStringLiteral("#0000ff");
+            document.applySourceSettings(wash, QString{}, settings);
+            QImage nextImage;
+            for (int i = 0; i < 50; ++i) {
+                pump(20);
+                nextImage = provider->requestImage(imageKey, nullptr, {});
+                if (!nextImage.isNull() && qBlue(nextImage.pixel(0, 0)) > 240) break;
+            }
+            preview.setLive(false, {60, 1});
+            report(!nextImage.isNull() && qBlue(nextImage.pixel(0, 0)) > 240 &&
+                       !previousImage.isNull() && qRed(previousImage.pixel(0, 0)) > 240,
+                   "busy refreshes deliver the latest edit and retained image storage stays immutable");
+            settle();
+            const auto stoppedGeneration = preview.generation();
+            settle();
+            report(preview.generation() == stoppedGeneration,
+                   "stopping live preview leaves no refresh backlog");
+            document.undo();
             document.undo();
             document.undo();
         }
