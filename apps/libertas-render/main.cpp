@@ -211,10 +211,25 @@ class Renderer {
             if (const auto* text = std::get_if<std::string>(&it->second)) return *text;
         return {};
     }
+    static libertas::capture::VideoOptions video_options(const ldoc::Source& source) {
+        libertas::capture::VideoOptions options;
+        options.format = setting(source, "videoFormat");
+        for (auto [key, value] : {std::pair{"buffering", &options.buffering},
+                                 std::pair{"autoReset", &options.auto_reset}}) {
+            const auto it = source.settings.find(key);
+            if (it != source.settings.end())
+                if (const auto* flag = std::get_if<bool>(&it->second)) *value = *flag;
+        }
+        if (const auto it = source.settings.find("timeoutFrames"); it != source.settings.end()) {
+            const auto* frames = std::get_if<std::int64_t>(&it->second);
+            options.timeout_frames = frames && *frames >= 2 && *frames <= 120 ? static_cast<int>(*frames) : 0;
+        }
+        return options;
+    }
     static bool same_video_mode(const ldoc::Source& a, const ldoc::Source& b) {
         for (const char* key : {"device", "resolution", "frameRate", "colourRange"})
             if (setting(a, key) != setting(b, key)) return false;
-        return true;
+        return video_options(a) == video_options(b);
     }
     static bool deactivate_video_when_hidden(const ldoc::Source& source) {
         const auto option = source.settings.find("deactivateWhenHidden");
@@ -229,7 +244,8 @@ class Renderer {
             session->source = source;
             std::string error;
             session->capture = libertas::capture::VideoCapture::open(setting(source, "device"),
-                setting(source, "resolution"), setting(source, "frameRate"), setting(source, "colourRange"), error);
+                setting(source, "resolution"), setting(source, "frameRate"), setting(source, "colourRange"), error,
+                video_options(source));
             if (!session->capture) lc::warn("cannot capture {}: {}", setting(source, "device"), error);
             else {
                 auto* ptr = session.get();

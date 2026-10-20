@@ -1290,6 +1290,70 @@ int main(int argc, char** argv) {
             report(keep_camera_ready, "video capture exposes deactivation, disabled by default");
         }
 
+        {
+            document.addSource(QStringLiteral("Capture settings check"), QStringLiteral("source.v4l2"));
+            const auto camera = document.recentSources(1).front().toMap().value("id").toString();
+            const auto defaults = document.sourceDetails(camera).value("settings").toMap();
+            report(defaults.value("videoFormat") == "Auto" && defaults.value("buffering").toBool() &&
+                       !defaults.value("autoReset").toBool() && defaults.value("timeoutFrames").toInt() == 5,
+                   "capture defaults expose Auto, buffering, autoreset and five-frame timeout");
+            auto dialogs = collect(window->contentItem(), QStringLiteral("sourceSettingsDialog"));
+            if (!dialogs.isEmpty()) {
+                auto* dialog = dialogs.front();
+                QMetaObject::invokeMethod(dialog, "open", Q_ARG(QVariant, QVariant{camera}));
+                settle();
+                const auto control = [&](const char* key) -> QQuickItem* {
+                    const auto items = collect(dialog, QString::fromLatin1(key));
+                    return items.isEmpty() ? nullptr : items.front();
+                };
+                const auto clickControl = [&](QQuickItem* item) {
+                    if (!item) return;
+                    for (auto* parent = item->parentItem(); parent; parent = parent->parentItem()) {
+                        if (!parent->property("contentY").isValid()) continue;
+                        parent->setProperty("contentY", std::max(0.0,
+                            item->mapToItem(parent, QPointF{}).y() + parent->property("contentY").toDouble() - 20));
+                        break;
+                    }
+                    settle();
+                    const auto at = item->mapToScene(QPointF(item->width()/2, item->height()/2));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                };
+                report(control("settingInput_videoFormat") && control("settingInput_buffering") &&
+                           control("settingInput_autoReset") && control("settingInput_timeoutFrames"),
+                       "capture settings draw all four requested controls");
+                clickControl(control("settingInput_buffering"));
+                clickControl(control("settingInput_autoReset"));
+                if (auto* timeout = control("settingInput_timeoutFrames")) {
+                    const auto inputs = collect(timeout, QStringLiteral("numberInput"));
+                    if (!inputs.isEmpty()) {
+                        clickControl(inputs.front());
+                        inputs.front()->setProperty("text", QStringLiteral("12"));
+                        QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                        QCoreApplication::sendEvent(window, &enter);
+                        settle();
+                    }
+                }
+                clickControl(control("sourceSettingsOkButton"));
+                const auto saved = document.sourceDetails(camera).value("settings").toMap();
+                report(!saved.value("buffering").toBool(), "capture buffering checkbox saves its choice");
+                report(saved.value("autoReset").toBool(), "capture autoreset checkbox saves its choice");
+                report(saved.value("timeoutFrames").toInt() == 12,
+                       qPrintable(QStringLiteral("capture integer input saves 12 (stored %1)")
+                           .arg(saved.value("timeoutFrames").toInt())));
+                const auto revision = document.revision();
+                document.applySourceSettings(camera, {}, {{"timeoutFrames", 1}});
+                document.applySourceSettings(camera, {}, {{"timeoutFrames", 121}});
+                document.applySourceSettings(camera, {}, {{"timeoutFrames", 2.5}});
+                report(document.revision() == revision, "invalid capture timeout settings are refused");
+                QMetaObject::invokeMethod(dialog, "close");
+                if (saved != defaults) document.undo();
+            }
+            document.undo();
+            settle();
+        }
+
         const QVariantMap browser = document.sourceDetails(browser_id);
         report(!browser.isEmpty() && browser.value("typeTitle").toString() ==
                                          QLatin1String("Browser"),

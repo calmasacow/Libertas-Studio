@@ -13,6 +13,53 @@ LTEST_CASE(unavailable_video_is_an_error_not_an_invented_frame) {
     CHECK(!error.empty());
 }
 
+LTEST_CASE(video_options_reject_invalid_timeouts_and_nondevices) {
+    for (int frames : {0, 1, 121}) {
+        std::string error;
+        libertas::capture::VideoOptions options;
+        options.timeout_frames = frames;
+        CHECK(!libertas::capture::VideoCapture::open("/dev/video999999", "", "", "", error, options));
+        CHECK(error.find("2 to 120") != std::string::npos);
+    }
+    CHECK(libertas::capture::list_video_formats("/etc/passwd").empty());
+}
+
+LTEST_CASE(device_formats_and_both_buffering_modes_produce_real_frames) {
+    const char* device = std::getenv("LIBERTAS_TEST_VIDEO");
+    if (!device) return;
+    const auto formats = libertas::capture::list_video_formats(device);
+    REQUIRE(!formats.empty());
+    for (const auto& format : formats) {
+        for (bool buffering : {true, false}) {
+            libertas::capture::VideoOptions options;
+            options.format = format.code;
+            options.buffering = buffering;
+            options.auto_reset = true;
+            // Elgato offers these formats at 1080p30; higher modes can exceed USB bandwidth.
+            options.timeout_frames = 120;
+            std::string error;
+            auto capture = libertas::capture::VideoCapture::open(device, "1920x1080", "30", "Default", error, options);
+            REQUIRE_MSG(capture != nullptr, "{} {}: {}", format.code, buffering, error);
+            std::mutex mu;
+            std::condition_variable changed;
+            int frames = 0;
+            capture->start([&](auto frame) {
+                if (!frame) return;
+                std::lock_guard lock(mu);
+                if (frame->width == 1920 && frame->height == 1080 &&
+                    frame->pixels.size() == std::size_t{1920 * 1080 * 4}) ++frames;
+                changed.notify_all();
+            });
+            {
+                std::unique_lock lock(mu);
+                changed.wait_for(lock, std::chrono::seconds(6), [&] { return frames >= 3; });
+            }
+            capture->stop();
+            CHECK_MSG(frames >= 3, "{} {}: {} decoded frames", format.code, buffering, frames);
+        }
+    }
+}
+
 LTEST_CASE(elgato_streams_1440p60_and_held_frames_are_immutable) {
     const char* device = std::getenv("LIBERTAS_TEST_VIDEO");
     if (!device) return;

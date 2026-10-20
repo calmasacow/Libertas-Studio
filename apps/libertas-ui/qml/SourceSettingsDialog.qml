@@ -386,7 +386,13 @@ Item {
 
                         objectName: "sourceSettingRow"
                         width: fields.width
-                        field: settingRow.modelData
+                        field: {
+                            if (dialog.typeId === "source.v4l2" && settingRow.modelData.key === "videoFormat") {
+                                const formats = Document.videoFormatChoices(String(dialog.pending.device || ""));
+                                return Object.assign({}, settingRow.modelData, formats);
+                            }
+                            return settingRow.modelData;
+                        }
                         labelWidth: 150
                         currentValue: dialog.pending[settingRow.modelData.key]
                         onCommitted: newValue =>

@@ -15,6 +15,7 @@
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(SWSCALE REQUIRED IMPORTED_TARGET libswscale)
+pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec libavutil)
 pkg_check_modules(PULSE REQUIRED IMPORTED_TARGET libpulse)
 
 add_library(lcapture STATIC
@@ -37,5 +38,5 @@ libertas_wayland_protocol(lcapture stable/linux-dmabuf/linux-dmabuf-v1.xml)
 target_include_directories(lcapture PUBLIC include)
 target_link_libraries(lcapture
     PUBLIC libertas::flags libertas::lcore libertas::lrhi
-    PRIVATE PkgConfig::WAYLAND PkgConfig::SWSCALE PkgConfig::PULSE
+    PRIVATE PkgConfig::WAYLAND PkgConfig::SWSCALE PkgConfig::AVCODEC PkgConfig::PULSE
 )

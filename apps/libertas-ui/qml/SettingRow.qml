@@ -74,7 +74,10 @@ Item {
             implicitHeight: 20
 
             CheckLabel {
+                objectName: "settingInput_" + row.field.key
                 x: row.labelWidth + 4
+                width: Math.max(0, parent.width - x)
+                height: parent.height
                 anchors.verticalCenter: parent.verticalCenter
                 text: row.field.label
                 checked: row.currentValue === true
@@ -87,11 +90,14 @@ Item {
         id: intRow
 
         NumberField {
+            objectName: "settingInput_" + row.field.key
             label: row.field.label
             labelWidth: row.labelWidth
             labelAlign: Text.AlignRight
             suffix: row.field.suffix
             decimals: 0
+            minimum: row.field.minimum === undefined ? -1e100 : row.field.minimum
+            maximum: row.field.maximum === undefined ? 1e100 : row.field.maximum
             value: row.currentValue === undefined ? 0 : Number(row.currentValue)
             onCommitted: newValue => row.committed(Math.round(newValue))
         }
@@ -101,6 +107,7 @@ Item {
         id: choiceRow
 
         ChoiceField {
+            objectName: "settingInput_" + row.field.key
             label: row.field.label
             labelWidth: row.labelWidth
             labelAlign: Text.AlignRight

@@ -18,6 +18,8 @@ Item {
     required property string label
     property real value: 0
     property int decimals: 2
+    property real minimum: -1e100
+    property real maximum: 1e100
     /// The caption column. Wider in a dialog than in a docked panel, where 54 is all there is
     /// to give it, so it is a property rather than the constant it used to be.
     property int labelWidth: 54
@@ -78,6 +80,7 @@ Item {
 
         TextInput {
             id: input
+            objectName: "numberInput"
 
             anchors.fill: parent
             anchors.leftMargin: 5
@@ -87,7 +90,11 @@ Item {
             color: field.enabled ? Theme.c.text : Theme.c.textMuted
             selectionColor: Theme.c.accent
             selectByMouse: true
-            validator: DoubleValidator {}
+            validator: DoubleValidator {
+                bottom: field.minimum
+                top: field.maximum
+                decimals: field.decimals === 0 ? 0 : 1000
+            }
 
             // Only follow the document while the operator is not typing, or their half-finished
             // number gets replaced the moment anything else changes.
@@ -95,7 +102,7 @@ Item {
 
             onEditingFinished: {
                 const parsed = parseFloat(text);
-                if (!isNaN(parsed) && parsed !== field.value)
+                if (acceptableInput && !isNaN(parsed) && parsed !== field.value)
                     field.committed(parsed);
                 else
                     text = field.value.toFixed(field.decimals);

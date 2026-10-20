@@ -316,6 +316,19 @@ struct Converter {
             p["resolution"] = std::string("Leave unchanged");
             p["frameRate"] = std::string("Leave unchanged");
             p["colourRange"] = std::string("Default");
+            p["buffering"] = flag(s, "buffering", true);
+            p["autoReset"] = flag(s, "auto_reset");
+            p["timeoutFrames"] = static_cast<std::int64_t>(integer(s, "timeout_frames", 5, 2, 120));
+            p["videoFormat"] = std::string("Auto");
+            const double format = num(s, "pixelformat", -1);
+            if (format != -1) {
+                if (format < 0 || format > 4294967295.0 || format != std::floor(format))
+                    throw std::runtime_error("invalid V4L2 pixel format");
+                const auto code = static_cast<std::uint32_t>(format);
+                std::string text(4, ' ');
+                for (unsigned i = 0; i < 4; ++i) text[i] = static_cast<char>((code >> (8 * i)) & 0xff);
+                p["videoFormat"] = std::move(text);
+            }
             const auto unpack = [](const J& settings, const char* key) {
                 if (!settings.isMember(key))
                     return std::pair<int, int>{0, 0};

@@ -4,6 +4,27 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Capture format and timeout controls, 2026-10-19
+
+ADR-0057 exposes device-enumerated video formats, Use buffering, Autoreset on
+timeout, and Frames until timeout. Defaults are Auto, buffering on, autoreset off,
+and five frame periods; timeout integers must be 2–120. Auto retains the measured
+format preference; capture logs now report the negotiated fourcc. Explicit format
+selection must match the requested mode. MJPEG decoding uses installed FFmpeg;
+raw conversion includes YV12 and SDR P010 when the device reports them. HDR remains
+unsupported. OBS import preserves these four settings.
+
+Buffering uses the bounded V4L2 queue. Disabling it drains older queued frames
+before conversion. Timeout uses negotiated FPS and monotonic time; autoreset
+stops, requeues and restarts the stream. Physical unplug/reconnect is separate and
+unsupported. Hardware checks produced frames in all six Elgato formats at
+1080p30, with buffering both enabled and disabled, and retained 1440p60 capture
+and off-scene lifetime coverage. A physical signal-loss timeout reset has not
+been exercised on this hardware.
+Validation: warning-free `-Werror` build, 29/29 suite and both hardware-enabled
+video/preview tests passed. Real UI clicks save both checkboxes and the integer
+timeout. Source checkbox rows now have explicit click-area dimensions.
+
 ## Video capture stays ready, 2026-10-19
 
 ADR-0056 starts configured V4L2 capture devices when the project loads, even if

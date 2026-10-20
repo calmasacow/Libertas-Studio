@@ -1681,14 +1681,19 @@ constexpr FieldSpec kWindow[] = {
 };
 
 constexpr FieldSpec kCamera[] = {
-    {"", "Uncompressed V4L2 video capture. Audio capture and automatic reconnect are not available yet.", "note"},
+    {"", "V4L2 video capture. Audio capture and reconnect after unplugging are not available yet.", "note"},
     {"deactivateWhenHidden", "Deactivate when not showing", "bool", "", false},
     {"device", "Video device", "choice", ""},
+    {"videoFormat", "Video format", "choice", "Auto", false, 0, "Auto"},
     {"resolution", "Resolution", "choice", "Leave unchanged", false, 0,
      "Leave unchanged|3840x2160|2560x1440|1920x1080|1280x720|960x540|640x480"},
     {"frameRate", "Frame rate", "choice", "Leave unchanged", false, 0,
      "Leave unchanged|60|59.94|50|30|29.97|25|24"},
     {"colourRange", "Colour range", "choice", "Default", false, 0, "Default|Partial|Full"},
+    {"buffering", "Use buffering", "bool", "", true},
+    {"", "Buffering reads queued device frames in order. Turn it off to discard older queued frames before conversion.", "note"},
+    {"autoReset", "Autoreset on timeout", "bool", "", false},
+    {"timeoutFrames", "Frames until timeout", "int", "", false, 5, "", "frames"},
 };
 
 constexpr FieldSpec kBrowser[] = {
@@ -2170,6 +2175,17 @@ bool Document::hasLiveSource() const {
     return false;
 }
 
+QVariantMap Document::videoFormatChoices(const QString& device) const {
+    QStringList choices{QStringLiteral("Auto")};
+    QVariantMap labels{{QStringLiteral("Auto"), QStringLiteral("Auto")}};
+    for (const auto& format : libertas::capture::list_video_formats(to_std(device))) {
+        const auto code = QString::fromStdString(format.code);
+        choices.append(code);
+        labels[code] = QString::fromStdString(format.name) + QStringLiteral(" (%1)").arg(code);
+    }
+    return {{"choices", choices}, {"choiceLabels", labels}};
+}
+
 QVariantList Document::sourceSettingsSchema(const QString& type) const {
     QVariantList out;
     for (const FieldSpec& f : schema_for(to_std(type))) {
@@ -2179,6 +2195,10 @@ QVariantList Document::sourceSettingsSchema(const QString& type) const {
         m["label"] = QString::fromUtf8(f.label);
         m["value"] = is_note(f) ? QVariant{QString{}} : default_of(f);
         m["suffix"] = QString::fromLatin1(f.suffix);
+        if (type == QLatin1String("source.v4l2") && std::string_view{f.key} == "timeoutFrames") {
+            m["minimum"] = 2;
+            m["maximum"] = 120;
+        }
         const QString choices = QString::fromLatin1(f.choices);
         QStringList options = choices.isEmpty() ? QStringList{} : choices.split(QLatin1Char('|'));
         // The screen field's options are monitors, which no compile-time table can know. Asked
@@ -2260,6 +2280,15 @@ void Document::applySourceSettings(const QString& id, const QString& name,
     }
 
     ldoc::Source copy = *src;
+    if (copy.type == "source.v4l2" && values.contains(QStringLiteral("timeoutFrames"))) {
+        bool valid = false;
+        const auto text = values.value(QStringLiteral("timeoutFrames")).toString();
+        const auto frames = text.toLongLong(&valid);
+        if (!valid || frames < 2 || frames > 120) {
+            emit notice(QStringLiteral("Frames until timeout must be an integer from 2 to 120."));
+            return;
+        }
+    }
     if (!name.trimmed().isEmpty())
         copy.name = to_std(name.trimmed());
 

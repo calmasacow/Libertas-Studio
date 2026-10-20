@@ -350,6 +350,7 @@ public:
     /// the field it is about. They are in the schema rather than looked up separately so that
     /// a note sits where it belongs instead of all of them piling up at the top.
     Q_INVOKABLE [[nodiscard]] QVariantList sourceSettingsSchema(const QString& type) const;
+    Q_INVOKABLE [[nodiscard]] QVariantMap videoFormatChoices(const QString& device) const;
 
     /// What the compositor says about one monitor: name, description, size and refresh. Empty
     /// when that connector is not connected, which is what the settings dialog shows instead of

@@ -246,6 +246,33 @@ LTEST_CASE(import_maps_sources_and_preserves_global_audio_settings) {
     CHECK_EQ(bus->sends.size(), 2u);
 }
 
+LTEST_CASE(import_preserves_video_format_buffering_and_timeout_settings) {
+    for (double frames : {7.0, 1.0, 121.0, 2.5}) {
+        Scratch scratch;
+        auto root = collection();
+        auto camera = source("Capture options", "v4l2_input", "capture-options");
+        camera["settings"]["pixelformat"] = Json::UInt{0x3231564e}; // NV12
+        camera["settings"]["buffering"] = false;
+        camera["settings"]["auto_reset"] = true;
+        camera["settings"]["timeout_frames"] = frames;
+        root["sources"].append(camera);
+        scratch.write(root);
+        auto converted = scratch.convert();
+        if (frames != 7.0) {
+            CHECK(!converted.has_value());
+            continue;
+        }
+        REQUIRE_MSG(converted.has_value(), "{}", converted.error());
+        const auto& sources = converted->project.sources;
+        const auto found = std::ranges::find(sources, std::string("Capture options"), &ldoc::Source::name);
+        REQUIRE(found != sources.end());
+        CHECK_EQ(std::get<std::string>(found->settings.at("videoFormat")), std::string("NV12"));
+        CHECK(!std::get<bool>(found->settings.at("buffering")));
+        CHECK(std::get<bool>(found->settings.at("autoReset")));
+        CHECK_EQ(std::get<std::int64_t>(found->settings.at("timeoutFrames")), 7);
+    }
+}
+
 LTEST_CASE(import_refuses_malformed_references_cycles_and_existing_destinations) {
     for (int mode = 0; mode < 7; ++mode) {
         Scratch scratch;
