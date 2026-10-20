@@ -4522,6 +4522,57 @@ int main(int argc, char** argv) {
                 report(modeRendered, "blend chosen in Properties reaches the real renderer");
             }
             document.setNodeBlendMode("normal");
+            workspace.openPanel("audio-mixer");
+            workspace.activate("audio-mixer");
+            settle();
+            report(document.monitoringOutput() == "none",
+                   "missing monitoring output defaults to None");
+            const auto monitorFields = collect(window->contentItem(), "monitoringOutputField");
+            QQuickItem* monitorField = nullptr;
+            for (auto* field : monitorFields)
+                if (field->isVisible())
+                    monitorField = field;
+            report(monitorField != nullptr, "Audio Mixer exposes monitoring output selector");
+            const auto chooseMonitor = [&](const QString& text) {
+                if (!monitorField)
+                    return false;
+                clickBlend(monitorField);
+                for (auto* popup : collect(window->contentItem(), "choicePopup")) {
+                    if (!popup->isVisible())
+                        continue;
+                    QList<QQuickItem*> items{popup};
+                    while (!items.isEmpty()) {
+                        auto* item = items.takeLast();
+                        if (item->isVisible() && item->property("text").toString() == text) {
+                            clickBlend(item);
+                            return true;
+                        }
+                        items.append(item->childItems());
+                    }
+                }
+                return false;
+            };
+            report(chooseMonitor("System default") && document.monitoringOutput() == "default",
+                   "monitor dropdown saves System default without enabling monitoring flags");
+            document.save();
+            QFile monitorFile(QString::fromStdString((path / "project.json").string()));
+            const bool monitorFileOpened = monitorFile.open(QIODevice::ReadOnly);
+            const auto monitorSaved = ldoc::project_from_json(monitorFile.readAll().toStdString());
+            report(monitorFileOpened && monitorSaved &&
+                       std::get<std::string>(monitorSaved->project.settings.extra.at(
+                           "audio.monitor.output")) == "default",
+                   "monitoring output persists in native project settings");
+            document.undo();
+            settle();
+            report(document.monitoringOutput() == "none",
+                   "monitoring output selection undoes to None");
+            document.redo();
+            settle();
+            report(chooseMonitor("None") && document.monitoringOutput() == "none",
+                   "monitor dropdown can disable playback explicitly");
+            document.setMonitoringOutput("missing-output-not-enumerated");
+            report(document.monitoringOutput() == "none",
+                   "monitor selector rejects unknown output identities");
             workspace.openPanel("favourites");
             workspace.activate("favourites");
             settle();

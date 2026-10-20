@@ -94,6 +94,7 @@ class Document : public QObject {
     Q_PROPERTY(int currentCanvasSceneCount READ currentCanvasSceneCount NOTIFY changed)
 
     Q_PROPERTY(QStringList problems READ problems NOTIFY changed)
+    Q_PROPERTY(QString monitoringOutput READ monitoringOutput NOTIFY changed)
     Q_PROPERTY(QStringList blendModes READ blendModes CONSTANT)
 
 public:
@@ -213,6 +214,9 @@ public:
 
     [[nodiscard]] QVariantMap nodeProperties() const;
     [[nodiscard]] QStringList problems() const;
+    [[nodiscard]] QString monitoringOutput() const;
+    Q_INVOKABLE [[nodiscard]] QVariantMap monitoringOutputChoices() const;
+    Q_INVOKABLE void setMonitoringOutput(const QString& output);
     [[nodiscard]] QStringList blendModes() const;
     [[nodiscard]] QString currentCanvas() const { return current_canvas_; }
     [[nodiscard]] QString currentCanvasName() const;

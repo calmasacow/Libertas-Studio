@@ -8,12 +8,9 @@ import Libertas
 
 /// The bus graph: one strip per bus, and the selected source's own routing beside it.
 ///
-/// There are no meters, and the panel says so rather than drawing some. Nothing in this build
-/// makes a sound -- there is no audio host yet -- so a moving meter here would be an animation on
-/// a timer, and the panel would look finished while being incapable. What *is* real is everything
-/// the document holds: the buses, their kinds, faders, pans, mutes and monitor flags, which bus each
-/// source node feeds, and the count of them feeding each bus. All of it is commands, so all of it
-/// undoes.
+/// Sources and buses expose live meters, gain, pan, mute and monitor flags. The footer
+/// selects the local playback sink; None disables playback without changing program routing.
+/// Document edits are commands and undo with the rest of the show.
 ///
 /// A dragged fader runs a command per move and the session collapses the run into one undo
 /// step, landing back where the drag began. That is what `Document.setBusGain(..., dragging)`
@@ -40,6 +37,14 @@ Item {
     /// dB at the top and bottom of a fader. -60 reads as off without being a special case.
     readonly property real gainMin: -60
     readonly property real gainMax: 12
+
+    property var monitoringDevices: ({ "choices": ["none", "default"],
+                                        "choiceLabels": { "none": qsTr("None"), "default": qsTr("System default") } })
+    function refreshMonitoringDevices() {
+        monitoringDevices = Document.monitoringOutputChoices();
+    }
+    Component.onCompleted: refreshMonitoringDevices()
+    onVisibleChanged: if (visible) refreshMonitoringDevices()
 
     function faderFraction(db) {
         return (Math.max(panel.gainMin, Math.min(panel.gainMax, db)) - panel.gainMin) /
@@ -715,18 +720,30 @@ Item {
             }
         }
 
-        // Says what this panel cannot do, where it cannot be mistaken for something it can --
-        // and, when anything is hidden, says so, because a missing microphone during a show
-        // has to be answerable from the panel rather than being a mystery.
-        Text {
-            anchors.centerIn: parent
-            text: panel.hiddenCount === 0
-                  ? qsTr("Live input and bus meters · Monitor plays locally")
-                  : qsTr("%n strip(s) hidden · live input meters", "",
-                         panel.hiddenCount)
-            font.pixelSize: 9
-            color: Theme.c.textMuted
-            opacity: 0.6
+        ChoiceField {
+            objectName: "monitoringOutputField"
+            anchors.left: parent.left
+            anchors.leftMargin: 35
+            anchors.right: refreshMonitoring.left
+            anchors.rightMargin: 6
+            anchors.verticalCenter: parent.verticalCenter
+            label: qsTr("Monitor output")
+            labelWidth: 85
+            choices: panel.monitoringDevices.choices
+            choiceLabels: panel.monitoringDevices.choiceLabels
+            value: Document.monitoringOutput
+            onCommitted: newValue => Document.setMonitoringOutput(newValue)
+        }
+
+        ToolButton {
+            id: refreshMonitoring
+            objectName: "refreshMonitoringOutputs"
+            anchors.right: parent.right
+            anchors.rightMargin: 6
+            anchors.verticalCenter: parent.verticalCenter
+            label: qsTr("Refresh")
+            tip: panel.monitoringDevices.error || qsTr("Refresh audio outputs")
+            onClicked: panel.refreshMonitoringDevices()
         }
     }
 }

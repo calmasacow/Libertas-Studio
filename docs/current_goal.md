@@ -4,6 +4,22 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Audio monitoring output, 2026-10-20
+
+ADR-0060 adds an Audio Mixer footer selector for None, System default and discovered
+PulseAudio/PipeWire output sinks. None is the default, including projects without
+a saved output. Refresh updates the list; unavailable saved outputs remain visible.
+The selection is undoable and persists in project settings. Named sinks do not fall
+back or move to another output automatically. Changing output recreates only monitor
+playback; None releases it without clearing source/bus monitor flags or changing the
+program mix. Failed opens retry at a bounded rate.
+
+The UI check clicks System default and None in a project containing only colors,
+checks save/undo/redo and rejects unknown identities. An opt-in real-renderer audio
+check (`LIBERTAS_TEST_MONITOR=1`) sends a media tone through two private null sinks,
+verifies output switching and None, and rejects a missing output. It never routes
+its test tone to the operator's speakers.
+
 ## Seven blend modes, 2026-10-20
 
 ADR-0059 carries Normal, Add, Subtract, Screen, Multiply, Lighten and Darken through
@@ -17,6 +33,18 @@ blending can differ for transparent layers, so conversion reports state this lim
 Unimplemented blend/effect combinations still report gaps. Real scene tests cover
 all modes, alpha, opacity, transformed/nested groups, and OBS round trips. The UI
 check clicks each Properties option and verifies actual renderer pixels and handles.
+
+## Follow-up: plugin support and OBS porting
+
+After the current source/import/render/audio/countdown work, investigate a plugin
+architecture that makes common OBS plugins inexpensive to port. Inventory actual
+OBS APIs used by representative plugins before designing an SDK or compatibility
+layer. Review source/filter/transition/audio hooks, GPU resource access, Qt docks,
+settings/properties, persistence, hotkeys, packaging, licensing and crash isolation.
+Reconcile the design with existing no-libobs and process-isolation decisions in a
+new ADR. Identify supported API subsets, required adapters and plugin classes that
+cannot be supported cheaply; do not promise binary compatibility without evidence.
+This investigation follows the current work, at the operator's request.
 
 ## OBS collection fidelity backlog, 2026-10-19
 

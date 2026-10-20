@@ -94,6 +94,39 @@ std::vector<AudioDevice> list_audio_devices(std::string& error) {
     return devices;
 }
 
+std::vector<AudioDevice> list_audio_sinks(std::string& error) {
+    Connection connection;
+    if (!connection.connect(error))
+        return {};
+    std::vector<AudioDevice> devices;
+    pa_threaded_mainloop_lock(connection.loop);
+    auto* operation = pa_context_get_sink_info_list(
+        connection.context,
+        [](pa_context*, const pa_sink_info* info, int, void* data) {
+            if (info)
+                static_cast<std::vector<AudioDevice>*>(data)->push_back(
+                    {info->name, info->description, false});
+        },
+        &devices);
+    pa_threaded_mainloop_unlock(connection.loop);
+    if (!operation) {
+        error = "cannot enumerate audio outputs";
+        return {};
+    }
+    const bool done =
+        connection.wait([&] { return pa_operation_get_state(operation) != PA_OPERATION_RUNNING; });
+    pa_threaded_mainloop_lock(connection.loop);
+    if (!done)
+        pa_operation_cancel(operation);
+    pa_operation_unref(operation);
+    pa_threaded_mainloop_unlock(connection.loop);
+    if (!done) {
+        error = "audio output enumeration timed out";
+        return {};
+    }
+    return devices;
+}
+
 struct AudioCapture::State {
     Connection connection;
     pa_stream* stream = nullptr;
@@ -197,7 +230,18 @@ AudioMonitor::AudioMonitor(std::unique_ptr<State> state) : state_(std::move(stat
 
 AudioMonitor::~AudioMonitor() = default;
 
-std::unique_ptr<AudioMonitor> AudioMonitor::open(std::string& error) {
+std::unique_ptr<AudioMonitor> AudioMonitor::open(std::string& error, const std::string& device) {
+    if (device.size() > 1024 || device.find('\0') != std::string::npos) {
+        error = "invalid monitoring output identity";
+        return {};
+    }
+    if (!device.empty()) {
+        const auto sinks = list_audio_sinks(error);
+        if (std::ranges::none_of(sinks, [&](const auto& sink) { return sink.id == device; })) {
+            error = "selected monitoring output is unavailable";
+            return {};
+        }
+    }
     auto state = std::make_unique<State>();
     if (!state->connection.connect(error))
         return {};
@@ -232,12 +276,22 @@ std::unique_ptr<AudioMonitor> AudioMonitor::open(std::string& error) {
     pa_buffer_attr attr{static_cast<std::uint32_t>(-1), 1920 * sizeof(float),
                         static_cast<std::uint32_t>(-1), 480 * sizeof(float),
                         static_cast<std::uint32_t>(-1)};
-    const int connected = pa_stream_connect_playback(state->stream, nullptr, &attr,
-                                                     PA_STREAM_ADJUST_LATENCY, nullptr, nullptr);
+    const auto flags = static_cast<pa_stream_flags_t>(PA_STREAM_ADJUST_LATENCY |
+                                                      (device.empty() ? 0 : PA_STREAM_DONT_MOVE));
+    const int connected = pa_stream_connect_playback(
+        state->stream, device.empty() ? nullptr : device.c_str(), &attr, flags, nullptr, nullptr);
     pa_threaded_mainloop_unlock(connection.loop);
     if (connected < 0 ||
         !connection.wait([&] { return pa_stream_get_state(state->stream) == PA_STREAM_READY; })) {
         error = "cannot open monitor output";
+        return {};
+    }
+    pa_threaded_mainloop_lock(connection.loop);
+    const char* actual = pa_stream_get_device_name(state->stream);
+    const bool matches = device.empty() || (actual && device == actual);
+    pa_threaded_mainloop_unlock(connection.loop);
+    if (!matches) {
+        error = "audio server substituted a different monitoring output";
         return {};
     }
     return std::unique_ptr<AudioMonitor>(new AudioMonitor(std::move(state)));

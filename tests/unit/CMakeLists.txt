@@ -37,7 +37,7 @@ target_compile_definitions(test_golden PRIVATE
     LIBERTAS_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 libertas_unit_test(test_ipc              libertas::lipc)
 libertas_unit_test(test_json             libertas::ldoc)
-libertas_unit_test(test_preview         libertas::lcomp)
+libertas_unit_test(test_preview         libertas::lcomp libertas::lcapture)
 target_compile_definitions(test_preview PRIVATE
     LIBERTAS_RENDER="$<TARGET_FILE:libertas-render>"
     LIBERTAS_IMAGE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/images")

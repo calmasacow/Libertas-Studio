@@ -13,6 +13,7 @@ struct AudioDevice {
 };
 
 std::vector<AudioDevice> list_audio_devices(std::string& error);
+std::vector<AudioDevice> list_audio_sinks(std::string& error);
 
 class AudioCapture {
   public:
@@ -29,7 +30,7 @@ class AudioCapture {
 
 class AudioMonitor {
   public:
-    static std::unique_ptr<AudioMonitor> open(std::string& error);
+    static std::unique_ptr<AudioMonitor> open(std::string& error, const std::string& device = {});
     ~AudioMonitor();
     void write(std::span<const float> samples);
 

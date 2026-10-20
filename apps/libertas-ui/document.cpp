@@ -148,6 +148,49 @@ QStringList Document::problems() const {
     return out;
 }
 
+QString Document::monitoringOutput() const {
+    const auto& extra = session_->project().settings.extra;
+    const auto found = extra.find("audio.monitor.output");
+    if (found != extra.end()) {
+        if (const auto* value = std::get_if<std::string>(&found->second);
+            value && !value->empty() && value->size() <= 1024 &&
+            value->find('\0') == std::string::npos &&
+            (*value == "none" || *value == "default" ||
+             (value->starts_with("sink:") && value->size() > 5)))
+            return qstr(*value);
+    }
+    return QStringLiteral("none");
+}
+
+QVariantMap Document::monitoringOutputChoices() const {
+    QStringList choices{QStringLiteral("none"), QStringLiteral("default")};
+    QVariantMap labels{{"none", tr("None")}, {"default", tr("System default")}};
+    std::string error;
+    for (const auto& device : libertas::capture::list_audio_sinks(error)) {
+        const auto id = QStringLiteral("sink:") + qstr(device.id);
+        choices.append(id);
+        labels[id] = qstr(device.name);
+    }
+    const auto current = monitoringOutput();
+    if (!choices.contains(current)) {
+        choices.append(current);
+        labels[current] = tr("Unavailable (%1)").arg(current);
+    }
+    return {{"choices", choices}, {"choiceLabels", labels}, {"error", qstr(error)}};
+}
+
+void Document::setMonitoringOutput(const QString& output) {
+    if (output == monitoringOutput())
+        return;
+    const auto available = monitoringOutputChoices().value("choices").toStringList();
+    if (!available.contains(output) || output.isEmpty() || output.size() > 1024 ||
+        output.contains(QChar::Null))
+        return;
+    auto settings = session_->project().settings;
+    settings.extra["audio.monitor.output"] = to_std(output);
+    run(ldoc::SetProjectSettings{std::move(settings)});
+}
+
 QStringList Document::blendModes() const {
     QStringList out;
     for (const auto i :

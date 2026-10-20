@@ -78,6 +78,7 @@ class AudioSources {
     std::mutex mu_;
     std::vector<Route> routes_;
     std::vector<ldoc::Bus> buses_;
+    std::string monitor_output_ = "none";
     std::map<ldoc::Id, lcomp::AudioLevel> bus_levels_;
     std::jthread mixer_{[this](std::stop_token stop) { mix(stop); }};
 
@@ -90,6 +91,8 @@ class AudioSources {
     void mix(std::stop_token stop) {
         using Block = std::array<float, 960>;
         std::unique_ptr<libertas::capture::AudioMonitor> monitor;
+        std::string opened_output;
+        auto retry_monitor = std::chrono::steady_clock::time_point{};
 
         struct Delay {
             std::size_t length = 0;
@@ -102,10 +105,12 @@ class AudioSources {
             next += std::chrono::milliseconds(10);
             std::vector<Route> routes;
             std::vector<ldoc::Bus> buses;
+            std::string monitor_output;
             {
                 std::lock_guard lock(mu_);
                 routes = routes_;
                 buses = buses_;
+                monitor_output = monitor_output_;
             }
             std::map<Session*, Block> inputs;
             std::map<ldoc::Id, Block> mixed;
@@ -208,14 +213,24 @@ class AudioSources {
                 std::lock_guard lock(mu_);
                 bus_levels_ = std::move(levels);
             }
-            if (monitoring && !monitor) {
-                std::string error;
-                monitor = libertas::capture::AudioMonitor::open(error);
-                if (!monitor)
-                    lc::warn("audio monitor: {}", error);
-            }
-            if (!monitoring)
+            if (monitor_output != opened_output) {
                 monitor.reset();
+                opened_output = monitor_output;
+                retry_monitor = {};
+            }
+            if (!monitoring || monitor_output == "none") {
+                monitor.reset();
+            } else if (!monitor && std::chrono::steady_clock::now() >= retry_monitor) {
+                std::string error;
+                monitor = libertas::capture::AudioMonitor::open(
+                    error, monitor_output == "default" ? "" : monitor_output.substr(5));
+                if (!monitor) {
+                    retry_monitor = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+                    lc::warn("audio monitor: {}", error);
+                } else {
+                    retry_monitor = {};
+                }
+            }
             if (monitor)
                 monitor->write(listening);
             if (next < std::chrono::steady_clock::now())
@@ -302,6 +317,15 @@ class AudioSources {
             std::lock_guard lock(mu_);
             routes_ = std::move(routes);
             buses_ = project.buses;
+            monitor_output_ = "none";
+            if (const auto it = project.settings.extra.find("audio.monitor.output");
+                it != project.settings.extra.end()) {
+                if (const auto* value = std::get_if<std::string>(&it->second);
+                    value && !value->empty() && value->size() <= 1024 &&
+                    value->find('\0') == std::string::npos &&
+                    (*value == "default" || (value->starts_with("sink:") && value->size() > 5)))
+                    monitor_output_ = *value;
+            }
             for (const auto& [id, level] : bus_levels_)
                 result.push_back(level);
         }

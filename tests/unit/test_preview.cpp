@@ -13,9 +13,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <lcapture/audio.hpp>
+#include <mutex>
 #include <sys/wait.h>
 #include <thread>
 #include <tuple>
+#include <utility>
 
 #ifndef LIBERTAS_RENDER
 #error "LIBERTAS_RENDER must name the libertas-render binary"
@@ -373,6 +376,97 @@ LTEST_CASE(media_audio_crosses_worker_mixer_and_meter_transport) {
     CHECK(source_signal);
     CHECK(bus_signal);
     CHECK(muted);
+}
+
+LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
+    if (!std::getenv("LIBERTAS_TEST_MONITOR"))
+        return;
+    std::string error;
+    const auto base = "libertas_monitor_test_" + ldoc::Id::generate().to_string();
+    auto sink1 = libertas::capture::AudioSink::open(base + "_1", error);
+    auto sink2 = libertas::capture::AudioSink::open(base + "_2", error);
+    REQUIRE_MSG(sink1 && sink2, "{}", error);
+
+    struct Signal {
+        std::mutex mutex;
+        float peak = 0;
+
+        void add(std::span<const float> samples) {
+            std::lock_guard lock(mutex);
+            for (const auto sample : samples)
+                peak = std::max(peak, std::abs(sample));
+        }
+
+        float take() {
+            std::lock_guard lock(mutex);
+            return std::exchange(peak, 0);
+        }
+    } first, second;
+
+    auto capture1 = libertas::capture::AudioCapture::open(
+        base + "_1.monitor", true, [&](auto samples) { first.add(samples); }, error);
+    auto capture2 = libertas::capture::AudioCapture::open(
+        base + "_2.monitor", true, [&](auto samples) { second.add(samples); }, error);
+    REQUIRE_MSG(capture1 && capture2, "{}", error);
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends);
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child);
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000));
+    auto source = colour_source(0, 0, 0);
+    source.type = "source.media";
+    source.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/motion-tone.mkv";
+    source.settings["loop"] = true;
+    auto node = bound_to(source);
+    std::get<ldoc::SourceData>(node.data).audio.monitor = true;
+    ldoc::Scene scene;
+    scene.id = ldoc::Id::generate();
+    auto project = show(scene, {source});
+    project.scenes[0].roots = {node};
+    for (const int selected : {-1, 1, 2, 0}) {
+        if (selected < 0)
+            project.settings.extra.erase("audio.monitor.output");
+        else
+            project.settings.extra["audio.monitor.output"] =
+                selected == 0 ? std::string("none")
+                              : "sink:" + base + "_" + std::to_string(selected);
+        REQUIRE(link.send_project(project));
+        const auto start = std::chrono::steady_clock::now();
+        const auto end = start + std::chrono::milliseconds(1400);
+        bool pending = true, cleared = false;
+        while (std::chrono::steady_clock::now() < end) {
+            if (!cleared &&
+                std::chrono::steady_clock::now() - start > std::chrono::milliseconds(500)) {
+                first.take();
+                second.take();
+                cleared = true;
+            }
+            auto event = link.receive(50);
+            REQUIRE(event);
+            if (event->has_value() && (**event).kind == lcomp::PreviewEvent::Kind::Ack) {
+                pending = false;
+                if (std::chrono::steady_clock::now() + std::chrono::milliseconds(100) < end) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    REQUIRE(link.refresh(64));
+                    pending = true;
+                }
+            }
+        }
+        for (int i = 0; pending && i < 20; ++i) {
+            auto event = link.receive(100);
+            REQUIRE(event);
+            if (event->has_value() && (**event).kind == lcomp::PreviewEvent::Kind::Ack)
+                pending = false;
+        }
+        REQUIRE(!pending);
+        CHECK_EQ(first.take() > 0.01f, selected == 1);
+        CHECK_EQ(second.take() > 0.01f, selected == 2);
+    }
+    link.quit();
+    link.close();
+    CHECK_EQ(reap(*child, 3000), 0);
+    CHECK(!libertas::capture::AudioMonitor::open(error, base + "_missing"));
 }
 
 LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
