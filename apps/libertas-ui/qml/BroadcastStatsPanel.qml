@@ -202,7 +202,10 @@ Item {
                         objectName: "canvasMissedFrames"
                         width: parent.width
                         label: qsTr("Frames missed due to rendering lag")
-                        value: stats.available ? stats.missed : panel.unavailable
+                        value: stats.available
+                            ? stats.missed + " (" + (stats.frames + stats.missed > 0
+                                ? 100 * stats.missed / (stats.frames + stats.missed) : 0).toFixed(1) + "%)"
+                            : panel.unavailable
                     }
                 }
             }

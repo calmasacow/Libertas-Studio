@@ -2901,14 +2901,18 @@ int main(int argc, char** argv) {
                            measured.value("frames").toULongLong() > 0 &&
                            duration->property("value").toString() ==
                                QString::number(measured.value("renderMs").toDouble(), 'f', 2) + " ms" &&
-                           missed->property("value").toULongLong() == measured.value("missed").toULongLong(),
+                           missed->property("value").toString() ==
+                               QStringLiteral("%1 (%2%)").arg(measured.value("missed").toULongLong())
+                                   .arg(100.0 * measured.value("missed").toDouble() /
+                                       (measured.value("frames").toDouble() +
+                                        measured.value("missed").toDouble()), 0, 'f', 1),
                        "visible render stats follow a real renderer frame while encoding is idle");
                 const auto at = reset->mapToScene(QPointF(reset->width()/2, reset->height()/2));
                 post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
                 post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
                 settle();
                 report(renderedFrames->property("value").toString() == "0" &&
-                           missed->property("value").toString() == "0" &&
+                           missed->property("value").toString() == "0 (0.0%)" &&
                            duration->property("value").toString() == "0.00 ms" &&
                            target->property("value").toString() == "30.0",
                        "Broadcast Stats reset immediately displays zeros and keeps canvas target FPS");
