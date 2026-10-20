@@ -416,6 +416,13 @@ LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
     nested.transform.position = {64, 0};
     project.scenes[0].roots = {node, nested};
     project.scenes.push_back(inner);
+    if (video && !window) {
+        auto hidden = project;
+        hidden.decks.front().program_scene.reset();
+        commit(link, hidden);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        CHECK(commit(link, project).status == lcomp::PictureStatus::Complete);
+    }
     int complete = 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (complete < 20 && std::chrono::steady_clock::now() < deadline) {
@@ -427,6 +434,48 @@ LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
                     CHECK_EQ(pixel(frame, x, y), pixel(frame, x + 64, y));
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    if (video && !window) {
+        const auto device = std::filesystem::canonical(video);
+        const auto device_open = [&] {
+            std::error_code ec;
+            for (const auto& fd : std::filesystem::directory_iterator(
+                     "/proc/" + std::to_string(*child) + "/fd", ec)) {
+                if (std::filesystem::canonical(fd.path(), ec) == device && !ec) return true;
+                ec.clear();
+            }
+            return false;
+        };
+        const auto active = project.scenes.front().id;
+        ldoc::Scene blank;
+        blank.id = ldoc::Id::generate();
+        blank.canvas = project.canvases.front().id;
+        project.scenes.push_back(blank);
+        CHECK(device_open());
+        for (int i = 0; i < 3; ++i) {
+            project.decks.front().program_scene = blank.id;
+            commit(link, project);
+            CHECK(device_open());
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            project.decks.front().program_scene = active;
+            CHECK(commit(link, project).status == lcomp::PictureStatus::Complete);
+        }
+        // The setting itself must not restart a visible device.
+        project.sources.front().settings["deactivateWhenHidden"] = true;
+        CHECK(commit(link, project).status == lcomp::PictureStatus::Complete);
+        project.decks.front().program_scene = blank.id;
+        commit(link, project);
+        CHECK(!device_open());
+        project.sources.front().settings["deactivateWhenHidden"] = false;
+        project.decks.front().program_scene = active;
+        commit(link, project);
+        CHECK(device_open());
+        project.decks.front().program_scene = blank.id;
+        commit(link, project);
+        CHECK(device_open());
+        project.sources.clear();
+        commit(link, project);
+        CHECK(!device_open());
     }
     link.quit();
     link.close();

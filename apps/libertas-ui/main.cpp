@@ -1274,15 +1274,20 @@ int main(int argc, char** argv) {
 
         {
             bool well_formed = true;
+            bool keep_camera_ready = false;
             for (const QVariant& v : document.sourceSettingsSchema(
                      QStringLiteral("source.v4l2"))) {
                 const QVariantMap f = v.toMap();
+                if (f.value("key").toString() == QLatin1String("deactivateWhenHidden"))
+                    keep_camera_ready = f.value("kind").toString() == QLatin1String("bool") &&
+                                        f.value("value").isValid() && !f.value("value").toBool();
                 const bool note = f.value("kind").toString() == QLatin1String("note");
                 well_formed = well_formed && !f.value("label").toString().isEmpty() &&
                               (note ? f.value("key").toString().isEmpty()
                                     : !f.value("key").toString().isEmpty());
             }
             report(well_formed, "every field is named and every note is keyless");
+            report(keep_camera_ready, "video capture exposes deactivation, disabled by default");
         }
 
         const QVariantMap browser = document.sourceDetails(browser_id);

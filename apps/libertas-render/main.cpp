@@ -51,6 +51,19 @@ class Renderer {
 
     lcomp::Picture render(const ldoc::Project& project, const ldoc::Id& canvas,
                           std::uint32_t max_edge) {
+        std::erase_if(videos_, [&](auto& item) {
+            const auto* source = project.source(item.second->source.id);
+            if (!source || source->type != "source.v4l2" ||
+                !same_video_mode(item.second->source, *source)) {
+                video_held_.erase(item.first);
+                return true;
+            }
+            item.second->source = *source;
+            return false;
+        });
+        for (const auto& source : project.sources)
+            if (source.type == "source.v4l2" && !deactivate_video_when_hidden(source))
+                video_session(source);
         if (!cpu_ && !gpu_failed_ && !gpu_) {
             if (device()) {
                 std::string error;
@@ -90,6 +103,7 @@ class Renderer {
             if (session->sequence != session->drawn) return true;
         }
         for (const auto& [id, session] : videos_) {
+            if (!session->visible) continue;
             std::lock_guard lock(session->mu);
             if (session->sequence != session->drawn) return true;
         }
@@ -117,7 +131,11 @@ class Renderer {
             session.drawn = snapshot.second;
         }
         video_held_.clear();
-        std::erase_if(videos_, [this](const auto& item) { return !video_wanted_.contains(item.first); });
+        std::erase_if(videos_, [this](const auto& item) {
+            auto& session = *item.second;
+            session.visible = video_wanted_.contains(item.first);
+            return !session.visible && deactivate_video_when_hidden(session.source);
+        });
         video_wanted_.clear();
         for (auto& [name, snapshot] : held_) {
             auto& s = *sessions_.at(name);
@@ -176,6 +194,7 @@ class Renderer {
 
     struct VideoSession {
         ldoc::Source source;
+        bool visible = false;
         std::mutex mu;
         std::shared_ptr<const libertas::capture::VideoFrame> last;
         std::uint64_t sequence = 0, drawn = 0;
@@ -192,23 +211,19 @@ class Renderer {
             if (const auto* text = std::get_if<std::string>(&it->second)) return *text;
         return {};
     }
-    lcomp::CapturedPicture source_frame(const ldoc::Source& source, bool gpu) {
-        if (source.type == "source.text" || source.type == "source.media" ||
-            source.type == "source.slideshow" || source.type == "source.playlist" || source.type == "source.browser" || source.type == "source.blackmagic")
-            return worker_frame(source);
-        if (source.type != "source.v4l2") {
-            const bool window = source.type == "source.window" || source.type == "source.game";
-            const auto cursor = source.settings.find("showCursor");
-            const auto* enabled = cursor == source.settings.end() ? nullptr : std::get_if<bool>(&cursor->second);
-            return frame(setting(source, window ? "window" : "output"), gpu, window, !enabled || *enabled);
-        }
+    static bool same_video_mode(const ldoc::Source& a, const ldoc::Source& b) {
+        for (const char* key : {"device", "resolution", "frameRate", "colourRange"})
+            if (setting(a, key) != setting(b, key)) return false;
+        return true;
+    }
+    static bool deactivate_video_when_hidden(const ldoc::Source& source) {
+        const auto option = source.settings.find("deactivateWhenHidden");
+        const auto* enabled = option == source.settings.end()
+            ? nullptr : std::get_if<bool>(&option->second);
+        return enabled && *enabled;
+    }
+    VideoSession& video_session(const ldoc::Source& source) {
         const auto id = source.id.to_string();
-        video_wanted_.insert(id);
-        auto existing = videos_.find(id);
-        if (existing != videos_.end() && existing->second->source.settings != source.settings) {
-            video_held_.erase(id);
-            videos_.erase(existing);
-        }
         if (!videos_.contains(id)) {
             auto session = std::make_unique<VideoSession>();
             session->source = source;
@@ -226,8 +241,22 @@ class Renderer {
             }
             videos_.emplace(id, std::move(session));
         }
+        return *videos_.at(id);
+    }
+    lcomp::CapturedPicture source_frame(const ldoc::Source& source, bool gpu) {
+        if (source.type == "source.text" || source.type == "source.media" ||
+            source.type == "source.slideshow" || source.type == "source.playlist" || source.type == "source.browser" || source.type == "source.blackmagic")
+            return worker_frame(source);
+        if (source.type != "source.v4l2") {
+            const bool window = source.type == "source.window" || source.type == "source.game";
+            const auto cursor = source.settings.find("showCursor");
+            const auto* enabled = cursor == source.settings.end() ? nullptr : std::get_if<bool>(&cursor->second);
+            return frame(setting(source, window ? "window" : "output"), gpu, window, !enabled || *enabled);
+        }
+        const auto id = source.id.to_string();
+        video_wanted_.insert(id);
+        auto& session = video_session(source);
         if (!video_held_.contains(id)) {
-            auto& session = *videos_.at(id);
             std::lock_guard lock(session.mu);
             video_held_.emplace(id, std::make_pair(session.last, session.sequence));
         }

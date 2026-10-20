@@ -1682,6 +1682,7 @@ constexpr FieldSpec kWindow[] = {
 
 constexpr FieldSpec kCamera[] = {
     {"", "Uncompressed V4L2 video capture. Audio capture and automatic reconnect are not available yet.", "note"},
+    {"deactivateWhenHidden", "Deactivate when not showing", "bool", "", false},
     {"device", "Video device", "choice", ""},
     {"resolution", "Resolution", "choice", "Leave unchanged", false, 0,
      "Leave unchanged|3840x2160|2560x1440|1920x1080|1280x720|960x540|640x480"},

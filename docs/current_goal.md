@@ -4,6 +4,22 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Video capture stays ready, 2026-10-19
+
+ADR-0056 starts configured V4L2 capture devices when the project loads, even if
+their scenes have never been shown. Devices keep streaming off scene and publish
+the latest frame, so switching back reuses capture without reopening the device.
+The source settings expose "Deactivate when not showing", disabled by default.
+Hidden capture updates do not trigger composites. Removing a source, changing its
+capture mode or exiting the renderer releases the device. Changing only the
+deactivation setting preserves a visible session.
+
+The real-renderer hardware check exercises startup without an active scene,
+repeated scene switches, opt-in deactivation, and hidden-source removal. It checks
+device descriptors and requires a complete first composite on returning.
+Validation: warning-free `-Werror` build, 29/29 suite, and both hardware-enabled
+video/preview tests passed with the attached Elgato at 2560x1440@60.
+
 ## Scene clicks activate Program, 2026-10-19
 
 ADR-0055 makes left-clicking a scene in Scenes or Favourites activate Program
