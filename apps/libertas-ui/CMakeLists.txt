@@ -22,6 +22,7 @@ qt_add_executable(libertas-ui
     filedialog.cpp
     filedialog.hpp
     document.cpp
+    outputpresets.cpp
     document.hpp
     documentmodels.cpp
     documentmodels.hpp

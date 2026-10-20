@@ -21,6 +21,7 @@ import Libertas
 
 Item {
     id: panel
+    StripMenu { id: canvasAddMenu; parent: panel.Window.contentItem; z: 100 }
 
     // Reparented to the window, like every other dialog in the shell.
     CanvasManagerDialog {
@@ -205,7 +206,11 @@ Item {
             ToolButton {
                 label: "+"
                 tip: qsTr("Add a canvas")
-                onClicked: Document.addCanvas(qsTr("Canvas"))
+                onClicked: canvasAddMenu.popup(mapToItem(canvasAddMenu, 0, 0).x,
+                    mapToItem(canvasAddMenu, 0, 0).y, [
+                        {text: qsTr("Horizontal 16:9"), action: () => Document.addCanvas(qsTr("Canvas"), false)},
+                        {text: qsTr("Vertical 9:16"), action: () => Document.addCanvas(qsTr("Vertical"), true)}
+                    ])
             }
 
             ToolButton {

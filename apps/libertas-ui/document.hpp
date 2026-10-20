@@ -225,7 +225,7 @@ public:
 
     // ---- canvases ----------------------------------------------------------------------------
 
-    Q_INVOKABLE void addCanvas(const QString& name);
+    Q_INVOKABLE void addCanvas(const QString& name, bool vertical = false);
     Q_INVOKABLE void removeCanvas(const QString& id);
     Q_INVOKABLE void renameCanvas(const QString& id, const QString& name);
     Q_INVOKABLE void setCanvasSize(const QString& id, int width, int height);
@@ -492,8 +492,23 @@ public:
     /// A new destination hung straight off an existing encode, which is the same reuse said
     /// the other way round.
     Q_INVOKABLE void addOutputOnEncode(const QString& encodeId, const QString& name);
-    /// A new encode of the current canvas, with no destination on it yet.
+    /// A new encode of the current canvas, with one unconfigured destination.
     Q_INVOKABLE void addEncode();
+    Q_INVOKABLE void removeEncode(const QString& id);
+    Q_INVOKABLE QVariantMap encodeSettings(const QString& id) const;
+    Q_INVOKABLE void setEncodeBitrate(const QString& id, int kbps);
+    Q_INVOKABLE void setEncodeEncoder(const QString& id, const QString& codec, const QString& implementation);
+    Q_INVOKABLE void setEncodeOptions(const QString& id, const QString& rateControl,
+                                      const QString& preset, int keyframeMs);
+    Q_INVOKABLE void setEncodeExtra(const QString& id, const QString& key, const QVariant& value);
+    static void configurePresets(std::filesystem::path path);
+    Q_PROPERTY(QStringList encoderPresetNames READ encoderPresetNames NOTIFY encoderPresetsChanged)
+    QStringList encoderPresetNames() const;
+    Q_INVOKABLE bool saveEncoderPreset(const QString& encodeId, const QString& name, bool overwrite = false);
+    Q_INVOKABLE bool applyEncoderPreset(const QString& encodeId, const QString& name);
+    Q_INVOKABLE bool removeEncoderPreset(const QString& name);
+    static ldoc::Encode defaultEncode(const ldoc::Canvas& canvas);
+
     /// Point an encode at a different canvas. Without this a second canvas can never be
     /// streamed: `addEncode` uses whichever canvas is current and nothing could change it
     /// afterwards (ADR-0035).
@@ -574,6 +589,7 @@ public:
     void runCommand(const ldoc::Command& command);
 
 signals:
+    void encoderPresetsChanged();
     void changed();
     void selectionChanged();
     /// The shell is now working on a different canvas.
@@ -613,10 +629,9 @@ private:
 
     void edit_deck(const QString& id, const std::function<void(ldoc::Deck&)>& change);
     void edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change);
-    /// Edit the encode an output names. Several outputs may name the same one, so this says so
-    /// when it happens rather than letting the operator find out mid-stream (ADR-0029).
-    void edit_encode_of(const QString& output_id,
-                        const std::function<void(ldoc::Encode&)>& change);
+    void edit_encode(const QString& id, const std::function<void(ldoc::Encode&)>& change);
+    static std::optional<ldoc::ParamValue> encoderExtraValue(
+        const QString& key, const QVariant& value);
     void edit_canvas(const QString& id, const std::function<void(ldoc::Canvas&)>& change);
 
     std::unique_ptr<lsession::Session> session_;

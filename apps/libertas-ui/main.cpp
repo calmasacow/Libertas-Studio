@@ -31,6 +31,9 @@
 #include <QTimer>
 #include <QTemporaryDir>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJSValue>
 #include <QUrl>
 
 #include <algorithm>
@@ -154,6 +157,10 @@ int main(int argc, char** argv) {
         parser.isSet(project_opt)
             ? std::filesystem::path(parser.value(project_opt).toStdString())
             : std::filesystem::path{});
+    QTemporaryDir checkPresets;
+    const auto preset_path = (check ? std::filesystem::path(checkPresets.path().toStdString())
+                                   : config_dir()) / "encoder-presets.json";
+    libertas::ui::Document::configurePresets(preset_path);
     libertas::ui::Preview::configure(LIBERTAS_RENDER_EXE);
     libertas::ui::Shortcuts::configure(config_dir() / "bindings.toml");
     // Free space is measured where recordings would land, which is beside the project. With no
@@ -250,6 +257,30 @@ int main(int argc, char** argv) {
             return 1;
         report(QGuiApplication::platformName() == QLatin1String("offscreen"),
                "--check runs on the offscreen platform, so nothing reaches a display");
+
+        {
+            const auto& fresh = document.projectForBindings();
+            report(fresh.canvases.size() == 1 && fresh.encodes.size() == 1 && fresh.outputs.size() == 1,
+                   "a new studio session starts with one canvas, output group, and destination");
+            report(fresh.canvases.front().width == 1920 && fresh.canvases.front().height == 1080 &&
+                       fresh.canvases.front().fps == ldoc::Fps{60, 1} &&
+                       !fresh.outputs.front().enabled && fresh.outputs.front().destination.url.empty(),
+                   "Main starts at 1080p60 with an unconfigured disabled destination");
+            if (!fresh.encodes.empty()) {
+                const auto& e = fresh.encodes.front();
+                report(e.encoder.implementation == "x264" && e.encoder.bitrate_kbps == 6000 &&
+                           e.encoder.rate_control == "cbr" && e.encoder.preset == "medium" &&
+                           e.encoder.keyframe_interval_ms == 2000 && e.rescale &&
+                           e.rescale->x == 1920 && e.rescale->y == 1080 &&
+                           std::get<bool>(e.encoder.extra.at("x264.custom_buffer")) == false &&
+                           std::get<std::string>(e.encoder.extra.at("x264.profile")) == "main" &&
+                           std::get<std::string>(e.encoder.extra.at("x264.tune")) == "film" &&
+                           std::get<std::int64_t>(e.encoder.extra.at("audio.bitrate_kbps")) == 160 &&
+                           std::get<std::int64_t>(e.encoder.extra.at("audio.track")) == 1 &&
+                           std::get<std::int64_t>(e.encoder.extra.at("audio.vod_track")) == 0,
+                       "new-session encoder uses the agreed horizontal defaults");
+            }
+        }
 
         // Start from the default rather than from whatever a previous run saved. The check runs
         // against the real config path by default, and persistence working is precisely why the
@@ -3003,8 +3034,9 @@ int main(int argc, char** argv) {
                 report(manager->isVisible() && manager->property("selectedOutputId").toString() == selected,
                        "clicking an output icon opens the manager at that output");
                 bool expanded = false;
-                for (auto* entry : collect(manager, QStringLiteral("managedOutput"))) {
-                    if (entry->property("outputId").toString() == selected)
+                for (auto* entry : collect(manager, QStringLiteral("encodeBlock"))) {
+                    if (entry->property("encodeId").toString() ==
+                        document.outputEncoderSettings(selected).value("id").toString())
                         expanded = entry->property("expanded").toBool();
                 }
                 report(expanded, "the selected output editor expands in the manager");
@@ -3040,8 +3072,8 @@ int main(int argc, char** argv) {
                 if (outputName) {
                     const auto previous = outputName->property("text").toString();
                     editText(outputName, QStringLiteral("Renamed output"));
-                    report(rows.front()->property("name").toString() == "Renamed output",
-                           "manager Name field changes the output dock label");
+                    report(document.outputEncoderSettings(selected).value("name").toString() == "Renamed output",
+                           "manager Name field changes the encoder group name");
                     editText(outputName, previous);
                 }
                 auto choose = [&](QQuickItem* field, const QString& text) {
@@ -3134,8 +3166,8 @@ int main(int argc, char** argv) {
                     choose(videoEncoder, QStringLiteral("H.264 (x264)"));
                 }
                 auto* rate = visibleControl("outputRateControl");
-                report(rate != nullptr && visibleControl("outputEncodeChoice") != nullptr,
-                       "output manager exposes encoder selection and rate control");
+                report(rate != nullptr && visibleControl("savedEncoderPreset") != nullptr,
+                       "output manager exposes saved presets and rate control");
                 if (rate) {
                     reveal(rate);
                     click(rate);
@@ -3159,6 +3191,7 @@ int main(int argc, char** argv) {
                 if (destination) {
                     reveal(destination);
                     click(destination);
+                    if (!visibleControl("outputDestinationName")) click(destination);
                     auto* name = visibleControl("outputDestinationName");
                     auto* url = visibleControl("outputUrl");
                     auto* key = visibleControl("outputKey");
@@ -3209,9 +3242,121 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
+                const auto encodeId = document.outputEncoderSettings(selected).value("id").toString();
+                auto* savedName = visibleControl("newEncoderPresetName");
+                auto* savePreset = visibleControl("saveEncoderPreset");
+                auto* savedChoice = visibleControl("savedEncoderPreset");
+                auto* applyPreset = visibleControl("applyEncoderPreset");
+                auto* replacePreset = visibleControl("replaceEncoderPreset");
+                auto* deletePreset = visibleControl("removeEncoderPreset");
+                report(savedName && savePreset && savedChoice && applyPreset && replacePreset && deletePreset,
+                       "manager exposes global preset save, apply, replace, and delete controls");
+                if (savedName && savePreset && savedChoice && applyPreset && replacePreset && deletePreset) {
+                    const QString presetName = QStringLiteral("Default custom check");
+                    const auto savedSettings = document.encodeSettings(encodeId);
+                    editText(savedName, presetName);
+                    reveal(savePreset);
+                    click(savePreset);
+                    report(document.encoderPresetNames().contains(presetName),
+                           "Save preset persists the editor settings globally");
+                    report(choose(savedChoice, QStringLiteral("Default 16:9")) &&
+                               choose(savedChoice, presetName),
+                           "saved preset dropdown selects built-in and user presets");
+                    QFile library(QString::fromStdString(preset_path.string()));
+                    QByteArray savedBytes;
+                    if (library.open(QIODevice::ReadOnly)) {
+                        savedBytes = library.readAll();
+                        library.close();
+                    }
+                    report(!savedBytes.isEmpty() && !savedBytes.contains(encodeId.toUtf8()) &&
+                               !savedBytes.contains("credential") && !savedBytes.contains("url") &&
+                               !savedBytes.contains("self-check-only-key"),
+                           "preset file contains settings without identities or destination secrets");
+                    const auto destinations = document.projectForBindings().outputs;
+                    document.setEncodeBitrate(encodeId, 4321);
+                    settle();
+                    report(!document.saveEncoderPreset(encodeId, presetName),
+                           "saving over an existing preset requires explicit replacement");
+                    reveal(applyPreset);
+                    click(applyPreset);
+                    report(document.encodeSettings(encodeId) == savedSettings &&
+                               document.projectForBindings().outputs == destinations,
+                           "Apply restores settings without changing destinations or output identity");
+                    document.setEncodeBitrate(encodeId, 7777);
+                    settle();
+                    reveal(replacePreset);
+                    click(replacePreset);
+                    document.setEncodeBitrate(encodeId, 4321);
+                    settle();
+                    reveal(applyPreset);
+                    click(applyPreset);
+                    report(document.encodeSettings(encodeId).value("bitrate").toInt() == 7777,
+                           "Replace selected explicitly updates the saved preset");
+                    {
+                        libertas::ui::Document::configure({});
+                        libertas::ui::Document freshSession;
+                        freshSession.selectCanvas(QString{});
+                        libertas::ui::Document::configure(parser.isSet(project_opt)
+                            ? std::filesystem::path(parser.value(project_opt).toStdString())
+                            : std::filesystem::path{});
+                        const auto freshEncode = QString::fromStdString(
+                            freshSession.projectForBindings().encodes.front().id.to_string());
+                        report(freshSession.encoderPresetNames().contains(presetName) &&
+                                   freshSession.applyEncoderPreset(freshEncode, presetName) &&
+                                   freshSession.encodeSettings(freshEncode).value("bitrate").toInt() == 7777,
+                               "saved presets load from disk into a fresh session");
+                        const auto canvasId = freshSession.currentCanvas();
+                        freshSession.setCanvasSize(canvasId, 3840, 2160);
+                        freshSession.applyEncoderPreset(freshEncode, QStringLiteral("Default 16:9"));
+                        report(freshSession.canvasSizeOf(canvasId) == QSize(3840, 2160) &&
+                                   freshSession.encodeSettings(freshEncode).value("width").toInt() == 1920 &&
+                                   freshSession.encodeSettings(freshEncode).value("height").toInt() == 1080 &&
+                                   !freshSession.encodeSettings(freshEncode).value("extra").toMap()
+                                       .value("x264.custom_buffer").toBool(),
+                               "horizontal default scales 4K to 1080p with buffer disabled, leaving canvas intact");
+                        freshSession.setCanvasSize(canvasId, 720, 1280);
+                        freshSession.applyEncoderPreset(freshEncode, QStringLiteral("Default 9:16"));
+                        report(freshSession.encodeSettings(freshEncode).value("width").toInt() == 720 &&
+                                   freshSession.encodeSettings(freshEncode).value("height").toInt() == 1280,
+                               "vertical defaults do not upscale a smaller canvas");
+                    }
+                    reveal(deletePreset);
+                    click(deletePreset);
+                    report(!document.encoderPresetNames().contains(presetName) &&
+                               document.encodeSettings(encodeId).value("bitrate").toInt() == 7777,
+                           "Delete removes the library preset without changing applied settings");
+                    const auto beforeInvalid = document.encodeSettings(encodeId);
+                    auto invalidSettings = savedSettings;
+                    invalidSettings["extra"] = QVariantMap{{"audio.track", 7}};
+                    if (library.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                        library.write(QJsonDocument(QJsonObject{{"version", 1}, {"presets",
+                            QJsonObject{{presetName, QJsonObject::fromVariantMap(invalidSettings)}}}}).toJson());
+                        library.close();
+                    }
+                    report(!document.applyEncoderPreset(encodeId, presetName) &&
+                               document.encodeSettings(encodeId) == beforeInvalid,
+                           "preset options use the same validation as interactive encoder settings");
+                    if (library.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                        library.write("invalid preset library");
+                        library.close();
+                    }
+                    report(!document.saveEncoderPreset(encodeId, presetName) &&
+                               !document.applyEncoderPreset(encodeId, presetName),
+                           "invalid preset library refuses save and apply");
+                    report(library.open(QIODevice::ReadOnly) && library.readAll() == "invalid preset library" &&
+                               document.encodeSettings(encodeId) == beforeInvalid,
+                           "invalid library and current encoder remain intact");
+                    library.close();
+                    if (library.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                        library.write(savedBytes);
+                        library.close();
+                    }
+                    document.removeEncoderPreset(presetName);
+                }
                 QQuickItem* remove = nullptr;
                 for (auto* button : collect(manager, QStringLiteral("removeManagedOutput"))) {
-                    if (button->property("outputId").toString() == selected)
+                    if (button->property("encodeId").toString() ==
+                        document.outputEncoderSettings(selected).value("id").toString())
                         remove = button;
                 }
                 report(remove != nullptr, "every output has a Remove button in the manager");
@@ -3246,12 +3391,8 @@ int main(int argc, char** argv) {
                    out_at(outputs_before, "implementation").toString() == QLatin1String("nvenc"),
                "its encoder can be changed");
         report(out_at(outputs_before, "bitrateKbps").toInt() == 12000, "and its bitrate");
-        // An encode's name is a description, so a generated one has to follow what it
-        // describes. It said "1080p60 6 Mbps" beside "12000 kbps" until this was fixed, and
-        // the name is the handle: it is what the rows print when they name a shared encode.
-        report(out_at(outputs_before, "encodeName").toString().contains(
-                   QLatin1String("12 Mbps")),
-               "and the generated encode name followed the bitrate it describes");
+        report(out_at(outputs_before, "encodeName").toString() == "YouTube",
+               "changing bitrate preserves the operator's output group name");
         // The row names the resolution the encode actually sends. Nothing here rescales, so
         // it is the canvas's -- but the field has to be filled, because an empty one reads on
         // screen as "Main -> . h264/nvenc".
@@ -3320,7 +3461,7 @@ int main(int argc, char** argv) {
                    "a scene list says which canvas it is of");
 
             const int scenes_on_main = document.scenesModel()->rowCount();
-            document.addCanvas(QStringLiteral("Vertical"));
+            document.addCanvas(QStringLiteral("Vertical"), true);
             settle();
             report(document.canvasesModel()->rowCount() == canvases_before + 1,
                    "a canvas can be added");
@@ -3328,6 +3469,17 @@ int main(int argc, char** argv) {
             // Each canvas gets its own pair of panels, not one pair filtered to whichever
             // canvas is current -- otherwise two canvases cannot be worked on side by side,
             // which is the only reason to have two.
+            {
+                const auto& p = document.projectForBindings();
+                const auto& canvas = p.canvases.back();
+                const auto& e = p.encodes.back();
+                report(canvas.width == 1080 && canvas.height == 1920 &&
+                           canvas.fps.num == 60 && canvas.fps.den == 1 && e.canvas == canvas.id &&
+                           e.encoder.preset == "medium" && e.rescale &&
+                           e.rescale->x == 1080 && e.rescale->y == 1920 &&
+                           p.outputs.back().encode == e.id,
+                       "adding a vertical canvas creates its matching default encode and destination");
+            }
             const QString vertical_id = document.currentCanvas();
             const QString v_scenes = QStringLiteral("scenes:") + vertical_id;
             const QString v_sources = QStringLiteral("sources:") + vertical_id;
@@ -3519,8 +3671,18 @@ int main(int argc, char** argv) {
                 report(!was.isEmpty(), "an encode says which canvas it reads");
 
                 document.addCanvas(QStringLiteral("Second"));
+                workspace.activate(QStringLiteral("outputs"));
                 settle();
                 const QString other = document.currentCanvas();
+                bool canvasOffered = false;
+                for (auto* field : collect(window->contentItem(), QStringLiteral("encodeCanvasChoice"))) {
+                    if (field->property("encodeId").toString() != enc) continue;
+                    auto choices = field->property("choices");
+                    if (choices.metaType() == QMetaType::fromType<QJSValue>())
+                        choices = choices.value<QJSValue>().toVariant();
+                    canvasOffered = choices.toStringList().contains(other);
+                }
+                report(canvasOffered, "existing output editors offer a newly added canvas");
                 document.setEncodeCanvas(enc, other);
                 settle();
                 report(em->index(last, 0).data(role_of(em, "canvasId")).toString() == other,
@@ -3563,29 +3725,31 @@ int main(int argc, char** argv) {
                 const auto sharedId = out_at(outs_before, "outputId").toString();
                 QMetaObject::invokeMethod(manager, "openOutput", Q_ARG(QVariant, QVariant(sharedId)));
                 settle();
+                report(collect(manager, QStringLiteral("encodeBlock")).size() == document.encodeCount(),
+                       "manager shows exactly one settings block per encode regardless of destinations");
                 bool clicked = false;
-                for (auto* button : collect(manager, QStringLiteral("independentOutputEncode"))) {
+                for (auto* button : collect(manager, QStringLiteral("addDestination"))) {
                     if (!button->isVisible()) continue;
-                    const auto at = button->mapToScene(QPointF(button->width() / 2, button->height() / 2));
+                    for (auto* parent = button->parentItem(); parent; parent = parent->parentItem()) {
+                        if (!parent->property("contentY").isValid()) continue;
+                        parent->setProperty("contentY", parent->property("contentY").toDouble() +
+                            button->mapToItem(parent, QPointF{}).y() - 40);
+                        settle();
+                        break;
+                    }
+                    const auto at = button->mapToScene(QPointF(button->width()/2, button->height()/2));
                     post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
                     post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
                     settle();
                     clicked = true;
                     break;
                 }
-                report(clicked && document.encodeCount() == encodes_before + 2 &&
-                           document.outputEncoderSettings(sharedId).value("id").toString() != enc_id,
-                       "Make independent copies a shared encode through the manager button");
-                if (document.encodeCount() == encodes_before + 2) {
-                    document.undo();
-                    settle();
-                    report(document.outputEncoderSettings(sharedId).value("id").toString() == enc_id,
-                           "one undo restores encoder sharing");
-                }
+                report(clicked && document.outputsModel()->rowCount() == outs_before + 3 &&
+                           document.encodeCount() == encodes_before + 1,
+                       "Add destination adds one receiver without creating another encode");
+                if (document.outputsModel()->rowCount() == outs_before + 3) { document.undo(); settle(); }
                 QMetaObject::invokeMethod(manager, "close");
-            } else {
-                report(false, "manager exists for independent encoder interaction");
-            }
+            } else report(false, "manager exists for destination grouping interaction");
 
             document.removeOutput(out_at(outs_before + 1, "outputId").toString());
             settle();
@@ -3593,8 +3757,11 @@ int main(int argc, char** argv) {
                    "removing one of two keeps the encode, which the other is still sending");
             document.removeOutput(out_at(outs_before, "outputId").toString());
             settle();
-            report(document.encodeCount() == encodes_before,
-                   "and removing the last one takes it with it");
+            report(document.encodeCount() == encodes_before + 1,
+                   "removing destinations leaves the encoder group available for editing");
+            document.removeEncode(enc_id);
+            settle();
+            report(document.encodeCount() == encodes_before, "removing the group deletes its encode");
         }
 
         // The outputs manager draws the encode graph it is for.
@@ -3672,13 +3839,11 @@ int main(int argc, char** argv) {
         }
 
         const int encodes_before_remove = document.encodeCount();
-        document.removeOutput(out_id);
+        document.removeEncode(document.outputEncoderSettings(out_id).value("id").toString());
         settle();
         report(document.outputsModel()->rowCount() == outputs_before,
                "an output can be removed");
-        // addOutput makes an encode and an output together, so removing the output has to take
-        // the encode with it. An encode nothing sends is invisible in every panel and still
-        // counts against the GPU in the inspector.
+        // Removing an output group deletes its encode and receivers in one undo step.
         report(document.encodeCount() == encodes_before_remove - 1,
                "and its encode goes with it, since nothing else was sending it");
         document.undo();

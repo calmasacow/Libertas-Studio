@@ -18,13 +18,17 @@ Item {
     focus: visible
 
     property string selectedOutputId: ""
+    property string selectedEncodeId: ""
     property string selectedDestinationId: ""
-    property var encodeOptions: Document.encodeChoices()
+    property var canvasIds: Document.canvasIds()
+    property var canvasNames: Document.canvasNames()
     Connections {
         target: Document
-        function onChanged() { dialog.encodeOptions = Document.encodeChoices(); }
+        function onChanged() {
+            dialog.canvasIds = Document.canvasIds();
+            dialog.canvasNames = Document.canvasNames();
+        }
     }
-
     component SettingText: Row {
         id: field
         required property string label
@@ -59,19 +63,20 @@ Item {
         }
     }
 
-    function openDestination(outputId) {
-        openOutput(outputId);
+    function openOutput(outputId) {
+        openEncode(Document.outputEncoderSettings(outputId).id || "");
+        selectedOutputId = outputId;
         selectedDestinationId = outputId;
     }
 
-    function openOutput(outputId) {
+    function openEncode(encodeId) {
         open();
-        selectedOutputId = outputId;
+        selectedEncodeId = encodeId;
         Qt.callLater(function() {
             content.forceLayout();
             for (let i = 0; i < outputEntries.count; ++i) {
                 const entry = outputEntries.itemAt(i);
-                if (entry.outputId === dialog.selectedOutputId) {
+                if (entry.encodeId === dialog.selectedEncodeId) {
                     scroll.contentY = Math.max(0, Math.min(entry.y,
                         scroll.contentHeight - scroll.height));
                     entry.forceActiveFocus();
@@ -91,6 +96,7 @@ Item {
         }
         frame.fitToWindow();
         selectedOutputId = "";
+        selectedEncodeId = "";
         selectedDestinationId = "";
         scroll.contentY = 0;
         dialog.visible = true;
@@ -227,41 +233,32 @@ Item {
 
                 Repeater {
                     id: outputEntries
-                    model: Document.outputs
-
+                    model: Document.encodes
                     delegate: Column {
                         id: output
-                        required property string outputId
+                        required property string encodeId
                         required property string name
+                        required property string canvasId
                         required property string canvasName
-                        required property string encodeName
                         required property string resolution
-                        required property var sharedWith
                         required property string codec
                         required property string implementation
                         required property int bitrateKbps
-                        required property string destinationKind
-                        required property string url
-                        required property string credentialRef
-                        required property bool isEnabled
-                        required property bool misconfigured
-
-                        objectName: "managedOutput"
+                        required property var destinations
+                        objectName: "encodeBlock"
                         width: content.width - 20
                         x: 10
                         spacing: 6
-                        property bool expanded: dialog.selectedOutputId === outputId
-                        property var settings: Document.outputEncoderSettings(outputId)
+                        property bool expanded: dialog.selectedEncodeId === encodeId
+                        property var settings: Document.encodeSettings(encodeId)
+                        property string chosenPreset: ""
                         Connections {
                             target: Document
-                            function onChanged() {
-                                output.settings = Document.outputEncoderSettings(output.outputId);
-                            }
+                            function onChanged() { output.settings = Document.encodeSettings(output.encodeId); }
                         }
                         function saveOptions(rate, preset, keyframeMs) {
-                            Document.setOutputEncodingOptions(outputId, rate, preset, keyframeMs);
+                            Document.setEncodeOptions(encodeId, rate, preset, keyframeMs);
                         }
-
                         Row {
                             width: parent.width
                             height: 32
@@ -272,92 +269,110 @@ Item {
                                 label: output.name
                                 tip: qsTr("Settings for %1").arg(output.name)
                                 active: output.expanded
-                                onClicked: dialog.selectedOutputId = output.expanded ? "" : output.outputId
+                                onClicked: dialog.selectedEncodeId = output.expanded ? "" : output.encodeId
                             }
                             ToolButton {
                                 objectName: "removeManagedOutput"
-                                property string outputId: output.outputId
+                                property string encodeId: output.encodeId
                                 width: 84
                                 height: parent.height
                                 label: qsTr("Remove")
-                                tip: qsTr("Remove %1 (can be undone)").arg(output.name)
+                                tip: qsTr("Remove output and its destinations (can be undone)")
                                 onClicked: {
-                                    if (dialog.selectedOutputId === output.outputId) {
-                                        dialog.selectedOutputId = "";
-                                        dialog.selectedDestinationId = "";
-                                    }
-                                    Document.removeOutput(output.outputId);
+                                    dialog.selectedEncodeId = "";
+                                    dialog.selectedOutputId = "";
+                                    dialog.selectedDestinationId = "";
+                                    Document.removeEncode(output.encodeId);
                                 }
                             }
                         }
                         SettingText {
                             width: parent.width
                             visible: output.expanded
-                            label: qsTr("Name")
+                            label: qsTr("Output name")
                             inputName: "managedOutputName"
                             text: output.name
-                            onCommitted: value => Document.renameOutput(output.outputId, value)
-                        }
-                        CheckLabel {
-                            visible: output.expanded
-                            text: qsTr("Include in output configuration (not running)")
-                            checked: output.isEnabled
-                            onToggled: Document.setOutputEnabled(output.outputId, !output.isEnabled)
-                        }
-                        Text {
-                            visible: output.expanded
-                            width: parent.width
-                            text: output.resolution + " / " + output.bitrateKbps + " kbps" +
-                                  (output.sharedWith.length ? qsTr(" - shared with %1").arg(output.sharedWith.join(", ")) : "")
-                            font.pixelSize: 10
-                            color: Theme.c.textMuted
-                            wrapMode: Text.WordWrap
-                        }
-                        Text {
-                            visible: output.expanded && output.misconfigured
-                            text: qsTr("Enabled with no destination")
-                            color: Theme.c.error
-                            font.pixelSize: 10
-                        }
-
-                        Text {
-                            width: parent.width
-                            visible: output.expanded
-                            text: output.sharedWith.length
-                                ? qsTr("Shared configuration. Edits also affect: %1").arg(output.sharedWith.join(", "))
-                                : qsTr("This output has its own encoder configuration. Edit its settings below.")
-                            wrapMode: Text.WordWrap
-                            color: Theme.c.textMuted
-                            font.pixelSize: 11
+                            onCommitted: value => Document.renameEncode(output.encodeId, value)
                         }
                         ChoiceField {
-                            objectName: "outputEncodeChoice"
+                            objectName: "encodeCanvasChoice"
+                            property string encodeId: output.encodeId
                             width: parent.width
                             visible: output.expanded
-                            label: qsTr("Configuration")
+                            label: qsTr("Canvas")
                             labelWidth: 150
-                            choices: dialog.encodeOptions.map(e => e.id)
+                            choices: dialog.canvasIds
                             choiceLabels: {
+                                const names = dialog.canvasNames;
+                                const ids = dialog.canvasIds;
                                 const labels = {};
-                                for (const e of dialog.encodeOptions) labels[e.id] = e.name;
+                                for (let i = 0; i < ids.length; ++i) labels[ids[i]] = names[i];
                                 return labels;
                             }
-                            value: output.settings.id || ""
-                            onCommitted: value => Document.setOutputEncode(output.outputId, value)
+                            value: output.canvasId
+                            onCommitted: value => Document.setEncodeCanvas(output.encodeId, value)
                         }
-                        SettingText {
+                        Text {
                             width: parent.width
                             visible: output.expanded
-                            label: qsTr("Configuration name")
-                            inputName: "encoderConfigurationName"
-                            text: output.settings.name || ""
-                            onCommitted: value => Document.renameEncode(output.settings.id, value)
+                            text: output.resolution + " / " + output.bitrateKbps + qsTr(" kbps - %1 destinations").arg(output.destinations.length)
+                            color: Theme.c.textMuted
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+                        ChoiceField {
+                            objectName: "savedEncoderPreset"
+                            width: parent.width
+                            visible: output.expanded
+                            label: qsTr("Saved preset")
+                            labelWidth: 150
+                            choices: [""].concat(Document.encoderPresetNames)
+                            choiceLabels: ({"": qsTr("Choose a preset")})
+                            value: output.chosenPreset
+                            onCommitted: value => output.chosenPreset = value
+                        }
+                        Row {
+                            spacing: 6
+                            visible: output.expanded
+                            DialogButton {
+                                objectName: "applyEncoderPreset"
+                                text: qsTr("Apply preset")
+                                enabled: output.chosenPreset !== ""
+                                onClicked: Document.applyEncoderPreset(output.encodeId, output.chosenPreset)
+                            }
+                            DialogButton {
+                                objectName: "replaceEncoderPreset"
+                                text: qsTr("Replace selected")
+                                enabled: output.chosenPreset !== "" && output.chosenPreset !== "Default 16:9" && output.chosenPreset !== "Default 9:16"
+                                onClicked: Document.saveEncoderPreset(output.encodeId, output.chosenPreset, true)
+                            }
+                            DialogButton {
+                                objectName: "removeEncoderPreset"
+                                text: qsTr("Delete preset")
+                                enabled: output.chosenPreset !== "" && output.chosenPreset !== "Default 16:9" && output.chosenPreset !== "Default 9:16"
+                                onClicked: {
+                                    if (Document.removeEncoderPreset(output.chosenPreset)) output.chosenPreset = "";
+                                }
+                            }
+                        }
+                        SettingText {
+                            id: presetName
+                            width: parent.width
+                            visible: output.expanded
+                            label: qsTr("New preset name")
+                            inputName: "newEncoderPresetName"
                         }
                         DialogButton {
-                            objectName: "independentOutputEncode"
-                            visible: output.expanded && output.sharedWith.length > 0
-                            text: qsTr("Make independent")
-                            onClicked: Document.makeOutputEncodeIndependent(output.outputId)
+                            objectName: "saveEncoderPreset"
+                            visible: output.expanded
+                            text: qsTr("Save as new preset")
+                            enabled: presetName.text.trim().length > 0
+                            onClicked: {
+                                if (Document.saveEncoderPreset(output.encodeId, presetName.text)) {
+                                    output.chosenPreset = presetName.text.trim();
+                                    presetName.text = "";
+                                }
+                            }
                         }
                         ChoiceField {
                             width: parent.width
@@ -382,7 +397,7 @@ Item {
                             onCommitted: (newValue) => {
                                 for (const c of Document.codecs) {
                                     if (c.title === newValue) {
-                                        Document.setOutputEncoder(output.outputId, c.codec,
+                                        Document.setEncodeEncoder(output.encodeId, c.codec,
                                                                   c.implementation);
                                         return;
                                     }
@@ -398,8 +413,8 @@ Item {
                             label: qsTr("Bitrate (kbps)")
                             decimals: 0
                             value: output.bitrateKbps
-                            onCommitted: (newValue) => Document.setOutputBitrate(
-                                output.outputId, Math.max(1, Math.round(newValue)))
+                            onCommitted: (newValue) => Document.setEncodeBitrate(
+                                output.encodeId, Math.max(1, Math.round(newValue)))
                         }
 
                         ChoiceField {
@@ -514,7 +529,7 @@ Item {
                                 width: output.width
                                 visible: output.expanded
                                 property var value: output.settings.extra?.[modelData.key] ?? modelData.value
-                                function commit(value) { Document.setOutputEncoderExtra(output.outputId, modelData.key, value); }
+                                function commit(value) { Document.setEncodeExtra(output.encodeId, modelData.key, value); }
                                 ChoiceField {
                                     width: parent.width
                                     visible: !!option.modelData.choices
@@ -567,207 +582,116 @@ Item {
                                 }
                             }
                         }
-                        ToolButton {
-                            objectName: "destinationSettings"
-                            width: parent.width
-                            height: 30
+                        Text {
                             visible: output.expanded
-                            label: qsTr("Destination: %1  \u2699").arg(output.name)
-                            tip: qsTr("Edit destination name, URL, and key")
-                            onClicked: dialog.selectedDestinationId =
-                                dialog.selectedDestinationId === output.outputId ? "" : output.outputId
+                            text: qsTr("Destinations")
+                            font.bold: true
+                            color: Theme.c.text
                         }
-                        Column {
-                            width: parent.width
-                            spacing: 6
-                            visible: output.expanded && dialog.selectedDestinationId === output.outputId
-                            SettingText {
-                                width: parent.width
-                                label: qsTr("Name")
-                                inputName: "outputDestinationName"
-                                text: output.name
-                                onCommitted: value => Document.renameOutput(output.outputId, value)
-                            }
-                            ChoiceField {
-                                width: parent.width
-                                label: qsTr("Protocol")
-                                labelWidth: 150
-                                choices: Document.destinationKinds.map(k => k.title)
-                                value: output.destinationKind.toUpperCase()
-                                onCommitted: value => Document.setOutputDestination(
-                                    output.outputId, value.toLowerCase(), output.url)
-                            }
-                            SettingText {
-                                width: parent.width
-                                label: qsTr("URL")
-                                inputName: "outputUrl"
-                                text: output.url
-                                onCommitted: value => Document.setOutputDestination(
-                                    output.outputId, output.destinationKind, value)
-                            }
-                            SettingText {
-                                id: keyField
-                                onVisibleChanged: if (!visible) text = ""
-                                width: parent.width
-                                label: qsTr("Key")
-                                inputName: "outputKey"
-                                echoMode: TextInput.Password
-                                placeholderText: output.credentialRef
-                                    ? qsTr("Saved reference - enter replacement key") : qsTr("Stream key")
-                            }
-                            DialogButton {
-                                objectName: "saveOutputKey"
-                                text: qsTr("Save key to keyring")
-                                enabled: keyField.text.length > 0
-                                onClicked: {
-                                    Document.saveOutputKey(output.outputId, keyField.text);
-                                    keyField.text = "";
-                                }
-                            }
-                            Text {
-                                width: parent.width
-                                text: qsTr("Key stored in system keyring, never in project. Encoder changes affect every destination sharing this encode.")
-                                wrapMode: Text.WordWrap
-                                color: Theme.c.textMuted
-                                font.pixelSize: 10
-                            }
-                        }
-
-                    }
-                }
-
-                Repeater {
-                    model: Document.encodes
-
-                    delegate: Column {
-                        id: encodeBlock
-
-                        required property string encodeId
-                        required property string name
-                        required property string canvasId
-                        required property string canvasName
-                        required property string resolution
-                        required property string codec
-                        required property string implementation
-                        required property int bitrateKbps
-                        required property string preset
-                        required property var destinations
-
-                        objectName: "encodeBlock"
-                        width: content.width
-                        spacing: 0
-
-                        Rectangle {
-                            width: parent.width
-                            height: 1
-                            color: Theme.c.border
-                        }
-
-                        Item {
-                            width: parent.width
-                            height: 40
-
-                            // Which canvas this encode reads. Without it a second canvas can
-                            // never be streamed: addEncode takes whichever canvas was current
-                            // and nothing could move it afterwards (ADR-0035).
-                            ChoiceField {
-                                id: canvasPick
-
-                                anchors.right: parent.right
-                                anchors.rightMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 190
-                                label: qsTr("Canvas")
-                                labelWidth: 48
-                                choices: Document.canvasNames()
-                                value: encodeBlock.canvasName
-                                onCommitted: (v) => {
-                                    const ids = Document.canvasIds();
-                                    const names = Document.canvasNames();
-                                    for (let i = 0; i < names.length; ++i) {
-                                        if (names[i] === v)
-                                            Document.setEncodeCanvas(encodeBlock.encodeId,
-                                                                     ids[i]);
+                        Repeater {
+                            model: Document.outputs
+                            delegate: Column {
+                                id: destination
+                                required property string outputId
+                                required property string encodeId
+                                required property string name
+                                required property string destinationKind
+                                required property string url
+                                required property string credentialRef
+                                required property bool isEnabled
+                                objectName: "managedDestination"
+                                width: output.width
+                                spacing: 6
+                                visible: output.expanded && encodeId === output.encodeId
+                                Row {
+                                    width: parent.width
+                                    height: 30
+                                    spacing: 6
+                                    ToolButton {
+                                        objectName: "destinationSettings"
+                                        width: parent.width - 90
+                                        height: 30
+                                        label: destination.name + "  \u2699"
+                                        tip: qsTr("Edit destination name, URL, and key")
+                                        onClicked: dialog.selectedDestinationId =
+                                            dialog.selectedDestinationId === destination.outputId ? "" : destination.outputId
+                                    }
+                                    ToolButton {
+                                        objectName: "removeDestination"
+                                        width: 84
+                                        height: 30
+                                        label: qsTr("Remove")
+                                        tip: qsTr("Remove this destination (can be undone)")
+                                        onClicked: Document.removeOutput(destination.outputId)
                                     }
                                 }
-                            }
-
-                            Column {
-                                anchors.left: parent.left
-                                anchors.leftMargin: 10
-                                anchors.right: canvasPick.left
-                                anchors.rightMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 1
-
-                                Text {
+                                Column {
                                     width: parent.width
-                                    text: encodeBlock.name
-                                    font.pixelSize: 11
-                                    font.bold: true
-                                    color: Theme.c.text
-                                    elide: Text.ElideRight
+                                    spacing: 6
+                                    visible: dialog.selectedDestinationId === destination.outputId
+                                    SettingText {
+                                        width: parent.width
+                                        label: qsTr("Name")
+                                        inputName: "outputDestinationName"
+                                        text: destination.name
+                                        onCommitted: value => Document.renameOutput(destination.outputId, value)
+                                    }
+                                    ChoiceField {
+                                        width: parent.width
+                                        label: qsTr("Protocol")
+                                        labelWidth: 150
+                                        choices: Document.destinationKinds.map(k => k.title)
+                                        value: destination.destinationKind.toUpperCase()
+                                        onCommitted: value => Document.setOutputDestination(
+                                            destination.outputId, value.toLowerCase(), destination.url)
+                                    }
+                                    SettingText {
+                                        width: parent.width
+                                        label: qsTr("URL")
+                                        inputName: "outputUrl"
+                                        text: destination.url
+                                        onCommitted: value => Document.setOutputDestination(
+                                            destination.outputId, destination.destinationKind, value)
+                                    }
+                                    SettingText {
+                                        id: keyField
+                                        onVisibleChanged: if (!visible) text = ""
+                                        width: parent.width
+                                        label: qsTr("Key")
+                                        inputName: "outputKey"
+                                        echoMode: TextInput.Password
+                                        placeholderText: destination.credentialRef
+                                            ? qsTr("Saved reference - enter replacement key") : qsTr("Stream key")
+                                    }
+                                    DialogButton {
+                                        objectName: "saveOutputKey"
+                                        text: qsTr("Save key to keyring")
+                                        enabled: keyField.text.length > 0
+                                        onClicked: {
+                                            Document.saveOutputKey(destination.outputId, keyField.text);
+                                            keyField.text = "";
+                                        }
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        text: qsTr("Key stored in system keyring, never in project. Encoder changes affect every destination sharing this encode.")
+                                        wrapMode: Text.WordWrap
+                                        color: Theme.c.textMuted
+                                        font.pixelSize: 10
+                                    }
                                 }
 
-                                Text {
-                                    width: parent.width
-                                    text: encodeBlock.canvasName + " → " + encodeBlock.resolution
-                                          + " · " + encodeBlock.codec + "/"
-                                          + encodeBlock.implementation + " · "
-                                          + encodeBlock.bitrateKbps + " kbps"
-                                          + (encodeBlock.preset === ""
-                                             ? "" : " · " + encodeBlock.preset)
-                                    font.pixelSize: 9
-                                    color: Theme.c.textMuted
-                                    elide: Text.ElideRight
-                                }
                             }
                         }
-
-                        // The destinations on this encode. More than one here is the reuse
-                        // this window exists to make visible -- one pass of the GPU, several
-                        // places it goes.
-                        Repeater {
-                            model: {
-                                const encode = dialog.encodeOptions.find(e => e.id === encodeBlock.encodeId);
-                                return encode ? encode.destinations : [];
-                            }
-                            delegate: ToolButton {
-                                required property var modelData
-                                width: content.width - 24
-                                x: 12
-                                height: 28
-                                label: modelData.name + "  \u2699"
-                                tip: qsTr("Edit destination")
-                                onClicked: dialog.openDestination(modelData.id)
-                            }
-                        }
-
-                        Text {
-                            width: parent.width
-                            leftPadding: 24
-                            bottomPadding: 2
-                            visible: encodeBlock.destinations.length === 0
-                            text: qsTr("no destination — this encode goes nowhere")
-                            font.pixelSize: 9
-                            color: Theme.c.warning
-                        }
-
-                        Item {
-                            width: parent.width
-                            height: 28
-
-                            DialogButton {
-                                anchors.left: parent.left
-                                anchors.leftMargin: 24
-                                anchors.verticalCenter: parent.verticalCenter
-                                objectName: "addDestination"
-                                minimumWidth: 110
-                                text: qsTr("+ destination")
-                                // The Aitum case, said plainly: a new destination that reuses
-                                // this bitstream rather than asking the GPU for another one.
-                                onClicked: Document.addOutputOnEncode(encodeBlock.encodeId,
-                                                                      qsTr("Output"))
+                        DialogButton {
+                            objectName: "addDestination"
+                            visible: output.expanded
+                            text: qsTr("+ Add destination")
+                            onClicked: {
+                                Document.addOutputOnEncode(output.encodeId, qsTr("Destination"));
+                                const group = Document.encodeChoices().find(e => e.id === output.encodeId);
+                                if (group && group.destinations.length)
+                                    dialog.selectedDestinationId = group.destinations[group.destinations.length - 1].id;
                             }
                         }
                     }
@@ -802,13 +726,17 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 objectName: "addEncode"
                 minimumWidth: 100
-                text: qsTr("+ new encode")
-                onClicked: Document.addEncode()
+                text: qsTr("+ Add output")
+                onClicked: {
+                    Document.addEncode();
+                    const groups = Document.encodeChoices();
+                    if (groups.length) dialog.openEncode(groups[groups.length - 1].id);
+                }
             }
 
             Text {
                 anchors.centerIn: parent
-                text: qsTr("no render process — nothing is encoding")
+                text: qsTr("Encoding is not connected yet")
                 font.pixelSize: 9
                 color: Theme.c.textMuted
                 opacity: 0.6

@@ -50,6 +50,19 @@ QString kind_str(ldoc::NodeKind k) {
     return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size()));
 }
 
+ldoc::Project studio_project(std::string name) {
+    auto p = ldoc::make_default_project(std::move(name));
+    auto encode = Document::defaultEncode(p.canvases.front());
+    encode.name = "Main Output";
+    ldoc::Output destination;
+    destination.id = ldoc::Id::generate();
+    destination.name = "Main";
+    destination.encode = encode.id;
+    p.encodes.push_back(std::move(encode));
+    p.outputs.push_back(std::move(destination));
+    return p;
+}
+
 } // namespace
 
 void Document::configure(std::filesystem::path project_dir) {
@@ -60,13 +73,13 @@ Document* Document::create(QQmlEngine*, QJSEngine*) { return new Document; }
 
 Document::Document(QObject* parent) : QObject(parent) {
     if (g_project_dir.empty()) {
-        session_ = lsession::LocalSession::in_memory(ldoc::make_default_project("Untitled"));
+        session_ = lsession::LocalSession::in_memory(studio_project("Untitled"));
     } else {
         std::error_code ec;
         auto opened = std::filesystem::exists(g_project_dir / "project.json", ec)
                           ? lsession::LocalSession::open(g_project_dir)
                           : lsession::LocalSession::create(
-                                ldoc::make_default_project(
+                                studio_project(
                                     g_project_dir.stem().string().empty()
                                         ? "Untitled"
                                         : g_project_dir.stem().string()),
@@ -77,7 +90,7 @@ Document::Document(QObject* parent) : QObject(parent) {
             // Falling back to an unsaved document rather than refusing to start: the operator
             // can still work, and a shell that will not open because of one project is a shell
             // they cannot use to fix it.
-            session_ = lsession::LocalSession::in_memory(ldoc::make_default_project("Untitled"));
+            session_ = lsession::LocalSession::in_memory(studio_project("Untitled"));
             QMetaObject::invokeMethod(
                 this,
                 [this, why = qstr(opened.error())] {
@@ -1008,6 +1021,7 @@ void Document::rebuild() {
     for (const ldoc::Output& o : p.outputs) {
         OutputRow row;
         row.id = id_str(o.id);
+        row.encodeId = id_str(o.encode);
         row.name = qstr(o.name);
         // An output names an encode and the encode names the canvas, so both are one hop
         // away now (ADR-0029). The row shows the encode's settings because that is what this
@@ -1171,40 +1185,60 @@ void Document::selectNodeExtended(const QString& canvasId, const QString& nodeId
 
 // ---- canvases ---------------------------------------------------------------------------------
 
-void Document::addCanvas(const QString& name) {
-    const ldoc::Project& p = session_->project();
+ldoc::Encode Document::defaultEncode(const ldoc::Canvas& canvas) {
+    ldoc::Encode e;
+    e.id = ldoc::Id::generate();
+    e.canvas = canvas.id;
+    e.name = canvas.name + " Output";
+    e.encoder.preset = "medium";
+    e.encoder.extra = {{"x264.custom_buffer", false}, {"x264.buffer_kbps", std::int64_t{6000}},
+        {"x264.profile", std::string{"main"}}, {"x264.tune", std::string{"film"}},
+        {"audio.codec", std::string{"aac"}}, {"audio.bitrate_kbps", std::int64_t{160}},
+        {"audio.track", std::int64_t{1}}, {"audio.vod_track", std::int64_t{0}}};
+    const bool vertical = canvas.height > canvas.width;
+    const double scale = std::min({1.0, (vertical ? 1080.0 : 1920.0) / canvas.width,
+                                  (vertical ? 1920.0 : 1080.0) / canvas.height});
+    e.rescale = ldoc::Vec2{std::max(2.0, std::floor(canvas.width * scale / 2) * 2),
+                          std::max(2.0, std::floor(canvas.height * scale / 2) * 2)};
+    return e;
+}
+
+void Document::addCanvas(const QString& name, bool vertical) {
+    const auto& p = session_->project();
     ldoc::Canvas c;
     c.id = ldoc::Id::generate();
     c.name = name.isEmpty() ? std::string{"Canvas"} : to_std(name);
-    // A second canvas is nearly always the vertical one, but guessing a portrait size would be
-    // a guess; it starts as a copy of Main's shape, which is the only thing known to be a
-    // shape this show already uses. The manager edits it.
-    if (!p.canvases.empty()) {
-        c.width = p.canvases.front().width;
-        c.height = p.canvases.front().height;
-        c.fps = p.canvases.front().fps;
-        c.color_space = p.canvases.front().color_space;
-    }
-    const QString id = id_str(c.id);
-    // Never at index 0: that is Main's place and the command refuses it anyway (ADR-0027).
-    run(ldoc::AddCanvas{std::move(c), p.canvases.size()});
+    c.width = vertical ? 1080 : 1920;
+    c.height = vertical ? 1920 : 1080;
+    c.fps = {60, 1};
+    auto e = defaultEncode(c);
+    ldoc::Output o;
+    o.id = ldoc::Id::generate();
+    o.name = c.name;
+    o.encode = e.id;
+    const auto id = id_str(c.id);
+    run(ldoc::make_batch({ldoc::AddCanvas{c, p.canvases.size()},
+        ldoc::AddEncode{e, p.encodes.size()}, ldoc::AddOutput{o, p.outputs.size()}}, "Add canvas"));
     selectCanvas(id);
 }
 
 void Document::removeCanvas(const QString& id) {
     const auto parsed = parse_id(id);
-    if (!parsed)
-        return;
-    // Dropping the selection first. The canvas is about to stop existing, and current_canvas()
-    // falling back to Main is the right answer -- but only if nothing is still naming the one
-    // that went.
-    selected_scene_.erase(id);
-    if (current_canvas_ == id) {
-        current_canvas_.clear();
-        selected_node_.clear();
-        emit canvasChanged();
+    if (!parsed) return;
+    const auto& p = session_->project();
+    std::vector<ldoc::Command> steps;
+    for (const auto& e : p.encodes) {
+        if (e.canvas != *parsed) continue;
+        for (const auto& o : p.outputs)
+            if (o.encode == e.id) steps.push_back(ldoc::RemoveOutput{o.id});
+        steps.push_back(ldoc::RemoveEncode{e.id});
     }
-    run(ldoc::RemoveCanvas{*parsed});
+    steps.push_back(ldoc::RemoveCanvas{*parsed});
+    run(ldoc::make_batch(std::move(steps), "Remove canvas"));
+    if (current_canvas_ == id && !session_->project().canvas(*parsed)) {
+        const auto* fallback = current_canvas();
+        selectCanvas(fallback ? id_str(fallback->id) : QString{});
+    }
 }
 
 void Document::edit_canvas(const QString& id, const std::function<void(ldoc::Canvas&)>& change) {
@@ -2930,10 +2964,8 @@ void Document::addOutput(const QString& name) {
     // has to be asked for: a new output that silently joined another's bitstream would make
     // changing its bitrate change someone else's stream, which is the surprise this model
     // exists to make visible rather than to hide.
-    ldoc::Encode e;
-    e.id = ldoc::Id::generate();
-    e.canvas = p.canvases.front().id;
-    e.name = ldoc::default_encode_name(p, e);
+    auto e = defaultEncode(*current_canvas());
+    e.name = name.isEmpty() ? "Output" : to_std(name);
 
     ldoc::Output o;
     o.id = ldoc::Id::generate();
@@ -2952,35 +2984,17 @@ void Document::addOutput(const QString& name) {
 
 void Document::removeOutput(const QString& id) {
     const auto parsed = parse_id(id);
-    if (!parsed)
-        return;
-    const ldoc::Project& p = session_->project();
-    const ldoc::Output* going = nullptr;
-    for (const ldoc::Output& o : p.outputs) {
-        if (o.id == *parsed)
-            going = &o;
-    }
-    if (!going) {
-        run(ldoc::RemoveOutput{*parsed});
-        return;
-    }
-    // addOutput creates an encode and an output together, so removing the output has to take
-    // the encode with it or the project accumulates encodes nothing sends -- and the inspector
-    // counts those against the GPU, so a few add/remove cycles make the machine look busier
-    // than it is. Only when this was the last output on it: a shared encode outlives any one
-    // destination, which is the whole point of sharing (ADR-0029).
-    const bool shared = std::any_of(p.outputs.begin(), p.outputs.end(),
-                                    [&](const ldoc::Output& other) {
-                                        return other.id != going->id &&
-                                               other.encode == going->encode;
-                                    });
-    if (shared || !p.encode(going->encode)) {
-        run(ldoc::RemoveOutput{*parsed});
-        return;
-    }
-    // The output first: RemoveEncode is refused while anything still names it.
-    run(ldoc::make_batch({ldoc::RemoveOutput{*parsed}, ldoc::RemoveEncode{going->encode}},
-                         "Remove output"));
+    if (parsed) run(ldoc::RemoveOutput{*parsed});
+}
+
+void Document::removeEncode(const QString& id) {
+    const auto parsed = parse_id(id);
+    if (!parsed || !session_->project().encode(*parsed)) return;
+    std::vector<ldoc::Command> steps;
+    for (const auto& o : session_->project().outputs)
+        if (o.encode == *parsed) steps.push_back(ldoc::RemoveOutput{o.id});
+    steps.push_back(ldoc::RemoveEncode{*parsed});
+    run(ldoc::make_batch(std::move(steps), "Remove output group"));
 }
 
 void Document::edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change) {
@@ -3018,11 +3032,13 @@ void Document::addEncode() {
         emit notice(QStringLiteral("An encode needs a canvas to encode."));
         return;
     }
-    ldoc::Encode e;
-    e.id = ldoc::Id::generate();
-    e.canvas = c->id;
-    e.name = ldoc::default_encode_name(p, e);
-    run(ldoc::AddEncode{std::move(e), p.encodes.size()});
+    auto e = defaultEncode(*c);
+    ldoc::Output o;
+    o.id = ldoc::Id::generate();
+    o.name = "Destination";
+    o.encode = e.id;
+    run(ldoc::make_batch({ldoc::AddEncode{e, p.encodes.size()},
+                         ldoc::AddOutput{o, p.outputs.size()}}, "Add output group"));
 }
 
 void Document::setEncodeCanvas(const QString& id, const QString& canvasId) {
@@ -3139,34 +3155,12 @@ void Document::addOutputOnEncode(const QString& encode_id, const QString& name) 
     run(ldoc::AddOutput{std::move(o), p.outputs.size()});
 }
 
-void Document::edit_encode_of(const QString& output_id,
-                              const std::function<void(ldoc::Encode&)>& change) {
-    const auto parsed = parse_id(output_id);
-    if (!parsed)
-        return;
-    const ldoc::Project& p = session_->project();
-    const ldoc::Output* out = nullptr;
-    for (const ldoc::Output& o : p.outputs) {
-        if (o.id == *parsed)
-            out = &o;
-    }
-    if (!out)
-        return;
-    const ldoc::Encode* existing = p.encode(out->encode);
-    if (!existing) {
-        emit notice(QStringLiteral("'%1' has no encode to change.").arg(qstr(out->name)));
-        return;
-    }
-
-    // The one thing this panel must not do quietly. Several destinations can share one
-    // bitstream, and changing it changes all of them -- so say which, by name, rather than let
-    // the operator discover it mid-stream.
-    QStringList shared;
-    for (const ldoc::Output& o : p.outputs) {
-        if (o.encode == out->encode && o.id != out->id)
-            shared.append(qstr(o.name));
-    }
-
+void Document::edit_encode(const QString& id, const std::function<void(ldoc::Encode&)>& change) {
+    const auto parsed = parse_id(id);
+    if (!parsed) return;
+    const auto& p = session_->project();
+    const auto* existing = p.encode(*parsed);
+    if (!existing) return;
     ldoc::Encode next = *existing;
     change(next);
     if (next.encoder.implementation == "nvenc") {
@@ -3180,16 +3174,23 @@ void Document::edit_encode_of(const QString& output_id,
     if (next == *existing)
         return;
     run(ldoc::SetEncode{std::move(next)});
-    if (!shared.isEmpty())
-        emit notice(QStringLiteral("'%1' shares this encode with %2, which changed too.")
-                        .arg(qstr(out->name), shared.join(QStringLiteral(", "))));
 }
 
 void Document::setOutputBitrate(const QString& id, int kbps) {
-    edit_encode_of(id, [kbps](ldoc::Encode& e) { e.encoder.bitrate_kbps = kbps; });
+    const auto encode = outputEncoderSettings(id).value("id").toString();
+    setEncodeBitrate(encode, kbps);
 }
 
-void Document::setOutputEncoder(const QString& id, const QString& codec,
+void Document::setEncodeBitrate(const QString& id, int kbps) {
+    edit_encode(id, [kbps](ldoc::Encode& e) { e.encoder.bitrate_kbps = kbps; });
+}
+
+void Document::setOutputEncoder(const QString& id, const QString& codec, const QString& implementation) {
+    const auto encode = outputEncoderSettings(id).value("id").toString();
+    setEncodeEncoder(encode, codec, implementation);
+}
+
+void Document::setEncodeEncoder(const QString& id, const QString& codec,
                                 const QString& implementation) {
     bool supported = false;
     for (const auto& entry : codecs()) {
@@ -3201,7 +3202,7 @@ void Document::setOutputEncoder(const QString& id, const QString& codec,
         emit notice(QStringLiteral("Unknown video encoder configuration."));
         return;
     }
-    edit_encode_of(id, [&](ldoc::Encode& e) {
+    edit_encode(id, [&](ldoc::Encode& e) {
         if (e.encoder.implementation != to_std(implementation)) {
             e.encoder.preset.clear();
             if ((e.encoder.rate_control == "crf" && implementation != "x264") ||
@@ -3243,37 +3244,48 @@ QVariantList Document::encodeChoices() const {
 
 QVariantMap Document::outputEncoderSettings(const QString& id) const {
     const auto parsed = parse_id(id);
-    if (!parsed)
-        return {};
-    for (const auto& o : session_->project().outputs) {
-        if (o.id != *parsed)
-            continue;
-        if (const auto* e = session_->project().encode(o.encode)) {
-            QVariantMap extra;
-            for (const auto& [key, value] : e->encoder.extra) {
-                if (const auto* text = std::get_if<std::string>(&value)) extra[qstr(key)] = qstr(*text);
-                else if (const auto* flag = std::get_if<bool>(&value)) extra[qstr(key)] = *flag;
-                else if (const auto* number = std::get_if<std::int64_t>(&value))
-                    extra[qstr(key)] = QVariant::fromValue(static_cast<qlonglong>(*number));
-            }
-            QString preset = qstr(e->encoder.preset);
-            if (e->encoder.implementation == "nvenc") {
-                if (preset.isEmpty()) preset = QStringLiteral("p5");
-                if (extra.value("nvenc.profile").toString().isEmpty())
-                    extra["nvenc.profile"] = e->encoder.codec == "h264" ? "high" : "main";
-            }
-            return {{"id", id_str(e->id)}, {"name", qstr(e->name)},
-                    {"rateControl", qstr(e->encoder.rate_control)},
-                    {"preset", preset}, {"extra", extra},
-                    {"width", e->rescale ? e->rescale->x : 0},
-                    {"height", e->rescale ? e->rescale->y : 0},
-                    {"keyframeMs", e->encoder.keyframe_interval_ms}};
+    if (!parsed) return {};
+    for (const auto& o : session_->project().outputs)
+        if (o.id == *parsed) return encodeSettings(id_str(o.encode));
+    return {};
+}
+
+QVariantMap Document::encodeSettings(const QString& id) const {
+    const auto parsed = parse_id(id);
+    if (!parsed) return {};
+    if (const auto* e = session_->project().encode(*parsed)) {
+        QVariantMap extra;
+        for (const auto& [key, value] : e->encoder.extra) {
+            if (const auto* text = std::get_if<std::string>(&value)) extra[qstr(key)] = qstr(*text);
+            else if (const auto* flag = std::get_if<bool>(&value)) extra[qstr(key)] = *flag;
+            else if (const auto* number = std::get_if<std::int64_t>(&value))
+                extra[qstr(key)] = QVariant::fromValue(static_cast<qlonglong>(*number));
         }
+        QString preset = qstr(e->encoder.preset);
+        if (e->encoder.implementation == "nvenc") {
+            if (preset.isEmpty()) preset = QStringLiteral("p5");
+            if (extra.value("nvenc.profile").toString().isEmpty())
+                extra["nvenc.profile"] = e->encoder.codec == "h264" ? "high" : "main";
+        }
+        return {{"id", id_str(e->id)}, {"name", qstr(e->name)},
+                {"rateControl", qstr(e->encoder.rate_control)},
+                {"preset", preset}, {"extra", extra},
+                {"width", e->rescale ? e->rescale->x : 0},
+                {"height", e->rescale ? e->rescale->y : 0},
+                {"codec", qstr(e->encoder.codec)},
+                {"implementation", qstr(e->encoder.implementation)},
+                {"bitrate", e->encoder.bitrate_kbps},
+                {"keyframeMs", e->encoder.keyframe_interval_ms}};
     }
     return {};
 }
 
-void Document::setOutputEncodingOptions(const QString& id, const QString& rateControl,
+void Document::setOutputEncodingOptions(const QString& id, const QString& rateControl, const QString& preset, int keyframeMs) {
+    const auto encode = outputEncoderSettings(id).value("id").toString();
+    setEncodeOptions(encode, rateControl, preset, keyframeMs);
+}
+
+void Document::setEncodeOptions(const QString& id, const QString& rateControl,
                                         const QString& preset, int keyframeMs) {
     if ((rateControl != "cbr" && rateControl != "vbr" && rateControl != "cqp" &&
          rateControl != "crf") || keyframeMs < 0 || keyframeMs > 600000 ||
@@ -3281,7 +3293,7 @@ void Document::setOutputEncodingOptions(const QString& id, const QString& rateCo
         emit notice(QStringLiteral("Invalid encoder settings."));
         return;
     }
-    edit_encode_of(id, [&](ldoc::Encode& e) {
+    edit_encode(id, [&](ldoc::Encode& e) {
         e.encoder.rate_control = to_std(rateControl);
         e.encoder.preset = to_std(preset.trimmed());
         e.encoder.keyframe_interval_ms = keyframeMs;
@@ -3310,8 +3322,13 @@ void Document::makeOutputEncodeIndependent(const QString& id) {
     }
 }
 
-void Document::setOutputEncoderExtra(const QString& id, const QString& key,
-                                     const QVariant& value) {
+void Document::setOutputEncoderExtra(const QString& id, const QString& key, const QVariant& value) {
+    const auto encode = outputEncoderSettings(id).value("id").toString();
+    setEncodeExtra(encode, key, value);
+}
+
+std::optional<ldoc::ParamValue> Document::encoderExtraValue(
+    const QString& key, const QVariant& value) {
     const QMap<QString, QStringList> enums{
         {"nvenc.tuning", {"hq", "ll", "ull", "lossless"}},
         {"nvenc.multipass", {"disabled", "quarter", "full"}},
@@ -3348,11 +3365,16 @@ void Document::setOutputEncoderExtra(const QString& id, const QString& key,
                 !text.contains(QChar::Null) && !text.contains('\n') && !text.contains('\r');
         stored = to_std(text);
     }
-    if (!valid) {
+    return valid ? std::optional<ldoc::ParamValue>{stored} : std::nullopt;
+}
+
+void Document::setEncodeExtra(const QString& id, const QString& key, const QVariant& value) {
+    const auto stored = encoderExtraValue(key, value);
+    if (!stored) {
         emit notice(QStringLiteral("Invalid encoder option."));
         return;
     }
-    edit_encode_of(id, [&](ldoc::Encode& e) { e.encoder.extra[to_std(key)] = stored; });
+    edit_encode(id, [&](ldoc::Encode& e) { e.encoder.extra[to_std(key)] = *stored; });
 }
 
 void Document::saveOutputKey(const QString& id, const QString& key) {

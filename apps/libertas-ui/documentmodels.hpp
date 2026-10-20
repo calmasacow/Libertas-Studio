@@ -419,6 +419,7 @@ private:
 
 struct OutputRow {
     QString id;
+    QString encodeId;
     QString name;
     QString canvasName;
     /// The encode's own name. Two destinations fed by one encode show the same name here,
@@ -465,6 +466,7 @@ public:
         CredentialRefRole,
         EnabledRole,
         MisconfiguredRole,
+        EncodeIdRole,
     };
 
     using RowModelBase::RowModelBase;

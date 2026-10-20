@@ -18,6 +18,7 @@ import Libertas
 /// with it on screen so the operator is never told "no" after the fact.
 Item {
     id: dialog
+    StripMenu { id: canvasAddMenu; parent: dialog.Window.contentItem; z: 100 }
 
     signal closed
 
@@ -341,7 +342,11 @@ Item {
                 objectName: "addCanvasFromManager"
                 minimumWidth: 100
                 text: qsTr("+ new canvas")
-                onClicked: Document.addCanvas(qsTr("Canvas"))
+                onClicked: canvasAddMenu.popup(mapToItem(canvasAddMenu, 0, 0).x,
+                    mapToItem(canvasAddMenu, 0, 0).y, [
+                        {text: qsTr("Horizontal 16:9"), action: () => Document.addCanvas(qsTr("Canvas"), false)},
+                        {text: qsTr("Vertical 9:16"), action: () => Document.addCanvas(qsTr("Vertical"), true)}
+                    ])
             }
 
             Text {

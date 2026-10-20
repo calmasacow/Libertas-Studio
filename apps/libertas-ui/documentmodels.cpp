@@ -234,6 +234,7 @@ QVariant OutputModel::data(const QModelIndex& index, int role) const {
     case CredentialRefRole:   return r->credentialRef;
     case EnabledRole:         return r->enabled;
     case MisconfiguredRole:   return r->misconfigured;
+    case EncodeIdRole:        return r->encodeId;
     default:                  return {};
     }
 }
@@ -256,6 +257,7 @@ QHash<int, QByteArray> OutputModel::roleNames() const {
         // by that name would disable itself whenever the output was disabled.
         {EnabledRole, "isEnabled"},
         {MisconfiguredRole, "misconfigured"},
+        {EncodeIdRole, "encodeId"},
     };
 }
 

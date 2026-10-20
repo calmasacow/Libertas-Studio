@@ -4,6 +4,30 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Output groups and defaults, 2026-10-19
+
+ADR-0052 makes Output Manager one named group per encode, with destinations nested
+under that group's settings. The Outputs dock still lists individual destinations.
+Adding a destination reuses the encode; removing a destination keeps its encode;
+removing a group removes both in one undo step. The manager remains movable and resizable.
+
+Global encoder presets support save, explicit replacement, apply, and delete. They
+store encoder settings and rescale dimensions in `encoder-presets.json` under the
+application config directory, excluding destination identities, URLs and credentials.
+Applying a preset leaves canvas geometry and destinations intact. Invalid libraries
+are refused without overwriting their contents. Existing projects retain their settings.
+
+New UI sessions include Main canvas, Main Output encode and one disabled destination.
+Adding a canvas offers horizontal 1920x1080 or vertical 1080x1920 at 60 fps, with its own
+encode and destination. Both default to x264 H.264, 6000 kbps CBR, 2-second keyframes,
+medium CPU preset, Main profile, Film tune, and custom buffer disabled (6000 retained).
+Audio defaults to AAC 160 kbps, track 1, VOD track 0. Built-in presets downscale larger
+canvases to the matching 1080 resolution without upscaling smaller canvases.
+Encoding/output integration remains separate work; these controls configure intended output.
+The warning-free `-Werror` build and all 29 tests pass with `LIBERTAS_TEST_GPU=1`.
+Real UI checks cover shared destinations, preset controls and persistence, option validation,
+new-session defaults, 4K downscaling, and canvas choices refreshed after adding a canvas.
+
 ## Source expansion and performance pass, 2026-10-19
 
 The GPU, render statistics and Elgato work below is the validated baseline for this pass.
