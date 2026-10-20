@@ -2036,6 +2036,15 @@ int main(int argc, char** argv) {
                 mgr->setProperty("selectedType", QStringLiteral("source.image"));
                 settle();
 
+                document.renameSource(clicked, QStringLiteral("Named input"));
+                settle();
+                bool named_primary = false;
+                for (QQuickItem* label :
+                     collect(window->contentItem(), QStringLiteral("sourcePrimaryLabel")))
+                    named_primary = named_primary ||
+                                    label->property("text").toString() == QStringLiteral("Named input");
+                report(named_primary, "source rename updates the scene row's primary label");
+
                 QQuickItem* tile = nullptr;
                 for (QQuickItem* t :
                      collect(window->contentItem(), QStringLiteral("existingSourceTile"))) {
@@ -2044,6 +2053,9 @@ int main(int argc, char** argv) {
                         tile = t;
                 }
                 report(tile != nullptr, "the new source has a tile to right-click");
+                report(tile && tile->property("modelData").toMap().value("name").toString() ==
+                                   QStringLiteral("Named input"),
+                       "source rename updates the open category without switching it");
 
                 if (tile != nullptr) {
                     const QPointF at = tile->mapToScene(
@@ -2093,6 +2105,12 @@ int main(int argc, char** argv) {
                     report(document.sourcesModel()->rowCount() == before_confirm - 1 &&
                                document.scenesUsing(clicked).isEmpty(),
                            "and only then is it gone, placements and all");
+                    bool stale_tile = false;
+                    for (QQuickItem* item :
+                         collect(window->contentItem(), QStringLiteral("existingSourceTile")))
+                        stale_tile = stale_tile ||
+                                     item->property("modelData").toMap().value("id").toString() == clicked;
+                    report(!stale_tile, "deleted source disappears from the open category immediately");
                     document.undo();
                     settle();
                     document.removeSourceAndUses(clicked);

@@ -83,10 +83,21 @@ Item {
     /// adds a precomp rather than a source (ADR-0034).
     readonly property bool pickingScene: dialog.selectedType === "scene"
 
-    readonly property var shownSources: dialog.selectedType === ""
+    property var shownSources: []
+
+    function refreshSources() {
+        dialog.shownSources = dialog.selectedType === ""
         ? Document.recentSources(24)
         : dialog.pickingScene ? Document.scenesForPrecomp()
-                              : Document.sourcesOfType(dialog.selectedType)
+                              : Document.sourcesOfType(dialog.selectedType);
+    }
+
+    onSelectedTypeChanged: refreshSources()
+    Component.onCompleted: refreshSources()
+    Connections {
+        target: Document
+        function onChanged() { dialog.refreshSources(); }
+    }
 
     Keys.onEscapePressed: {
         if (dialog.deleteStage > 0)

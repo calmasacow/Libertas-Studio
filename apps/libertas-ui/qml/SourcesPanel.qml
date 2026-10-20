@@ -152,6 +152,7 @@ Item {
             required property string nodeId
             required property string name
             required property string kind
+            required property string sourceType
             required property string sourceName
             required property string sourceId
             required property int depth
@@ -159,6 +160,8 @@ Item {
             required property bool locked
             required property bool isGroup
             required property int effectCount
+
+            readonly property string displayName: row.sourceName || row.name
 
             readonly property bool selected: Document.selectedNode === row.nodeId
             /// Selected, but not the one panels are following. Drawn a shade down from the
@@ -169,7 +172,7 @@ Item {
             readonly property bool editing: panel.renaming === row.nodeId
 
             width: ListView.view.width
-            height: 26
+            height: row.sourceName !== "" ? 36 : 26
             readonly property bool dropInto: panel.dropTarget === row.nodeId &&
                                              panel.dropZone === "into"
 
@@ -382,7 +385,8 @@ Item {
                 Text {
                     width: parent.width
                     visible: !row.editing
-                    text: row.name
+                    objectName: "sourcePrimaryLabel"
+                    text: row.displayName
                     font.pixelSize: 12
                     font.weight: row.isGroup ? Font.DemiBold : Font.Normal
                     color: row.selected ? Theme.c.window
@@ -394,7 +398,8 @@ Item {
                 Text {
                     width: parent.width
                     visible: !row.editing && row.sourceName !== ""
-                    text: row.sourceName
+                    objectName: "sourceTypeLabel"
+                    text: row.sourceType
                     font.pixelSize: 9
                     color: row.selected ? Theme.c.window : Theme.c.textMuted
                     opacity: 0.75
@@ -417,15 +422,19 @@ Item {
 
                 onVisibleChanged: {
                     if (visible) {
-                        text = row.name;
+                        text = row.displayName;
                         forceActiveFocus();
                         selectAll();
                     }
                 }
                 onAccepted: {
                     panel.renaming = "";
-                    if (text !== row.name)
-                        Document.renameNode(row.nodeId, text);
+                    if (text !== row.displayName) {
+                        if (row.sourceId !== "")
+                            Document.renameSource(row.sourceId, text);
+                        else
+                            Document.renameNode(row.nodeId, text);
+                    }
                 }
                 onActiveFocusChanged: {
                     if (!activeFocus && row.editing)

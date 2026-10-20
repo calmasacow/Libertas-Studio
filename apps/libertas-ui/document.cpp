@@ -869,9 +869,17 @@ void Document::rebuild() {
                             // "(missing source)" with no id would look identical to an unbound
                             // one, and they want different things done to them.
                             row.sourceId = id_str(*placed->source);
-                            if (const ldoc::Source* src = p.source(*placed->source))
+                            if (const ldoc::Source* src = p.source(*placed->source)) {
                                 row.sourceName = qstr(src->name);
-                            else
+                                row.sourceType = qstr(src->type);
+                                for (const QVariant& type : sourceTypes()) {
+                                    const auto entry = type.toMap();
+                                    if (entry.value("id").toString() == row.sourceType) {
+                                        row.sourceType = entry.value("title").toString();
+                                        break;
+                                    }
+                                }
+                            } else
                                 row.sourceName = QStringLiteral("(missing source)");
                         }
                     }

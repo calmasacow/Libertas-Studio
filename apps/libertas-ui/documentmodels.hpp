@@ -70,6 +70,7 @@ struct NodeRow {
     QString kind;
     /// What the source node is bound to, for the second line of the row. Empty when nothing is.
     QString sourceName;
+    QString sourceType;
     /// The id of that source, so a row can open its settings without a lookup by name --
     /// names are not unique and two cameras called "Cam" are a normal thing to have.
     QString sourceId;
@@ -92,6 +93,7 @@ public:
         NameRole,
         KindRole,
         SourceNameRole,
+        SourceTypeRole,
         SourceIdRole,
         DepthRole,
         VisibleRole,

@@ -50,6 +50,7 @@ QVariant NodeModel::data(const QModelIndex& index, int role) const {
     case NameRole:        return r->name;
     case KindRole:        return r->kind;
     case SourceNameRole:  return r->sourceName;
+    case SourceTypeRole:  return r->sourceType;
     case SourceIdRole:    return r->sourceId;
     case DepthRole:       return r->depth;
     case VisibleRole:     return r->visible;
@@ -64,6 +65,7 @@ QHash<int, QByteArray> NodeModel::roleNames() const {
     return {
         {IdRole, "nodeId"},      {NameRole, "name"},
         {KindRole, "kind"},      {SourceNameRole, "sourceName"},
+        {SourceTypeRole, "sourceType"},
         {SourceIdRole, "sourceId"},
         {DepthRole, "depth"},    {VisibleRole, "nodeVisible"},
         {LockedRole, "locked"},  {IsGroupRole, "isGroup"},
