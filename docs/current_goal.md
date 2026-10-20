@@ -24,6 +24,8 @@ been exercised on this hardware.
 Validation: warning-free `-Werror` build, 29/29 suite and both hardware-enabled
 video/preview tests passed. Real UI clicks save both checkboxes and the integer
 timeout. Source checkbox rows now have explicit click-area dimensions.
+Shared checkbox layout anchors text six pixels after its square, avoiding overlap
+from the former Row layout. UI checks assert this spacing for all three capture flags.
 
 ## Video capture stays ready, 2026-10-19
 

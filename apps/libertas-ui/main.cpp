@@ -1323,6 +1323,18 @@ int main(int argc, char** argv) {
                 report(control("settingInput_videoFormat") && control("settingInput_buffering") &&
                            control("settingInput_autoReset") && control("settingInput_timeoutFrames"),
                        "capture settings draw all four requested controls");
+                for (const char* key : {"settingInput_deactivateWhenHidden", "settingInput_buffering",
+                                        "settingInput_autoReset"}) {
+                    auto* checkbox = control(key);
+                    const auto squares = checkbox ? collect(checkbox, QStringLiteral("checkboxSquare"))
+                                                  : QList<QQuickItem*>{};
+                    const auto labels = checkbox ? collect(checkbox, QStringLiteral("checkboxLabel"))
+                                                 : QList<QQuickItem*>{};
+                    report(squares.size() == 1 && labels.size() == 1 &&
+                               labels.front()->x() >= squares.front()->x() + squares.front()->width() + 6 &&
+                               labels.front()->width() > 0,
+                           "capture checkbox label stays to the right of its square");
+                }
                 clickControl(control("settingInput_buffering"));
                 clickControl(control("settingInput_autoReset"));
                 if (auto* timeout = control("settingInput_timeoutFrames")) {

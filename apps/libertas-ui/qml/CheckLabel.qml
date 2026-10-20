@@ -6,7 +6,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Libertas
 
-Row {
+Item {
     id: check
 
     property alias text: label.text
@@ -14,9 +14,14 @@ Row {
 
     signal toggled
 
-    spacing: 6
+    implicitWidth: 19 + label.implicitWidth
+    implicitHeight: Math.max(13, label.implicitHeight)
 
     Rectangle {
+        id: box
+
+        objectName: "checkboxSquare"
+        anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         width: 13
         height: 13
@@ -37,7 +42,12 @@ Row {
     Text {
         id: label
 
+        objectName: "checkboxLabel"
+        anchors.left: box.right
+        anchors.leftMargin: 6
+        anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
+        elide: Text.ElideRight
         font.pixelSize: 11
         color: Theme.c.text
     }
