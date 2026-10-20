@@ -31,6 +31,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QTemporaryDir>
+#include <QStandardPaths>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -154,10 +155,16 @@ int main(int argc, char** argv) {
     // The singletons are constructed by the QML engine, so everything they need that QML cannot
     // supply is handed over first.
     libertas::ui::Workspace::configure(layout_path);
+    QTemporaryDir checkCollections;
+    if (check) qputenv("XDG_DATA_HOME", checkCollections.path().toUtf8());
+    const auto collectionsBase = check ? std::filesystem::path(checkCollections.path().toStdString())
+        : std::filesystem::path(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation).toStdString());
+    libertas::ui::Document::configureCollections(collectionsBase / "collections",
+        check ? collectionsBase / "collections.json" : config_dir() / "collections.json");
     libertas::ui::Document::configure(
         parser.isSet(project_opt)
             ? std::filesystem::path(parser.value(project_opt).toStdString())
-            : std::filesystem::path{});
+            : (check ? std::filesystem::path{} : libertas::ui::Document::lastCollection()));
     QTemporaryDir checkPresets;
     const auto preset_path = (check ? std::filesystem::path(checkPresets.path().toStdString())
                                    : config_dir()) / "encoder-presets.json";
@@ -4224,6 +4231,133 @@ int main(int argc, char** argv) {
         QObject::disconnect(sc);
         report(unavailable.contains(QLatin1String("not wired up")),
                "an action with nothing behind it yet says so");
+        // Scene Collection actions must drive the real dialog and saved project session.
+        {
+            const auto original = document.projectPath();
+            const auto dialogs = collect(window->contentItem(), QStringLiteral("collectionDialog"));
+            report(dialogs.size() == 1, "Scene Collection has one GUI workflow dialog");
+            if (!dialogs.isEmpty()) {
+                auto* dialog = dialogs.front();
+                const auto click = [&](QQuickItem* item) {
+                    const auto at = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                };
+                const auto menu = [&](const char* name) {
+                    auto* entry = window->findChild<QObject*>(QString::fromLatin1(name));
+                    report(entry && entry->property("enabled").toBool(), "collection menu entry is enabled");
+                    if (entry) QMetaObject::invokeMethod(entry, "triggered");
+                    settle();
+                };
+                const auto accept = [&] {
+                    const auto buttons = collect(dialog, QStringLiteral("collectionAccept"));
+                    if (!buttons.isEmpty()) click(buttons.front());
+                    else report(false, "collection dialog has an accept button");
+                };
+                const auto name = [&](const QString& value) {
+                    const auto fields = collect(dialog, QStringLiteral("collectionNameField"));
+                    if (fields.isEmpty()) return;
+                    QList<QQuickItem*> stack{fields.front()};
+                    while (!stack.isEmpty()) {
+                        auto* item = stack.takeLast();
+                        if (item->inherits("QQuickTextInput")) {
+                            click(item);
+                            item->setProperty("text", value);
+                            return; // Acceptance must flush this unfinished edit itself.
+                        }
+                        stack.append(item->childItems());
+                    }
+                };
+                menu("menuCollectionRename");
+                name(QStringLiteral("Renamed collection check"));
+                accept();
+                report(!dialog->isVisible() && document.projectName() == "Renamed collection check",
+                       "Rename accepts the actual text edit and updates the project title");
+                document.undo();
+                report(document.projectName() != "Renamed collection check", "collection rename is undoable");
+                document.redo();
+                document.save();
+                const auto count = document.projectForBindings().sources.size();
+                menu("menuCollectionDuplicate");
+                name(QStringLiteral("Duplicate collection check"));
+                accept();
+                const auto duplicate = document.projectPath();
+                report(duplicate != original && document.projectName() == "Duplicate collection check" &&
+                    document.projectForBindings().sources.size() == count && !document.dirty(),
+                    "Duplicate creates and opens a saved independent collection");
+                report(document.openCollection(original) && document.projectName() == "Renamed collection check",
+                       "switching reopens the original with its saved name");
+                const auto stillOpen = document.projectPath();
+                report(!document.openCollection(QStringLiteral("/nonexistent/libertas-check")) &&
+                    document.projectPath() == stillOpen, "failed switching preserves the current collection");
+                QTemporaryDir exported;
+                const auto native = exported.path() + "/Export.libertas";
+                QFile companion(original + "/collection-check.txt");
+                report(companion.open(QIODevice::WriteOnly) && companion.write("companion") == 9,
+                       "native export fixture writes a real companion file");
+                companion.close();
+                menu("menuCollectionExport");
+                dialog->setProperty("path", native);
+                accept();
+                report(dialog->property("mode").toString() == "report" &&
+                    QFile::exists(native + "/project.json") && QFile::exists(native + "/collection-check.txt"),
+                    "native export writes a project and its companion files through the GUI");
+                report(!document.exportCollection(native, false), "existing native exports cannot be overwritten");
+                QMetaObject::invokeMethod(dialog, "close");
+                menu("menuCollectionImport");
+                dialog->setProperty("format", QStringLiteral("Libertas native"));
+                dialog->setProperty("path", native);
+                name(QStringLiteral("Native import check"));
+                accept();
+                report(dialog->property("mode").toString() == "report" &&
+                    document.projectName() == "Native import check" && document.projectPath() != native,
+                    "native GUI import copies and opens the selected collection");
+                QMetaObject::invokeMethod(dialog, "close");
+                menu("menuCollectionExport");
+                const auto obs = exported.path() + "/obs.json";
+                dialog->setProperty("format", QStringLiteral("OBS JSON"));
+                dialog->setProperty("path", obs);
+                accept();
+                report(QFile::exists(obs) && QFile::exists(obs + ".report.md") &&
+                    dialog->property("mode").toString() == "report", "OBS GUI export writes JSON and a visible report");
+                QMetaObject::invokeMethod(dialog, "close");
+                menu("menuCollectionImport");
+                dialog->setProperty("path", obs);
+                name(QStringLiteral("OBS import check"));
+                accept();
+                report(document.projectName() == "OBS import check" &&
+                    dialog->property("mode").toString() == "report", "OBS GUI import opens its converted collection and report");
+                QMetaObject::invokeMethod(dialog, "close");
+                menu("menuCollectionNew");
+                name(QStringLiteral("New collection check"));
+                accept();
+                report(document.projectName() == "New collection check" &&
+                    document.projectForBindings().sources.empty() &&
+                    document.projectForBindings().encodes.size() == 1 &&
+                    document.projectForBindings().outputs.size() == 1,
+                    "New opens a blank saved collection with default canvas, encode and destination");
+                const auto removed = document.projectPath();
+                menu("menuCollectionRemove");
+                report(dialog->isVisible() && QFile::exists(removed + "/project.json"),
+                       "Remove asks for confirmation before touching a collection");
+                QMetaObject::invokeMethod(dialog, "close");
+                report(document.projectPath() == removed && QFile::exists(removed + "/project.json"),
+                       "cancelling Remove leaves the collection intact");
+                // Qt's native Trash operates inside an isolated XDG data directory in --check.
+                menu("menuCollectionRemove");
+                accept();
+                report(!QFile::exists(removed) && document.projectName() == "Untitled" &&
+                    document.projectForBindings().encodes.size() == 1,
+                    "confirmed Remove moves the project to Trash and opens a blank default session");
+                report(document.openCollection(duplicate), "a prior collection survives removing another");
+                report(libertas::ui::Document::lastCollection() == std::filesystem::path(duplicate.toStdString()) &&
+                    document.collections().size() >= 4, "collection catalog persists known collections and last-open path");
+                report(document.openCollection(original), "collection workflow returns to the original project");
+                QFile::remove(original + "/collection-check.txt");
+            }
+        }
+
         std::fprintf(stderr, "\n  theme: %s (%s), layout: %s\n", qPrintable(theme.name()),
                      theme.dark() ? "dark" : "light", qPrintable(workspace.layoutSource()));
         std::fprintf(stderr, "  %s\n", rc == 0 ? "shell self-check passed" : "SHELL CHECK FAILED");

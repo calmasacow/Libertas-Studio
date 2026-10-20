@@ -50,7 +50,9 @@ QString kind_str(ldoc::NodeKind k) {
     return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size()));
 }
 
-ldoc::Project studio_project(std::string name) {
+} // namespace
+
+ldoc::Project Document::studioProject(std::string name) {
     auto p = ldoc::make_default_project(std::move(name));
     auto encode = Document::defaultEncode(p.canvases.front());
     encode.name = "Main Output";
@@ -63,8 +65,6 @@ ldoc::Project studio_project(std::string name) {
     return p;
 }
 
-} // namespace
-
 void Document::configure(std::filesystem::path project_dir) {
     g_project_dir = std::move(project_dir);
 }
@@ -73,13 +73,13 @@ Document* Document::create(QQmlEngine*, QJSEngine*) { return new Document; }
 
 Document::Document(QObject* parent) : QObject(parent) {
     if (g_project_dir.empty()) {
-        session_ = lsession::LocalSession::in_memory(studio_project("Untitled"));
+        session_ = lsession::LocalSession::in_memory(studioProject("Untitled"));
     } else {
         std::error_code ec;
         auto opened = std::filesystem::exists(g_project_dir / "project.json", ec)
                           ? lsession::LocalSession::open(g_project_dir)
                           : lsession::LocalSession::create(
-                                studio_project(
+                                studioProject(
                                     g_project_dir.stem().string().empty()
                                         ? "Untitled"
                                         : g_project_dir.stem().string()),
@@ -90,7 +90,7 @@ Document::Document(QObject* parent) : QObject(parent) {
             // Falling back to an unsaved document rather than refusing to start: the operator
             // can still work, and a shell that will not open because of one project is a shell
             // they cannot use to fix it.
-            session_ = lsession::LocalSession::in_memory(studio_project("Untitled"));
+            session_ = lsession::LocalSession::in_memory(studioProject("Untitled"));
             QMetaObject::invokeMethod(
                 this,
                 [this, why = qstr(opened.error())] {
@@ -117,6 +117,7 @@ Document::Document(QObject* parent) : QObject(parent) {
     // Which scene each canvas starts on is settled by rebuild(), which does it per canvas and
     // has to anyway -- a canvas can gain its first scene at any time.
     rebuild();
+    initCollections();
 }
 
 Document::~Document() = default;
@@ -4338,11 +4339,13 @@ void Document::redo() {
 
 void Document::save() {
     if (session_->path().empty()) {
-        emit notice(QStringLiteral("This project has not been given a location yet."));
+        saveCurrentCollection();
         return;
     }
     if (const auto r = session_->save(); !r)
         emit notice(QStringLiteral("Could not save: %1").arg(qstr(r.error())));
+    else
+        rememberCollection();
 }
 
 } // namespace libertas::ui

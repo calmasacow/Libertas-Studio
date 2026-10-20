@@ -7,6 +7,7 @@
 #include "lsession/local_session.hpp"
 
 #include "ltest.hpp"
+#include <lcore/atomic_file.hpp>
 
 #include <algorithm>
 #include <filesystem>
@@ -332,6 +333,22 @@ LTEST_CASE(saving_tells_listeners_without_claiming_the_document_changed) {
     REQUIRE(rec.changes.size() == 2);
     CHECK(rec.last().kind == Change::Kind::Saved);
     CHECK_MSG(!rec.last().command.has_value(), "a save reported a document change");
+}
+
+LTEST_CASE(a_session_refuses_newer_schema_without_rewriting_it) {
+    ScratchDir scratch("future-schema");
+    auto created = LocalSession::create(starter(), scratch.project());
+    REQUIRE(created);
+    created->reset();
+    auto bytes = lc::read_file(scratch.project() / "project.json");
+    REQUIRE(bytes);
+    const auto key = std::format("\"schema_version\" : {}", ldoc::kSchemaVersion);
+    const auto at = bytes->find(key);
+    REQUIRE(at != std::string::npos);
+    bytes->replace(at, key.size(), "\"schema_version\" : 99");
+    REQUIRE(lc::write_atomic(scratch.project() / "project.json", *bytes));
+    CHECK(!LocalSession::open(scratch.project()));
+    CHECK_EQ(lc::read_file(scratch.project() / "project.json"), bytes);
 }
 
 LTEST_MAIN("session")

@@ -18,6 +18,9 @@ std::expected<std::unique_ptr<LocalSession>, std::string> LocalSession::open(
     if (!opened)
         return std::unexpected(opened.error());
 
+    if (opened->read_only)
+        return std::unexpected("Project uses a newer schema; this build cannot open it for editing.");
+
     std::unique_ptr<LocalSession> s{new LocalSession{std::move(opened->project)}};
     s->lock_ = std::move(opened->lock);
     s->dir_ = dir;

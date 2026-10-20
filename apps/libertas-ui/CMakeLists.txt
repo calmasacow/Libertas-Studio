@@ -23,6 +23,7 @@ qt_add_executable(libertas-ui
     filedialog.hpp
     document.cpp
     outputpresets.cpp
+    collections.cpp
     document.hpp
     documentmodels.cpp
     documentmodels.hpp
@@ -58,6 +59,7 @@ qt_add_qml_module(libertas-ui
         qml/AudioMixerPanel.qml
         qml/BroadcastStatsPanel.qml
         qml/CanvasManagerDialog.qml
+        qml/CollectionDialog.qml
         qml/CanvasPanel.qml
         qml/ChainIcon.qml
         qml/EyeIcon.qml
@@ -109,6 +111,7 @@ target_link_libraries(libertas-ui PRIVATE
     libertas::lcomp
     libertas::lcore
     libertas::llayout
+    libertas::limport
     libertas::lsession
     libertas::ltheme
     Qt6::DBus

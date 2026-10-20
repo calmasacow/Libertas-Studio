@@ -111,10 +111,10 @@ void unsubscribe(QDBusConnection& bus, const QString& request, FileDialog* dialo
                    QStringLiteral("ua{sv}"), dialog, kResponse);
 }
 
-QDBusMessage open_file(QDBusConnection& bus, const QString& title, const QVariantMap& options) {
+QDBusMessage open_file(QDBusConnection& bus, const QString& title, const QVariantMap& options, bool save) {
     QDBusMessage message =
         QDBusMessage::createMethodCall(QString::fromLatin1(kDesktop), QString::fromLatin1(kObject),
-                                       QString::fromLatin1(kChooser), QStringLiteral("OpenFile"));
+                                       QString::fromLatin1(kChooser), save ? QStringLiteral("SaveFile") : QStringLiteral("OpenFile"));
     message << QString() << title << options;
     return bus.call(message);
 }
@@ -130,6 +130,19 @@ void FileDialog::portalResponse(uint response, const QVariantMap& results) {
 }
 
 QString FileDialog::pick(const QString& title, const QString& currentPath, bool imagesOnly) {
+    return choose(title, currentPath, imagesOnly, false, false);
+}
+
+QString FileDialog::directory(const QString& title, const QString& currentPath) {
+    return choose(title, currentPath, false, true, false);
+}
+
+QString FileDialog::saveFile(const QString& title, const QString& currentPath) {
+    return choose(title, currentPath, false, false, true);
+}
+
+QString FileDialog::choose(const QString& title, const QString& currentPath, bool imagesOnly,
+                           bool directory, bool save) {
     last_error_.clear();
     got_ = false;
     response_ = 2;
@@ -157,6 +170,8 @@ QString FileDialog::pick(const QString& title, const QString& currentPath, bool 
     QVariantMap options;
     options.insert(QStringLiteral("handle_token"), token);
     options.insert(QStringLiteral("modal"), true);
+    if (directory) options.insert(QStringLiteral("directory"), true);
+    if (save) options.insert(QStringLiteral("current_name"), QFileInfo(currentPath).fileName());
     if (imagesOnly)
         add_image_filters(options);
     if (!currentPath.isEmpty()) {
@@ -172,11 +187,11 @@ QString FileDialog::pick(const QString& title, const QString& currentPath, bool 
 
     // An empty parent still opens the desktop's chooser. Naming the Wayland surface would need
     // an xdg-foreign handle, which this window does not export.
-    QDBusMessage reply = open_file(bus, title, options);
+    QDBusMessage reply = open_file(bus, title, options, save);
     if (reply.type() != QDBusMessage::ReplyMessage && imagesOnly) {
         options.remove(QStringLiteral("filters"));
         options.remove(QStringLiteral("current_filter"));
-        reply = open_file(bus, title, options);
+        reply = open_file(bus, title, options, save);
     }
     if (reply.type() != QDBusMessage::ReplyMessage) {
         std::fprintf(stderr, "file chooser: %s\n", qPrintable(reply.errorMessage()));

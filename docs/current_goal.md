@@ -4,6 +4,29 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Scene collection GUI, 2026-10-19
+
+ADR-0058 enables every Scene Collection menu entry: New, Duplicate, Rename, Remove,
+Import, Export, Project Problems and switching. New collections use the studio output defaults.
+Current work is saved before switching, including initially unsaved sessions in managed storage.
+An atomic catalog records names, paths and the last-open collection; --project overrides it.
+Rename uses the document command and supports undo. Removal requires confirmation and uses
+native Trash. Existing export paths are refused. Native copies preserve companion files and
+absolute external media references; locks and journals are not copied.
+
+Desktop portal choosers support OBS JSON/native directory import and both native/OBS export.
+OBS import asks for canvas dimensions and rational FPS; conversion reports remain visible and
+on disk. OBS export maps shared sources, scenes, nested groups and supported placements, with
+explicit reports for unsupported effects, opacity, routing, device identities and profile settings.
+Unsupported imported OBS plugin records can be restored for OBS to load. OBS profiles and
+Libertas outputs are separate; credentials are never read. Editable sessions reject newer schemas.
+
+Validation: warning-free -Werror build and 29/29 tests with GPU checks enabled. Real menu/dialog
+checks cover rename, duplicate, new, both import/export formats, cancellation, native companion
+files, failed switching, no-overwrite, Trash and catalog persistence. Exported cropped, flipped,
+pivoted and rotated scenes reimport with identical rendered pixels. OBS itself and interactive
+portal browsing have not been exercised for the new export workflow.
+
 ## Capture format and timeout controls, 2026-10-19
 
 ADR-0057 exposes device-enumerated video formats, Use buffering, Autoreset on

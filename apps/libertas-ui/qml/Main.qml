@@ -87,12 +87,15 @@ Window {
         }
     }
 
+    CollectionDialog { id: collectionEditor }
+
     MainMenu {
         id: mainMenu
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
         mainWindow: root
+        collectionDialog: collectionEditor
     }
 
     WorkspaceTabs {

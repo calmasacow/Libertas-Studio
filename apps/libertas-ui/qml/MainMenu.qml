@@ -11,6 +11,7 @@ Controls.MenuBar {
     id: bar
     objectName: "mainMenu"
     required property var mainWindow
+    required property var collectionDialog
     property bool statusBarVisible: true
     readonly property bool editable: Document.selectedNode !== "" && !Document.nodeProperties.locked
     readonly property var extraPanels: {
@@ -229,18 +230,32 @@ Controls.MenuBar {
         Pending { text: qsTr("Profiles are not available yet") }
     }
     Menu {
+        id: collectionsMenu
         title: qsTr("&Scene Collection")
-        Pending { text: qsTr("New...") }
-        Pending { text: qsTr("Duplicate...") }
-        Pending { text: qsTr("Rename...") }
-        Pending { text: qsTr("Remove") }
+        Entry { objectName: "menuCollectionNew"; text: qsTr("New..."); onTriggered: bar.collectionDialog.open("new") }
+        Entry { objectName: "menuCollectionDuplicate"; text: qsTr("Duplicate..."); onTriggered: bar.collectionDialog.open("duplicate") }
+        Entry { objectName: "menuCollectionRename"; text: qsTr("Rename..."); onTriggered: bar.collectionDialog.open("rename") }
+        Entry { objectName: "menuCollectionRemove"; text: qsTr("Remove..."); onTriggered: bar.collectionDialog.open("remove") }
         Divider {}
-        Pending { text: qsTr("Import... (CLI available)") }
-        Pending { text: qsTr("Export...") }
+        Entry { objectName: "menuCollectionImport"; text: qsTr("Import..."); onTriggered: bar.collectionDialog.open("import") }
+        Entry { objectName: "menuCollectionExport"; text: qsTr("Export..."); onTriggered: bar.collectionDialog.open("export") }
         Divider {}
         Entry { text: qsTr("Project Problems"); onTriggered: bar.showPanel("info") }
         Divider {}
         Entry { text: Document.projectName; checkable: true; checked: true; enabled: false }
+        Instantiator {
+            model: Document.collections
+            delegate: Entry {
+                required property var modelData
+                text: modelData.name
+                visible: modelData.path !== Document.projectPath
+                height: visible ? implicitHeight : 0
+                enabled: visible
+                onTriggered: Document.openCollection(modelData.path)
+            }
+            onObjectAdded: (index, object) => collectionsMenu.insertItem(collectionsMenu.count, object)
+            onObjectRemoved: (index, object) => collectionsMenu.removeItem(object)
+        }
     }
     Menu {
         title: qsTr("&Tools")

@@ -60,6 +60,8 @@ class Document : public QObject {
     Q_PROPERTY(QAbstractItemModel* mixerStrips READ mixerStripsModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* encodes READ encodesModel CONSTANT)
 
+    Q_PROPERTY(QVariantList collections READ collections NOTIFY collectionsChanged)
+    Q_PROPERTY(QString collectionReport READ collectionReport NOTIFY collectionsChanged)
     Q_PROPERTY(QString projectName READ projectName NOTIFY changed)
     Q_PROPERTY(QString projectPath READ projectPath NOTIFY changed)
     Q_PROPERTY(bool dirty READ dirty NOTIFY changed)
@@ -579,6 +581,18 @@ public:
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void save();
+    static void configureCollections(std::filesystem::path root, std::filesystem::path catalog);
+    static std::filesystem::path lastCollection();
+    QVariantList collections() const { return collection_items_; }
+    QString collectionReport() const { return collection_report_; }
+    Q_INVOKABLE bool createCollection(const QString& name, bool duplicate = false);
+    Q_INVOKABLE bool renameCollection(const QString& name);
+    Q_INVOKABLE bool openCollection(const QString& path);
+    Q_INVOKABLE bool removeCollection();
+    Q_INVOKABLE bool importCollection(const QString& path, bool obs, const QString& name,
+                                      int width, int height, int fpsNum, int fpsDen);
+    Q_INVOKABLE bool exportCollection(const QString& path, bool obs);
+
 
     // ---- for other C++ bridges, deliberately not Q_INVOKABLE -------------------------------
     //
@@ -591,6 +605,7 @@ public:
     void runCommand(const ldoc::Command& command);
 
 signals:
+    void collectionsChanged();
     void encoderPresetsChanged();
     void changed();
     void selectionChanged();
@@ -603,6 +618,15 @@ signals:
 
 private:
     void rebuild();
+    static ldoc::Project studioProject(std::string name);
+    void initCollections();
+    bool rememberCollection();
+    bool saveCurrentCollection();
+    void installSession(std::unique_ptr<lsession::Session> session);
+    QVariantList collection_items_;
+    QString collection_report_;
+    QString collection_catalog_error_;
+
     void run(const ldoc::Command& command);
     [[nodiscard]] const ldoc::Scene* current_scene() const;
     [[nodiscard]] const ldoc::Scene* scene_of_canvas(const QString& canvasId) const;

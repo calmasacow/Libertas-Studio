@@ -30,10 +30,15 @@ class FileDialog : public QObject {
     /// not applied anywhere; the caller keeps it until the operator accepts the settings.
     Q_INVOKABLE QString pick(const QString& title, const QString& currentPath, bool imagesOnly);
 
+    Q_INVOKABLE QString directory(const QString& title, const QString& currentPath);
+    Q_INVOKABLE QString saveFile(const QString& title, const QString& currentPath);
+
     /// Why `pick` returned empty, when it was not a cancel. Empty after a cancel.
     Q_INVOKABLE QString lastError() const { return last_error_; }
 
   private:
+    QString choose(const QString& title, const QString& currentPath, bool imagesOnly,
+                   bool directory, bool save);
     Q_SLOT void portalResponse(uint response, const QVariantMap& results);
 
     QString last_error_;

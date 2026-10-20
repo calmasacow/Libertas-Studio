@@ -337,6 +337,53 @@ LTEST_CASE(import_cli_creates_a_project_with_explicit_canvas_rate) {
     CHECK(ldoc::open_project(scratch.output).has_value());
 }
 
+LTEST_CASE(export_roundtrip_preserves_pixels_stack_crop_pivot_flips_and_rotation) {
+    Scratch scratch;
+    scratch.write(collection());
+    auto converted = scratch.convert();
+    REQUIRE(converted);
+    auto& project = converted->project;
+    auto& node = project.scenes.front().roots.front();
+    node.transform.position = {1, 1};
+    node.transform.rotation_deg = 90;
+    node.transform.scale = {-1, 1};
+    node.transform.pivot = {0.5, 0.5};
+    node.layout.crop.left = 1;
+    const auto before = lcomp::composite_canvas(project, project.canvases.front().id);
+    const auto output = fs::path(scratch.temp.path().toStdString()) / "export.json";
+    auto exported = limport::export_obs(project, scratch.output, output);
+    REQUIRE_MSG(exported, "{}", exported.error());
+    CHECK(fs::exists(output.string() + ".report.md"));
+    CHECK(!limport::export_obs(project, scratch.output, output));
+    const auto imported = limport::import_obs(output, output.string() + ".libertas", {4, 4, {60000, 1001}});
+    REQUIRE_MSG(imported, "{}", imported.error());
+    const auto after = lcomp::composite_canvas(imported->project, imported->project.canvases.front().id);
+    CHECK_EQ(before.pixels, after.pixels);
+    CHECK_EQ(imported->project.sources.size(), project.sources.size());
+    CHECK(exported->find("60000/1001") != std::string::npos);
+}
+
+LTEST_CASE(export_disambiguates_names_and_reports_unsupported_features_without_output_keys) {
+    Scratch scratch;
+    scratch.write(collection());
+    auto converted = scratch.convert();
+    REQUIRE(converted);
+    auto& project = converted->project;
+    project.sources.front().name = project.scenes.front().name;
+    project.sources.back().type = "source.unknown";
+    project.scenes.front().roots.front().blend.opacity = 0.5;
+    const auto output = fs::path(scratch.temp.path().toStdString()) / "export.json";
+    const auto exported = limport::export_obs(project, scratch.output, output);
+    REQUIRE(exported);
+    CHECK(exported->find("transparent placeholder") != std::string::npos);
+    CHECK(exported->find("opacity") != std::string::npos);
+    const auto imported = limport::import_obs(output, output.string() + ".libertas", {4, 4, {60, 1}});
+    REQUIRE_MSG(imported, "{}", imported.error());
+    CHECK_EQ(imported->project.scenes.size(), project.scenes.size());
+    CHECK_EQ(imported->project.sources.size(), project.sources.size());
+    CHECK(!limport::export_obs(project, scratch.output, scratch.temp.path().toStdString()));
+}
+
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
