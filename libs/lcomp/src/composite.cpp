@@ -35,6 +35,21 @@ std::optional<int> quarter_turn(double degrees) {
     return quarter;
 }
 
+bool blend_supported(ldoc::BlendMode mode) {
+    switch (mode) {
+    case ldoc::BlendMode::Normal:
+    case ldoc::BlendMode::LinearDodge:
+    case ldoc::BlendMode::Subtract:
+    case ldoc::BlendMode::Screen:
+    case ldoc::BlendMode::Multiply:
+    case ldoc::BlendMode::Lighten:
+    case ldoc::BlendMode::Darken:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool transform_supported(const ldoc::Transform& t) {
     if (t.skew_deg.x != 0.0 || t.skew_deg.y != 0.0)
         return false;
@@ -372,8 +387,28 @@ void refuse(DrawPlan& picture, const ldoc::Node& node, GapReason why) {
 ///
 /// `Rgba` is stored straight, not premultiplied: `from_srgb8` divides the alpha and converts
 /// the channels independently. Premultiplying happens here, for the blend, and nowhere else.
-void blend_linear(std::uint8_t* d, double sr, double sg, double sb, double sa) {
-    if (sa >= 1.0) {
+double blend_channel(double b, double s, ldoc::BlendMode mode) {
+    switch (mode) {
+    case ldoc::BlendMode::LinearDodge:
+        return std::min(1.0, b + s);
+    case ldoc::BlendMode::Subtract:
+        return std::max(0.0, b - s);
+    case ldoc::BlendMode::Screen:
+        return b + s - b * s;
+    case ldoc::BlendMode::Multiply:
+        return b * s;
+    case ldoc::BlendMode::Lighten:
+        return std::max(b, s);
+    case ldoc::BlendMode::Darken:
+        return std::min(b, s);
+    default:
+        return s;
+    }
+}
+
+void blend_linear(std::uint8_t* d, double sr, double sg, double sb, double sa,
+                  ldoc::BlendMode mode) {
+    if (sa >= 1.0 && mode == ldoc::BlendMode::Normal) {
         const auto bytes = ldoc::Rgba{sr, sg, sb, 1.0}.to_srgb8();
         d[0] = bytes[0];
         d[1] = bytes[1];
@@ -388,6 +423,11 @@ void blend_linear(std::uint8_t* d, double sr, double sg, double sb, double sa) {
     const double dg = srgb_byte(d[1]);
     const double db = srgb_byte(d[2]);
     const double da = static_cast<double>(d[3]) / 255.0;
+    if (mode != ldoc::BlendMode::Normal) {
+        sr += da * (blend_channel(dr, sr, mode) - sr);
+        sg += da * (blend_channel(dg, sg, mode) - sg);
+        sb += da * (blend_channel(db, sb, mode) - sb);
+    }
     const double inv = 1.0 - sa;
     const double or_ = sr * sa + dr * da * inv;
     const double og = sg * sa + dg * da * inv;
@@ -404,7 +444,8 @@ void blend_linear(std::uint8_t* d, double sr, double sg, double sb, double sa) {
     d[3] = bytes[3];
 }
 
-void fill_rect(Picture& picture, const Px& rect, const ldoc::Rgba& colour, double opacity) {
+void fill_rect(Picture& picture, const Px& rect, const ldoc::Rgba& colour, double opacity,
+               ldoc::BlendMode mode) {
     const double sa = colour.a * std::clamp(opacity, 0.0, 1.0);
     if (sa <= 0.0 || rect.empty())
         return;
@@ -415,7 +456,8 @@ void fill_rect(Picture& picture, const Px& rect, const ldoc::Rgba& colour, doubl
     for (int y = y0; y < y1; ++y) {
         std::uint8_t* row = picture.pixels.data() + static_cast<std::size_t>(y) * picture.stride;
         for (int x = x0; x < x1; ++x)
-            blend_linear(row + static_cast<std::size_t>(x) * 4u, colour.r, colour.g, colour.b, sa);
+            blend_linear(row + static_cast<std::size_t>(x) * 4u, colour.r, colour.g, colour.b, sa,
+                         mode);
     }
 }
 
@@ -460,7 +502,8 @@ std::vector<int> axis_map(int dest_n, int src_n, int begin, int count) {
 }
 
 void blit(Picture& picture, const Px& rect, const Picture& src, double opacity, int quarter,
-          bool flip_x, bool flip_y, bool swap_rb = false) {
+          bool flip_x, bool flip_y, bool swap_rb = false,
+          ldoc::BlendMode mode = ldoc::BlendMode::Normal) {
     if (rect.empty() || src.width <= 0 || src.height <= 0 || opacity <= 0.0)
         return;
     const int x0 = std::max(0, rect.x0);
@@ -527,7 +570,7 @@ void blit(Picture& picture, const Px& rect, const Picture& src, double opacity, 
             const int b = swap_rb ? 0 : 2;
             if (s[3] == 0)
                 continue;
-            if (s[3] == 255 && covered >= 1.0) {
+            if (s[3] == 255 && covered >= 1.0 && mode == ldoc::BlendMode::Normal) {
                 d[0] = s[r];
                 d[1] = s[1];
                 d[2] = s[b];
@@ -535,7 +578,7 @@ void blit(Picture& picture, const Px& rect, const Picture& src, double opacity, 
                 continue;
             }
             const double sa = (static_cast<double>(s[3]) / 255.0) * covered;
-            blend_linear(d, srgb_byte(s[r]), srgb_byte(s[1]), srgb_byte(s[b]), sa);
+            blend_linear(d, srgb_byte(s[r]), srgb_byte(s[1]), srgb_byte(s[b]), sa, mode);
         }
     }
 }
@@ -567,6 +610,7 @@ DrawOp operation(const ldoc::Node& node, const Px& rect, double opacity) {
     op.crop = {static_cast<int>(node.layout.crop.left), static_cast<int>(node.layout.crop.top),
                static_cast<int>(node.layout.crop.right), static_cast<int>(node.layout.crop.bottom)};
     op.opacity = opacity;
+    op.blend = node.blend.mode;
     op.quarter = quarter_turn(node.transform.rotation_deg).value_or(0);
     op.flip_x = node.transform.scale.x < 0.0;
     op.flip_y = node.transform.scale.y < 0.0;
@@ -709,10 +753,9 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
     if (opacity <= 0.0)
         return;
 
-    // A group in a mode other than Normal would need flattening before the blend, and a source
-    // in one of those modes is a different picture than the one Normal would make. Drawing the
-    // children anyway would be that different picture. One gap, on the node that asked.
-    if (node.blend.mode != ldoc::BlendMode::Normal || node.blend.clip_to_below) {
+    if (!blend_supported(node.blend.mode) || node.blend.clip_to_below ||
+        (node.kind() == ldoc::NodeKind::Group && node.blend.pass_through_group &&
+         node.blend.mode != ldoc::BlendMode::Normal)) {
         refuse(target.picture, node, GapReason::UnsupportedBlend);
         return;
     }
@@ -732,15 +775,15 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         const bool identity = !node.layout.crop.any() && rect->x0 == 0 && rect->y0 == 0 && rect->x1 == target.picture.width &&
             rect->y1 == target.picture.height && quarter_turn(node.transform.rotation_deg) == 0 &&
             node.transform.scale.x > 0 && node.transform.scale.y > 0;
-        if (!identity) {
+        if (!identity || group->isolate || node.blend.mode != ldoc::BlendMode::Normal) {
             DrawPlan inner;
             inner.width = target.picture.width; inner.height = target.picture.height;
             bool drew = false;
             CanvasTarget nested{inner, drew, target.stack, target.frames};
             for (auto it = group->children.rbegin(); it != group->children.rend(); ++it)
-                paint_node(project, *it, opacity, nested);
+                paint_node(project, *it, 1.0, nested);
             for (const auto& gap : inner.gaps) target.picture.gaps.push_back(gap);
-            auto op = operation(node, *rect, 1.0);
+            auto op = operation(node, *rect, opacity);
             op.nested = std::make_shared<DrawPlan>(std::move(inner));
             target.picture.ops.push_back(std::move(op));
             target.drew = target.drew || drew;
@@ -955,7 +998,7 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
         if (op.device_image)
             throw std::invalid_argument("CPU executor requires host pixels, not a device image");
         if (op.colour) {
-            fill_rect(picture, op.rect, *op.colour, op.opacity);
+            fill_rect(picture, op.rect, *op.colour, op.opacity, op.blend);
         } else {
             const Picture nested = op.nested ? execute_cpu(*op.nested, true) : Picture{};
             const Picture& source = op.nested ? nested : op.image;
@@ -966,7 +1009,8 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
             if (source.read_from() && view.width > 0 && view.height > 0) {
                 view.borrowed = source.read_from() + static_cast<std::size_t>(op.crop[1]) *
                     source.stride + static_cast<std::size_t>(op.crop[0]) * 4;
-                blit(picture, op.rect, view, op.opacity, op.quarter, op.flip_x, op.flip_y, op.bgra);
+                blit(picture, op.rect, view, op.opacity, op.quarter, op.flip_x, op.flip_y, op.bgra,
+                     op.blend);
             }
         }
     }

@@ -109,6 +109,53 @@ LTEST_CASE(gpu_executes_the_shared_walk_for_opacity_precomps_rotations_and_flips
     compare(lcomp::execute_cpu(image_plan), *image_result);
 }
 
+LTEST_CASE(all_seven_blends_match_cpu_for_textures_transparency_and_nested_groups) {
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE_MSG(gpu != nullptr, "{}", error);
+    auto project = show();
+    std::vector<std::uint8_t> pixels(7 * 5 * 4);
+    for (std::size_t i = 0; i < pixels.size(); ++i)
+        pixels[i] = static_cast<std::uint8_t>(50 + (i * 37) % 180);
+    const lcomp::FrameSource frames = [&](const ldoc::Source&) {
+        return lcomp::CapturedPicture{7, 5, pixels.data(), pixels.size()};
+    };
+    auto front = project.scenes[0].roots[0];
+    auto background = front;
+    background.blend.opacity = 0.7;
+    auto inner = project.scenes[0];
+    inner.id = ldoc::Id::generate();
+    auto precomp = ldoc::make_node(ldoc::NodeKind::Precomp, "transparent nested scene");
+    std::get<ldoc::PrecompData>(precomp.data).scene = inner.id;
+    project.scenes.push_back(inner);
+    using M = ldoc::BlendMode;
+    for (const auto mode :
+         {M::Normal, M::LinearDodge, M::Subtract, M::Screen, M::Multiply, M::Lighten, M::Darken}) {
+        for (const double opacity : {0.0, 0.53, 1.0}) {
+            front.blend.mode = mode;
+            front.blend.opacity = opacity;
+            front.transform.rotation_deg = 90;
+            front.transform.scale = {-1, 1};
+            project.scenes[1].roots = {front, background};
+            auto group = ldoc::make_node(ldoc::NodeKind::Group, "blended group");
+            group.blend.mode = mode;
+            group.blend.opacity = opacity;
+            group.transform.position = {2, 1};
+            group.transform.scale = {0.8, 0.7};
+            std::get<ldoc::GroupData>(group.data).children = {precomp, background};
+            project.scenes[0].roots = {group, background};
+            const auto plan = lcomp::plan_canvas(project, project.canvases[0].id, frames);
+            REQUIRE(plan.gaps.empty());
+            for (const auto edge : {0u, 19u}) {
+                auto result = gpu->render(plan, edge, error);
+                REQUIRE_MSG(result, "{}", error);
+                compare(lcomp::preview_size(lcomp::execute_cpu(plan), edge), *result);
+            }
+        }
+    }
+}
+
 LTEST_CASE(host_video_uploads_to_a_4k_canvas) {
     auto d = device();
     std::string error;

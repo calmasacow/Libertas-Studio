@@ -105,6 +105,36 @@ LTEST_CASE(import_creates_reopenable_project_and_preserves_stack_and_identity) {
     CHECK_EQ(fs::file_size(scratch.input), fs::file_size(scratch.output / "obs-original.json"));
 }
 
+LTEST_CASE(all_obs_blend_modes_survive_import_render_export_and_reimport) {
+    using M = ldoc::BlendMode;
+    const std::array modes{M::Normal,   M::LinearDodge, M::Subtract, M::Screen,
+                           M::Multiply, M::Lighten,     M::Darken};
+    const std::array names{"normal",   "additive", "subtract", "screen",
+                           "multiply", "lighten",  "darken"};
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        Scratch scratch;
+        auto root = collection();
+        root["sources"][2]["settings"]["items"][1]["blend_type"] = names[i];
+        scratch.write(root);
+        auto imported = scratch.convert();
+        REQUIRE_MSG(imported, "{}", imported.error());
+        const auto& project = imported->project;
+        CHECK_EQ(project.scenes[0].roots[0].blend.mode, modes[i]);
+        const auto before = lcomp::composite_canvas(project, project.canvases[0].id);
+        CHECK(before.gaps.empty());
+        const auto output = fs::path(scratch.temp.path().toStdString()) / "export.json";
+        const auto exported = limport::export_obs(project, scratch.output, output);
+        REQUIRE_MSG(exported, "{}", exported.error());
+        const auto reimported =
+            limport::import_obs(output, output.string() + ".libertas", {4, 4, {60, 1}});
+        REQUIRE_MSG(reimported, "{}", reimported.error());
+        CHECK_EQ(reimported->project.scenes[0].roots[0].blend.mode, modes[i]);
+        const auto after =
+            lcomp::composite_canvas(reimported->project, reimported->project.canvases[0].id);
+        CHECK_EQ(before.pixels, after.pixels);
+    }
+}
+
 LTEST_CASE(import_crops_actual_image_pixels_and_preserves_flipped_bounds) {
     Scratch scratch;
     auto root = collection();

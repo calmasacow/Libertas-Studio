@@ -252,7 +252,12 @@ Item {
             ChoiceField {
                 width: parent.width
                 label: qsTr("Mode")
+                objectName: "blendModeField"
                 choices: Document.blendModes
+                choiceLabels: ({ "normal": qsTr("Normal"), "linear-dodge": qsTr("Add"),
+                                 "subtract": qsTr("Subtract"), "screen": qsTr("Screen"),
+                                 "multiply": qsTr("Multiply"), "lighten": qsTr("Lighten"),
+                                 "darken": qsTr("Darken") })
                 value: panel.hasNode ? panel.props.blendMode : ""
                 onCommitted: newValue => Document.setNodeBlendMode(newValue)
             }

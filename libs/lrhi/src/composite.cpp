@@ -75,6 +75,14 @@ struct Push {
 };
 
 static_assert(sizeof(Push) == 80);
+// Keep composite.comp's mode constants aligned with the shared plan.
+static_assert(static_cast<int>(ldoc::BlendMode::Normal) == 0 &&
+              static_cast<int>(ldoc::BlendMode::Darken) == 2 &&
+              static_cast<int>(ldoc::BlendMode::Multiply) == 3 &&
+              static_cast<int>(ldoc::BlendMode::Lighten) == 6 &&
+              static_cast<int>(ldoc::BlendMode::Screen) == 7 &&
+              static_cast<int>(ldoc::BlendMode::LinearDodge) == 9 &&
+              static_cast<int>(ldoc::BlendMode::Subtract) == 19);
 } // namespace
 
 struct GpuCompositor::Impl {
@@ -423,6 +431,7 @@ struct GpuCompositor::Impl {
             push.crop = op.crop;
             push.flags = {op.quarter, op.flip_x, op.flip_y, op.colour ? 0 : op.nested ? 2 : 1};
             push.opacity[0] = static_cast<float>(std::clamp(op.opacity, 0.0, 1.0));
+            push.opacity[1] = static_cast<float>(op.blend);
             Image* input = &dest;
             if (op.colour) {
                 const auto& c0 = *op.colour;

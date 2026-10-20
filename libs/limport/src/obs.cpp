@@ -507,9 +507,19 @@ struct Converter {
                       num(item["pos"], "y") - (ox * std::sin(angle) + oy * std::cos(angle))};
         if (std::abs(t.position.x) > 1e7 || std::abs(t.position.y) > 1e7)
             throw std::runtime_error(e.name + ": position out of range");
-        if (str(item, "blend_type", "normal") != "normal" ||
-            str(item, "blend_method", "default") != "default")
-            warn(e, "blend settings not converted; uses normal linear blend");
+        const auto blend = str(item, "blend_type", "normal");
+        const auto mode =
+            ldoc::blend_mode_from_string(blend == "additive" ? "linear-dodge" : blend);
+        if (mode && lcomp::blend_supported(*mode)) {
+            n.blend.mode = *mode;
+            if (*mode != ldoc::BlendMode::Normal)
+                warn(e, "blend mode converted; native source-over alpha may differ from OBS "
+                        "for transparent layers");
+        } else {
+            warn(e, "unsupported blend mode retained in original; uses normal blend");
+        }
+        if (str(item, "blend_method", "default") != "default")
+            warn(e, "nonlinear blend method not converted; uses scene-linear blend");
         if (str(item, "scale_filter", "disable") != "disable")
             warn(e, "scaling filter not converted; uses native sampler");
         return n;

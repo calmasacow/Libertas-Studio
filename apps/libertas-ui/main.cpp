@@ -4452,6 +4452,76 @@ int main(int argc, char** argv) {
                 pump(20);
             }
             report(rendered, "real renderer shows the same green scene selected by the GUI on open");
+            document.selectNode(QString::fromStdString(node.id.to_string()));
+            workspace.openPanel("properties");
+            workspace.activate("properties");
+            settle();
+            const auto blendFields = collect(window->contentItem(), "blendModeField");
+            QQuickItem* blendField = nullptr;
+            for (auto* field : blendFields)
+                if (field->isVisible())
+                    blendField = field;
+            report(blendField != nullptr && document.blendModes().size() == 7,
+                   "Properties exposes seven working blend modes");
+            const auto clickBlend = [&](QQuickItem* item) {
+                const auto at = item->mapToScene(QPointF(item->width() - 12, item->height() / 2));
+                post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                settle();
+            };
+            const QStringList blendNames{"Normal",   "Add",     "Subtract", "Screen",
+                                         "Multiply", "Lighten", "Darken"};
+            for (int mode = 0; blendField && mode < blendNames.size(); ++mode) {
+                for (auto* parent = blendField->parentItem(); parent;
+                     parent = parent->parentItem()) {
+                    if (!parent->property("contentY").isValid())
+                        continue;
+                    parent->setProperty("contentY",
+                                        std::max(0.0, blendField->mapToItem(parent, QPointF{}).y() +
+                                                          parent->property("contentY").toDouble() -
+                                                          20));
+                    break;
+                }
+                settle();
+                clickBlend(blendField);
+                bool chosen = false;
+                for (auto* popup : collect(window->contentItem(), "choicePopup")) {
+                    if (!popup->isVisible())
+                        continue;
+                    QList<QQuickItem*> items{popup};
+                    while (!items.isEmpty()) {
+                        auto* item = items.takeLast();
+                        if (item->isVisible() &&
+                            item->property("text").toString() == blendNames[mode]) {
+                            clickBlend(item);
+                            chosen = true;
+                            break;
+                        }
+                        items.append(item->childItems());
+                    }
+                    if (chosen)
+                        break;
+                }
+                report(chosen && document.nodeProperties().value("blendMode").toString() ==
+                                     document.blendModes()[mode],
+                       "real blend dropdown saves its selected mode");
+                report(!document.placedNodes(canvasId).isEmpty(),
+                       "blended sources retain canvas transform handles");
+                const bool greenExpected = mode == 0 || mode == 1 || mode == 3 || mode == 5;
+                bool modeRendered = false;
+                pump(100);
+                for (int attempt = 0; provider && attempt < 50; ++attempt) {
+                    const auto image = provider->requestImage(canvasId, nullptr, {});
+                    if (!image.isNull() && (greenExpected ? qGreen(image.pixel(0, 0)) > 240
+                                                          : qGreen(image.pixel(0, 0)) < 20)) {
+                        modeRendered = true;
+                        break;
+                    }
+                    pump(20);
+                }
+                report(modeRendered, "blend chosen in Properties reaches the real renderer");
+            }
+            document.setNodeBlendMode("normal");
             workspace.openPanel("favourites");
             workspace.activate("favourites");
             settle();

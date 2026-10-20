@@ -174,6 +174,61 @@ LTEST_CASE(half_opacity_blends_in_linear_light) {
     CHECK_EQ(pixel(picture, 1, 2), std::tuple(188, 0, 0, 255));
 }
 
+LTEST_CASE(seven_blend_modes_render_real_sources_with_alpha_and_opacity) {
+    using M = ldoc::BlendMode;
+    const std::array modes{M::Normal,   M::LinearDodge, M::Subtract, M::Screen,
+                           M::Multiply, M::Lighten,     M::Darken};
+    const std::array<std::array<double, 3>, 7> blended{{{0.6, 0.2, 0.4},
+                                                        {0.9, 0.7, 1.0},
+                                                        {0.0, 0.3, 0.3},
+                                                        {0.72, 0.6, 0.82},
+                                                        {0.18, 0.1, 0.28},
+                                                        {0.6, 0.5, 0.7},
+                                                        {0.3, 0.2, 0.4}}};
+    auto front = colour_source(0, 0, 0, 4, 4);
+    auto back = colour_source(0, 0, 0, 4, 4);
+    back.settings["color"] = ldoc::Rgba{0.3, 0.5, 0.7, 1};
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        for (const double alpha : {0.0, 0.5, 1.0}) {
+            front.settings["color"] = ldoc::Rgba{0.6, 0.2, 0.4, alpha};
+            auto scene = scene_named("blended scene");
+            auto node = bound_to(front);
+            node.blend.mode = modes[i];
+            node.blend.opacity = 0.4;
+            scene.roots = {node, bound_to(back)};
+            auto project = show(4, scene, {front, back});
+            const auto picture = lcomp::composite_canvas(project, project.canvases[0].id);
+            REQUIRE(picture.status == PictureStatus::Complete);
+            const double coverage = alpha * 0.4;
+            const auto expected = ldoc::Rgba{0.3 * (1 - coverage) + blended[i][0] * coverage,
+                                             0.5 * (1 - coverage) + blended[i][1] * coverage,
+                                             0.7 * (1 - coverage) + blended[i][2] * coverage, 1}
+                                      .to_srgb8();
+            for (std::size_t c = 0; c < 4; ++c)
+                CHECK(std::abs(int(picture.pixels[c]) - int(expected[c])) <= 1);
+        }
+    }
+}
+
+LTEST_CASE(group_blend_flattens_children_and_applies_opacity_once) {
+    auto red = colour_source(255, 0, 0, 4, 4);
+    auto white = colour_source(255, 255, 255, 4, 4);
+    auto group = ldoc::make_node(ldoc::NodeKind::Group, "Multiply group");
+    group.blend.mode = ldoc::BlendMode::Multiply;
+    group.blend.opacity = 0.5;
+    std::get<ldoc::GroupData>(group.data).children = {bound_to(red), bound_to(red)};
+    auto scene = scene_named("group scene");
+    scene.roots = {group, bound_to(white)};
+    auto project = show(4, scene, {red, white});
+    const auto picture = lcomp::composite_canvas(project, project.canvases[0].id);
+    CHECK(picture.gaps.empty());
+    CHECK_EQ(pixel(picture, 0, 0), std::tuple(255, 188, 188, 255));
+    project.scenes[0].roots[0].blend.pass_through_group = true;
+    const auto refused = lcomp::composite_canvas(project, project.canvases[0].id);
+    REQUIRE(!refused.gaps.empty());
+    CHECK_EQ(refused.gaps[0].reason, GapReason::UnsupportedBlend);
+}
+
 LTEST_CASE(a_groups_opacity_reaches_its_children) {
     ldoc::Source red = colour_source(255, 0, 0, 4, 4);
     ldoc::Node child = bound_to(red);

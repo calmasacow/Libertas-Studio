@@ -321,10 +321,18 @@ struct Exporter {
             crop("crop_right", node.layout.crop.right);
             crop("crop_bottom", node.layout.crop.bottom);
             item["blend_type"] = "normal";
-            if (node.blend.opacity != 1 || node.blend.mode != ldoc::BlendMode::Normal ||
-                node.blend.clip_to_below || !node.effects.empty())
-                warn(node.name,
-                     "opacity, blend, clipping and effects not converted; review OBS filters");
+            if (lcomp::blend_supported(node.blend.mode)) {
+                item["blend_type"] = node.blend.mode == ldoc::BlendMode::LinearDodge
+                                         ? "additive"
+                                         : std::string(ldoc::to_string(node.blend.mode));
+                if (node.blend.mode != ldoc::BlendMode::Normal)
+                    warn(node.name,
+                         "blend mode converted; OBS alpha may differ for transparent layers");
+            } else {
+                warn(node.name, "unsupported blend mode; uses normal blend");
+            }
+            if (node.blend.opacity != 1 || node.blend.clip_to_below || !node.effects.empty())
+                warn(node.name, "opacity, clipping and effects not converted; review OBS filters");
             result.append(item);
         }
         return result;

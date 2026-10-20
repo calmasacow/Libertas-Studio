@@ -150,7 +150,10 @@ QStringList Document::problems() const {
 
 QStringList Document::blendModes() const {
     QStringList out;
-    for (int i = 0; i < 25; ++i)
+    for (const auto i :
+         {ldoc::BlendMode::Normal, ldoc::BlendMode::LinearDodge, ldoc::BlendMode::Subtract,
+          ldoc::BlendMode::Screen, ldoc::BlendMode::Multiply, ldoc::BlendMode::Lighten,
+          ldoc::BlendMode::Darken})
         out << QString::fromUtf8(ldoc::to_string(static_cast<ldoc::BlendMode>(i)).data(),
                                  static_cast<qsizetype>(
                                      ldoc::to_string(static_cast<ldoc::BlendMode>(i)).size()));
@@ -598,7 +601,7 @@ std::optional<QVariantMap> placed_map(const ldoc::Project& project, const ldoc::
                                       const ldoc::Node& node) {
     if (!node.visible || node.blend.opacity <= 0.0)
         return std::nullopt;
-    if (node.blend.mode != ldoc::BlendMode::Normal || node.blend.clip_to_below ||
+    if (!lcomp::blend_supported(node.blend.mode) || node.blend.clip_to_below ||
         effect_enabled(node) || !drawable(node))
         return std::nullopt;
     double natural_w = 0.0;

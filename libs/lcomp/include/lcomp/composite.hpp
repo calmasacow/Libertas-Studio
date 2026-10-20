@@ -28,7 +28,7 @@ enum class GapReason : std::uint8_t {
     NoSize,
     /// A type this composite does not draw: capture, media, text, browser, camera.
     UnsupportedType,
-    /// Any blend other than Normal, including clipping to the node below.
+    /// An unimplemented blend mode, group pass-through combination, or clipping.
     UnsupportedBlend,
     /// Skew, or a rotation that is not a quarter turn. A flip is a negative scale, and a
     /// quarter turn is transposed in place: both are the picture that was asked for. Anything
@@ -193,6 +193,8 @@ struct DrawRect {
     [[nodiscard]] bool empty() const { return x1 <= x0 || y1 <= y0; }
 };
 
+[[nodiscard]] bool blend_supported(ldoc::BlendMode mode);
+
 struct DrawPlan;
 
 /// Resolved pixels and geometry; executors never interpret document nodes (ADR-0042).
@@ -200,6 +202,7 @@ struct DrawOp {
     DrawRect rect;
     std::array<int, 4> crop{}; // Source pixels: left, top, right, bottom.
     double opacity = 1;
+    ldoc::BlendMode blend = ldoc::BlendMode::Normal;
     int quarter = 0;
     bool flip_x = false;
     bool flip_y = false;

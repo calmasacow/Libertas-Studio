@@ -19,6 +19,16 @@ int axis(int i, int dest, int src, bool flip) {
 vec3 linear_rgb(vec3 c) {
     return mix(pow((c+0.055)/1.055, vec3(2.4)), c/12.92, lessThanEqual(c, vec3(0.04045)));
 }
+// Matches ldoc::BlendMode; checked beside Vulkan push constants.
+vec3 blend_rgb(vec3 b, vec3 s, int mode) {
+    if (mode == 9) return min(vec3(1), b+s);
+    if (mode == 19) return max(vec3(0), b-s);
+    if (mode == 7) return b+s-b*s;
+    if (mode == 3) return b*s;
+    if (mode == 6) return max(b,s);
+    if (mode == 2) return min(b,s);
+    return s;
+}
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy) + max(p.rect.xy, ivec2(0));
     if (any(greaterThanEqual(pos, min(p.rect.zw, imageSize(target))))) return;
@@ -38,5 +48,11 @@ void main() {
     }
     if (p.flags.w != 2) s.rgb *= s.a;
     s *= p.opacity.x;
-    imageStore(target,pos,s + imageLoad(target,pos)*(1-s.a));
+    vec4 b = imageLoad(target,pos);
+    int mode = int(p.opacity.y);
+    if (mode != 0 && s.a > 0 && b.a > 0) {
+        vec3 straight_s = s.rgb/s.a;
+        s.rgb = s.a * mix(straight_s, blend_rgb(b.rgb/b.a, straight_s, mode), b.a);
+    }
+    imageStore(target,pos,s + b*(1-s.a));
 }

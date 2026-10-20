@@ -4,6 +4,90 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Seven blend modes, 2026-10-20
+
+ADR-0059 carries Normal, Add, Subtract, Screen, Multiply, Lighten and Darken through
+one shared draw plan to CPU and GPU execution. Properties offers these seven modes;
+Add retains the existing `linear-dodge` serialized name. OBS import/export maps all
+seven. Non-Normal groups and explicitly isolated groups flatten before blending,
+with opacity applied once. Blended sources retain canvas transform handles.
+
+Native alpha uses source-over coverage in scene-linear RGB. OBS fixed-function
+blending can differ for transparent layers, so conversion reports state this limit.
+Unimplemented blend/effect combinations still report gaps. Real scene tests cover
+all modes, alpha, opacity, transformed/nested groups, and OBS round trips. The UI
+check clicks each Properties option and verifies actual renderer pixels and handles.
+
+## OBS collection fidelity backlog, 2026-10-19
+
+The operator approved the following scope after reviewing the Marathon import. Its
+40 OBS scenes and eight groups exist as 48 native scene files, with scene item
+references retained. The remaining work concerns rendering, behavior and import
+translation, rather than merely creating the collection. Original JSON and the
+import report remain alongside the imported project.
+
+1. **Native source cloning.** Use https://github.com/exeldro/obs-source-clone as a
+   behavior reference; expose a native equivalent and translate OBS parameters.
+   Review target source/scene/canvas, audio, active lifetime, buffering and filter
+   inclusion. Six imported clones currently produce no picture/audio. Two target
+   `Camera.SRC`, which is absent from the original collection: report unresolved
+   targets and support explicit remapping rather than guessing a replacement.
+2. **Stock filters.** Make OBS-equivalent filters available natively and translate
+   their settings. This collection has six enabled image masks, 13 enabled color
+   corrections and one enabled crop filter. Preserve disabled filters too,
+   including luma key. Validate source, nested-scene and group filter behavior.
+3. **Canvas mapping.** Reuse existing native vertical canvas support. Map OBS
+   canvas identities, geometry and scene membership correctly; 14 Aitum scenes
+   and one other vertical scene currently flatten onto Main. Do not infer missing
+   canvas geometry silently.
+4. **Blending.** Implement native blend modes in both render backends and import
+   their settings. Screen and Multiply are used here. Normal remains standard
+   alpha compositing, without an extra color blend operation. Preserve opacity,
+   group isolation and color-space semantics.
+5. **Media fidelity.** Resolve actual media dimensions before calculating imported
+   placement; preserve aspect ratio and restart/keep-running behavior. Several
+   sources explicitly disable restart on activation. Existing playback support
+   does not make these imported settings equivalent.
+6. **Text/group fidelity.** Audit existing support before adding features. Translate
+   supported settings and fill actual gaps in text outline, shadow, wrapping and
+   measurement. Repair missing bounds for `Live.Chat.Text.GRP`; groups already
+   import as nested scenes.
+7. **Stinger transitions.** Required: import and run the two file-backed stingers,
+   with timing and audio behavior. The operator no longer uses StreamElements;
+   ignore its four obsolete transition wrappers with a clear import report.
+8. **Browser/audio behavior.** Preserve browser lifetime/settings where supported,
+   review required OBS browser APIs, and prevent duplicate nested/shared audio.
+   Add a monitoring-output selector in the audio panel. **None is the default**;
+   offer system default and available sinks, including the operator's WaveSink
+   system output and custom OBS monitoring sink when discovered. Never enable
+   monitoring or select a sink by guessed name during import.
+
+9. **Countdown timers.** Replicate the workflow of
+   https://github.com/ashmanix/obs-plugin-countdown using native timers driving text
+   sources. Inspect plugin configuration and controls before choosing the model;
+   preserve multiple timer bindings and supported formatting/start/stop/reset behavior
+   during import where saved plugin configuration is available. Existing countdown
+   text alone is not evidence that timer automation was imported. The local plugin
+   config is `~/.config/obs-studio/plugin_config/obs-plugin-countdown/config.json`,
+   outside scene collection JSON. It contains two 15-minute timers bound to
+   `START.CD.TXT` and `BRB.CD.TXT`; importing their automation needs that companion
+   configuration. Review elapsed/target-time modes, formatting, end actions, color
+   rules and hotkeys against the plugin before claiming full equivalence.
+
+Capture rates must follow runtime device capabilities; a 60 fps canvas does not
+require capture at 60 fps. Read-only V4L2 enumeration of the attached Elgato 4K X
+reports 2560x1440 at 120 and 144 fps in NV12, YU12 and MJPEG, with no exact 119 or
+165 fps mode at that resolution. YUYV, BGR3 and P010 advertise at most 60 fps at
+1440p. These are advertised capabilities, not new streaming validation. Leave the
+operator's saved capture settings unchanged. Review imported device identity and
+timeouts separately from missing scene features; all 31 checked image/media/mask
+file references exist.
+
+For implementation, inspect existing model/render capabilities first, write an ADR
+before model changes, drive real rendering/UI in regression checks, and commit and
+push each successful section after a warning-free build and green suite. Keep CPU
+fallback and GPU behavior aligned. Blend implementation status is recorded above; remaining sections are pending.
+
 ## Startup scene alignment, 2026-10-19
 
 Initial scene selection now follows each canvas's saved Program scene. The saved show had
