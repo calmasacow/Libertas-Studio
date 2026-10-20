@@ -11,6 +11,7 @@
 #include "llayout/serialize.hpp"
 
 #include "ldoc/json.hpp"
+#include "ldoc/project_io.hpp"
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -4356,6 +4357,110 @@ int main(int argc, char** argv) {
                 report(document.openCollection(original), "collection workflow returns to the original project");
                 QFile::remove(original + "/collection-check.txt");
             }
+        }
+
+        // Reproduce a saved show whose second scene is on air while the first is Preview.
+        // Both construction and the GUI collection workflow must align with real Program.
+        {
+            const auto original = document.projectPath();
+            QTemporaryDir startup;
+            const auto path = std::filesystem::path(startup.path().toStdString()) / "Alignment.libertas";
+            auto project = ldoc::make_default_project("Startup alignment");
+            auto& canvas = project.canvases.front();
+            canvas.width = canvas.height = 8;
+            const auto firstScene = project.scenes.front().id;
+            ldoc::Scene active;
+            active.id = ldoc::Id::generate();
+            active.name = "Screen";
+            active.canvas = canvas.id;
+            active.favourite = true;
+            ldoc::Source green;
+            green.id = ldoc::Id::generate();
+            green.name = "Active screen source";
+            green.type = "source.color";
+            green.settings = {{"color", ldoc::Rgba::from_srgb8(0, 255, 0)},
+                {"width", std::int64_t{8}}, {"height", std::int64_t{8}}};
+            project.sources.push_back(green);
+            auto node = ldoc::make_node(ldoc::NodeKind::Source, "Screen pixels");
+            std::get<ldoc::SourceData>(node.data).source = green.id;
+            active.roots.push_back(node);
+            project.scenes.push_back(active);
+            project.decks.front().program_scene = active.id;
+            project.decks.front().preview_scene = firstScene;
+            project.scenes.front().name = "Elgato";
+            auto secondCanvas = canvas;
+            secondCanvas.id = ldoc::Id::generate();
+            secondCanvas.name = "Vertical";
+            project.canvases.push_back(secondCanvas);
+            auto inactiveVertical = project.scenes.front();
+            inactiveVertical.id = ldoc::Id::generate();
+            inactiveVertical.canvas = secondCanvas.id;
+            project.scenes.push_back(inactiveVertical);
+            auto activeVertical = active;
+            activeVertical.id = ldoc::Id::generate();
+            activeVertical.canvas = secondCanvas.id;
+            activeVertical.roots.clear();
+            project.scenes.push_back(activeVertical);
+            auto verticalDeck = project.decks.front();
+            verticalDeck.id = ldoc::Id::generate();
+            verticalDeck.canvas = secondCanvas.id;
+            verticalDeck.program_scene = activeVertical.id;
+            verticalDeck.preview_scene = inactiveVertical.id;
+            project.decks.push_back(verticalDeck);
+            const auto activeId = QString::fromStdString(active.id.to_string());
+            const auto canvasId = QString::fromStdString(project.canvases.front().id.to_string());
+            const auto verticalId = QString::fromStdString(secondCanvas.id.to_string());
+            report(ldoc::create_project(project, path).has_value(), "startup alignment fixture saves second-scene Program");
+            libertas::ui::Document::configure(path);
+            {
+                libertas::ui::Document boot;
+                report(boot.selectedScene() == activeId && boot.nodesModel()->rowCount() == 1 &&
+                    boot.nodesModel()->data(boot.nodesModel()->index(0, 0), role_of(boot.nodesModel(), "sourceName")).toString() == QString::fromStdString(green.name),
+                    "boot selects saved Program and its sources instead of first scene or Preview");
+                report(boot.selectedSceneOn(verticalId) == QString::fromStdString(activeVertical.id.to_string()),
+                    "boot aligns secondary canvas selection with its own saved Program");
+                report(!boot.dirty(), "boot alignment changes UI selection without changing the saved show");
+            }
+            libertas::ui::Document::configure(original.toStdString());
+            report(document.openCollection(QString::fromStdString(path.string())), "saved second-scene show opens in the GUI");
+            workspace.openPanel("scenes");
+            workspace.activate("scenes");
+            settle();
+            bool selected = false;
+            for (auto* row : collect(window->contentItem(), "sceneRow"))
+                if (row->property("sceneId").toString() == activeId)
+                    selected = row->property("selected").toBool() && row->property("isProgram").toBool();
+            report(selected && document.nodesModel()->rowCount() == 1 &&
+                document.nodesModel()->data(document.nodesModel()->index(0, 0), role_of(document.nodesModel(), "sourceName")).toString() == QString::fromStdString(green.name),
+                "GUI selected scene and Sources panel agree with saved Program after opening");
+            workspace.openPanel("sources");
+            workspace.activate("sources");
+            settle();
+            bool sourceVisible = false;
+            for (auto* row : collect(window->contentItem(), "sourceRow"))
+                if (row->isVisible() && row->property("sourceName").toString() == QString::fromStdString(green.name))
+                    sourceVisible = true;
+            report(sourceVisible, "visible Sources panel shows the running scene's source after opening");
+            auto* provider = static_cast<QQuickImageProvider*>(engine.imageProvider("program"));
+            bool rendered = false;
+            for (int i = 0; provider && i < 50; ++i) {
+                const auto image = provider->requestImage(canvasId, nullptr, {});
+                if (!image.isNull() && qGreen(image.pixel(0, 0)) > 240 && qRed(image.pixel(0, 0)) < 20) {
+                    rendered = true;
+                    break;
+                }
+                pump(20);
+            }
+            report(rendered, "real renderer shows the same green scene selected by the GUI on open");
+            workspace.openPanel("favourites");
+            workspace.activate("favourites");
+            settle();
+            bool favouriteSelected = false;
+            for (auto* row : collect(window->contentItem(), "favouriteRow"))
+                if (row->property("sceneId").toString() == activeId)
+                    favouriteSelected = row->property("selected").toBool();
+            report(favouriteSelected, "Favourites selection also agrees with running Program after opening");
+            report(document.openCollection(original), "startup alignment check returns to the prior collection");
         }
 
         std::fprintf(stderr, "\n  theme: %s (%s), layout: %s\n", qPrintable(theme.name()),

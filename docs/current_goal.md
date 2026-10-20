@@ -4,6 +4,18 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Startup scene alignment, 2026-10-19
+
+Initial scene selection now follows each canvas's saved Program scene. The saved show had
+Screen in Program while startup selected the first scene, Elgato, so the viewport and Sources
+panel disagreed. Opening a collection also restores selection from Program. Valid selections
+during normal editing, including right-click selection, retain their existing behavior.
+
+The headless check boots a real saved project with second-scene Program and first-scene Preview,
+checks both canvases, opens it in the real GUI, and verifies scene highlighting, visible Sources,
+Favourites and green pixels returned by the renderer. Alignment does not change the saved show.
+Validation: warning-free -Werror build and all 29 tests passed with GPU checks enabled.
+
 ## Scene collection GUI, 2026-10-19
 
 ADR-0058 enables every Scene Collection menu entry: New, Duplicate, Rename, Remove,

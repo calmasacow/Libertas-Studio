@@ -712,12 +712,18 @@ void Document::rebuild() {
         const ldoc::Scene* held = scene_of_canvas(key);
         if (held && held->canvas == c.id)
             continue;
-        // Land on this canvas's first scene, or on nothing if it has none yet.
+        // On startup and collection changes, selection follows the saved Program, not list
+        // order. Keep a valid operator selection during normal edits (including right-click).
         QString first;
-        for (const ldoc::Scene& sc : p.scenes) {
-            if (sc.canvas == c.id) {
-                first = id_str(sc.id);
-                break;
+        const auto* active = program_scene(p, c.id);
+        if (active && active->canvas == c.id) {
+            first = id_str(active->id);
+        } else {
+            for (const ldoc::Scene& sc : p.scenes) {
+                if (sc.canvas == c.id) {
+                    first = id_str(sc.id);
+                    break;
+                }
             }
         }
         selected_scene_[key] = first;
