@@ -161,8 +161,6 @@ Item {
             required property bool isGroup
             required property int effectCount
 
-            readonly property string displayName: row.sourceName || row.name
-
             readonly property bool selected: Document.selectedNode === row.nodeId
             /// Selected, but not the one panels are following. Drawn a shade down from the
             /// leader so a range reads as a range and it is still obvious which node the
@@ -386,7 +384,7 @@ Item {
                     width: parent.width
                     visible: !row.editing
                     objectName: "sourcePrimaryLabel"
-                    text: row.displayName
+                    text: row.name
                     font.pixelSize: 12
                     font.weight: row.isGroup ? Font.DemiBold : Font.Normal
                     color: row.selected ? Theme.c.window
@@ -422,14 +420,14 @@ Item {
 
                 onVisibleChanged: {
                     if (visible) {
-                        text = row.displayName;
+                        text = row.name;
                         forceActiveFocus();
                         selectAll();
                     }
                 }
                 onAccepted: {
                     panel.renaming = "";
-                    if (text !== row.displayName) {
+                    if (text !== row.name) {
                         if (row.sourceId !== "")
                             Document.renameSource(row.sourceId, text);
                         else

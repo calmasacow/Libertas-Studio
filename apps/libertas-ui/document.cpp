@@ -50,6 +50,14 @@ QString kind_str(ldoc::NodeKind k) {
     return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size()));
 }
 
+QString node_display_name(const ldoc::Project& project, const ldoc::Node& node) {
+    if (const auto* placed = std::get_if<ldoc::SourceData>(&node.data))
+        if (placed->source)
+            if (const auto* source = project.source(*placed->source))
+                return qstr(source->name);
+    return qstr(node.name);
+}
+
 } // namespace
 
 ldoc::Project Document::studioProject(std::string name) {
@@ -680,7 +688,7 @@ QVariantMap Document::nodeProperties() const {
     if (!n)
         return m;
     m["id"] = id_str(n->id);
-    m["name"] = qstr(n->name);
+    m["name"] = node_display_name(session_->project(), *n);
     m["kind"] = kind_str(n->kind());
     m["visible"] = n->visible;
     m["locked"] = n->locked;
@@ -856,7 +864,7 @@ void Document::rebuild() {
                 for (const ldoc::Node& n : nodes) {
                     NodeRow row;
                     row.id = id_str(n.id);
-                    row.name = qstr(n.name);
+                    row.name = node_display_name(p, n);
                     row.kind = kind_str(n.kind());
                     row.depth = depth;
                     row.visible = n.visible;
@@ -972,7 +980,7 @@ void Document::rebuild() {
             row.id = id_str(n.id);
             row.nodeId = row.id;
             row.sceneId = id_str(shown->id);
-            row.name = qstr(n.name);
+            row.name = node_display_name(p, n);
             if (placed->audio.bus) {
                 row.busId = id_str(*placed->audio.bus);
                 const ldoc::Bus* b = p.bus(*placed->audio.bus);

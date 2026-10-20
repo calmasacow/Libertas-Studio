@@ -1509,7 +1509,24 @@ int main(int argc, char** argv) {
                     report(document.sourceDetails(browser_id).value("name").toString() ==
                                QStringLiteral("Elgato Audio"),
                            "typing a source name then clicking OK saves it without leaving the field");
+                    document.selectNode(browser_node);
+                    settle();
+                    bool mixer_named = false;
+                    for (QQuickItem* label :
+                         collect(window->contentItem(), QStringLiteral("mixerSourceName")))
+                        mixer_named = mixer_named ||
+                            label->property("text").toString() == QStringLiteral("Elgato Audio");
+                    report(mixer_named && document.nodeProperties().value("name").toString() ==
+                                              QStringLiteral("Elgato Audio"),
+                           "source settings rename updates mixer and Properties together");
                     document.undo();
+                    settle();
+                    bool stale_mixer_name = false;
+                    for (QQuickItem* label :
+                         collect(window->contentItem(), QStringLiteral("mixerSourceName")))
+                        stale_mixer_name = stale_mixer_name ||
+                            label->property("text").toString() == QStringLiteral("Elgato Audio");
+                    report(!stale_mixer_name, "undo updates the mixer source name immediately");
                     QMetaObject::invokeMethod(panels.front(), "open",
                                               Q_ARG(QVariant, QVariant{browser_id}));
                     settle();

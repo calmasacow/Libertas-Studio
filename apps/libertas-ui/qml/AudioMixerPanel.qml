@@ -143,6 +143,7 @@ Item {
                 Text {
                     width: parent.width
                     height: 16
+                    objectName: "mixerSourceName"
                     text: src.name
                     font.pixelSize: 10
                     font.bold: true
