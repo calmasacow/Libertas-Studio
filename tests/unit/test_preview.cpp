@@ -8,6 +8,7 @@
 #include "ltest.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -113,6 +114,53 @@ lcomp::PreviewFrame commit(lcomp::PreviewLink& link, const ldoc::Project& projec
 }
 
 } // namespace
+
+LTEST_CASE(render_lag_counts_composite_budgets_not_delayed_acknowledgments) {
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends.has_value());
+    bool server_ok = false;
+    std::jthread server([channel = std::move(ends->second), &server_ok]() mutable {
+        server_ok = lcomp::serve_preview(std::move(channel), {}, [] {
+            // Delayed release/transport must not become another missed render frame.
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        }, {}, [](const ldoc::Project& project, const ldoc::Id& canvas, std::uint32_t) {
+            if (project.canvas(canvas)->name == "Slow")
+                std::this_thread::sleep_for(std::chrono::milliseconds(45));
+            return lcomp::composite_canvas(project, canvas);
+        }).has_value();
+    });
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000).has_value());
+    auto project = ldoc::make_default_project("render lag check");
+    auto& canvas = project.canvases.front();
+    canvas.width = canvas.height = 4;
+    canvas.name = "Slow";
+    canvas.fps = {1, 1};
+    const auto first = commit(link, project);
+    CHECK(first.render_ns >= 45000000u);
+    CHECK_EQ(first.render_lag_frames, 0u);
+
+    canvas.fps = {60000, 1001};
+    const auto second = commit(link, project);
+    const auto elapsed = second.render_ns - first.render_ns;
+    const auto missed = static_cast<std::uint64_t>(
+        std::ceil(static_cast<long double>(elapsed) * 60000 / 1001000000000.0L)) - 1;
+    CHECK(missed >= 2u);
+    CHECK_EQ(second.render_lag_frames, missed);
+    CHECK_EQ(second.rendered_frames, 2u);
+
+    // A separate canvas does not inherit another canvas's overruns.
+    auto independent = ldoc::make_default_project("independent canvas");
+    independent.canvases.front().width = independent.canvases.front().height = 4;
+    independent.canvases.front().fps = {1, 1};
+    const auto third = commit(link, independent);
+    CHECK_EQ(third.rendered_frames, 1u);
+    CHECK_EQ(third.render_lag_frames, 0u);
+    link.quit();
+    link.close();
+    server.join();
+    CHECK(server_ok);
+}
 
 LTEST_CASE(a_picture_crosses_the_process_and_the_renderer_exits_when_the_client_closes) {
     const int fds_before = count_fds();

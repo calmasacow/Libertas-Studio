@@ -108,7 +108,6 @@ class Preview : public QObject {
     std::uint32_t preview_edge_ = 0;
     struct RenderBaseline { std::uint64_t ns = 0, frames = 0, missed = 0; };
     std::map<QString, RenderBaseline> render_baselines_;
-    std::map<QString, std::uint64_t> missed_live_ticks_;
     std::map<QString, QVariantMap> audio_levels_;
 };
 

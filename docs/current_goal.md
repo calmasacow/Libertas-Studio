@@ -4,6 +4,16 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Render-lag accounting correction, 2026-10-19
+
+ADR-0053 replaces UI busy-request ticks with renderer-measured composite overruns.
+Preview protocol v6 carries cumulative per-canvas missed budgets alongside render
+time and completed frames. Each composite contributes `max(0, ceil(duration / period) - 1)`;
+the period uses that canvas's rational FPS. Reset baselines all three counters.
+Audio work, transport, delayed acknowledgments, UI dispatch and unchanged capture
+frames no longer masquerade as render lag. This measures composite overruns;
+it does not claim to measure end-to-end preview or output delivery deadlines.
+
 ## Output groups and defaults, 2026-10-19
 
 ADR-0052 makes Output Manager one named group per encode, with destinations nested

@@ -17,7 +17,7 @@
 
 namespace lcomp {
 
-/// The preview protocol. Version 5.
+/// The preview protocol. Version 6.
 ///
 /// Whole messages on a `lipc::Channel`, bulk in sealed memfds. The bytes are little-endian and
 /// carry no padding, so a reader does not depend on the writer's struct layout.
@@ -29,7 +29,7 @@ namespace lcomp {
 ///            on refresh; Ack alone means no document, capture or size change.
 ///   Quit     u8 kind. The renderer exits.
 ///   Frame    u8 kind, 26-byte canvas id, u32 width, u32 height, u32 stride, u8 status,
-///            u32 gap count, u64 cumulative render ns, u64 completed frames,
+///            u32 gap count, u64 cumulative render ns, u64 completed frames, u64 missed render budgets,
 ///            u32 canvas fps numerator, u32 denominator. The first frame for a canvas, and any frame whose size changed,
 ///            carries one memfd of tightly packed straight sRGB8. Later frames of the same
 ///            size reuse it: the client copies on receipt, and it does not send another
@@ -44,7 +44,7 @@ namespace lcomp {
 ///
 /// An empty payload cannot be sent (ADR-0026), and every message here starts with its kind, so
 /// none of them are empty.
-inline constexpr std::uint16_t kPreviewProtocol = 5;
+inline constexpr std::uint16_t kPreviewProtocol = 6;
 
 struct AudioLevel {
     ldoc::Id node;
@@ -63,6 +63,7 @@ struct PreviewFrame {
     std::uint32_t gaps = 0;
     std::uint64_t render_ns = 0;
     std::uint64_t rendered_frames = 0;
+    std::uint64_t render_lag_frames = 0;
     std::uint32_t fps_num = 0;
     std::uint32_t fps_den = 0;
     std::vector<std::uint8_t> pixels;

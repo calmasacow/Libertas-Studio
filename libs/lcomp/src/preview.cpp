@@ -220,6 +220,7 @@ send_frame(lipc::Channel& channel, const ldoc::Id& canvas, const Picture& pictur
     append_u32(payload, static_cast<std::uint32_t>(picture.gaps.size()));
     append_u64(payload, picture.render_ns);
     append_u64(payload, picture.rendered_frames);
+    append_u64(payload, picture.render_lag_frames);
     append_u32(payload, picture.fps_num);
     append_u32(payload, picture.fps_den);
 
@@ -440,9 +441,10 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
     if (!take_u32(payload, at, gaps))
         return std::unexpected(std::string{"a frame's gap count was cut short"});
     PreviewEvent event;
-    std::uint64_t render_ns = 0, rendered_frames = 0;
+    std::uint64_t render_ns = 0, rendered_frames = 0, render_lag_frames = 0;
     std::uint32_t fps_num = 0, fps_den = 0;
     if (!take_u64(payload, at, render_ns) || !take_u64(payload, at, rendered_frames) ||
+        !take_u64(payload, at, render_lag_frames) ||
         !take_u32(payload, at, fps_num) || !take_u32(payload, at, fps_den) ||
         at != payload.size())
         return std::unexpected(std::string{"a frame's render statistics were cut short or malformed"});
@@ -459,6 +461,7 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
     event.frame.gaps = gaps;
     event.frame.render_ns = render_ns;
     event.frame.rendered_frames = rendered_frames;
+    event.frame.render_lag_frames = render_lag_frames;
     event.frame.fps_num = fps_num;
     event.frame.fps_den = fps_den;
 
@@ -524,7 +527,7 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
     Assembly assembly;
     std::vector<std::pair<ldoc::Id, Slot>> slots;
     struct RenderStats {
-        std::uint64_t ns = 0, frames = 0;
+        std::uint64_t ns = 0, frames = 0, missed = 0;
     };
     std::vector<std::pair<ldoc::Id, RenderStats>> stats;
 
@@ -660,11 +663,18 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
                     found = std::prev(stats.end());
                 }
                 auto& total = found->second;
-                total.ns += static_cast<std::uint64_t>(
+                const auto elapsed = static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(completed - started).count());
+                total.ns += elapsed;
+                if (canvas.fps.valid() && elapsed > 0) {
+                    const auto budgets = std::ceil(static_cast<long double>(elapsed) * canvas.fps.num /
+                                                   (1000000000.0L * canvas.fps.den));
+                    total.missed += static_cast<std::uint64_t>(budgets) - 1;
+                }
                 ++total.frames;
                 picture.render_ns = total.ns;
                 picture.rendered_frames = total.frames;
+                picture.render_lag_frames = total.missed;
                 picture.fps_num = canvas.fps.valid() ? static_cast<std::uint32_t>(canvas.fps.num) : 0;
                 picture.fps_den = canvas.fps.valid() ? static_cast<std::uint32_t>(canvas.fps.den) : 0;
                 if (auto sent = send_frame(channel, canvas.id, picture, slots); !sent)

@@ -54,7 +54,7 @@ struct Preview::Held {
     int width = 0;
     int height = 0;
     std::uint32_t gaps = 0;
-    std::uint64_t render_ns = 0, rendered_frames = 0;
+    std::uint64_t render_ns = 0, rendered_frames = 0, render_lag_frames = 0;
     std::uint32_t fps_num = 0, fps_den = 0;
 };
 
@@ -158,13 +158,11 @@ QVariantMap Preview::renderStats(const QString& canvasId) const {
     const auto& frame = it->second;
     const std::uint64_t frames = frame.rendered_frames - start.frames;
     const std::uint64_t ns = frame.render_ns - start.ns;
-    const auto missed = missed_live_ticks_.find(key);
-    const std::uint64_t missed_count = missed == missed_live_ticks_.end() ? 0 : missed->second;
     return {{QStringLiteral("available"), true},
             {QStringLiteral("frames"), QVariant::fromValue<qulonglong>(frames)},
             {QStringLiteral("renderMs"),
              frames ? static_cast<double>(ns) / static_cast<double>(frames) / 1e6 : 0.0},
-            {QStringLiteral("missed"), QVariant::fromValue<qulonglong>(missed_count - start.missed)},
+            {QStringLiteral("missed"), QVariant::fromValue<qulonglong>(frame.render_lag_frames - start.missed)},
             {QStringLiteral("fps"), frame.fps_den ? static_cast<double>(frame.fps_num) / frame.fps_den : 0.0}};
 }
 
@@ -175,13 +173,12 @@ void Preview::resetStats() {
         for (const auto& canvas : latest_.canvases) {
             const QString key = QString::fromStdString(canvas.id.to_string());
             const auto frame_it = state_->frames.find(key);
-            const auto missed_it = missed_live_ticks_.find(key);
             const std::uint64_t ns = frame_it == state_->frames.end() ? 0 : frame_it->second.render_ns;
             const std::uint64_t frames =
                 frame_it == state_->frames.end() ? 0 : frame_it->second.rendered_frames;
             render_baselines_.insert_or_assign(
                 key, RenderBaseline{ns, frames,
-                                    missed_it == missed_live_ticks_.end() ? 0 : missed_it->second});
+                                    frame_it == state_->frames.end() ? 0 : frame_it->second.render_lag_frames});
         }
     }
     emit changed();
@@ -269,11 +266,8 @@ void Preview::setLive(bool live, ldoc::Fps rate) {
 void Preview::tick() {
     if (!link_ || !link_->alive)
         return;
-    if (link_->in_flight) {
-        for (const auto& canvas : latest_.canvases)
-            ++missed_live_ticks_[QString::fromStdString(canvas.id.to_string())];
+    if (link_->in_flight)
         return;
-    }
     if (latest_.canvases.empty())
         return;
     link_->refresh_only = true;
@@ -421,6 +415,7 @@ void Preview::on_readable() {
             held.gaps = got.frame.gaps;
             held.render_ns = got.frame.render_ns;
             held.rendered_frames = got.frame.rendered_frames;
+            held.render_lag_frames = got.frame.render_lag_frames;
             held.fps_num = got.frame.fps_num;
             held.fps_den = got.frame.fps_den;
             held.image = image_from(got.frame);

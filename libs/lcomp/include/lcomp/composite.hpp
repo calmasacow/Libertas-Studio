@@ -96,6 +96,7 @@ struct Picture {
     std::vector<Gap> gaps;
     std::uint64_t render_ns = 0;
     std::uint64_t rendered_frames = 0;
+    std::uint64_t render_lag_frames = 0;
     std::uint32_t fps_num = 0;
     std::uint32_t fps_den = 0;
 };
