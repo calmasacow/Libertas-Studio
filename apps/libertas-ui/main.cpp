@@ -2871,6 +2871,52 @@ int main(int argc, char** argv) {
             report(!refusal.isEmpty(), "and routing one says so rather than failing quietly");
         }
 
+        // Broadcast Stats must follow renderer notifications even with no encoding engine.
+        {
+            workspace.openPanel(QStringLiteral("broadcast-stats"));
+            workspace.activate(QStringLiteral("broadcast-stats"));
+            settle();
+            const auto stat = [&](const char* name) -> QQuickItem* {
+                for (auto* item : collect(window->contentItem(), QString::fromLatin1(name)))
+                    if (item->isVisible()) return item;
+                return nullptr;
+            };
+            auto* target = stat("canvasTargetFps");
+            auto* duration = stat("canvasRenderTime");
+            auto* renderedFrames = stat("canvasRenderedFrames");
+            auto* missed = stat("canvasMissedFrames");
+            auto* reset = stat("resetRenderStats");
+            report(target && duration && renderedFrames && missed && reset,
+                   "Broadcast Stats exposes all four render values and reset without encoding");
+            if (target && duration && renderedFrames && missed && reset) {
+                const auto canvasId = document.canvasIds().front();
+                document.setCanvasFps(canvasId, 30, 1);
+                for (int i = 0; i < 50; ++i) {
+                    pump(40);
+                    if (preview.renderStats(canvasId).value("fps").toDouble() == 30.0) break;
+                }
+                const auto measured = preview.renderStats(canvasId);
+                report(target->property("value").toString() == "30.0" &&
+                           renderedFrames->property("value").toULongLong() == measured.value("frames").toULongLong() &&
+                           measured.value("frames").toULongLong() > 0 &&
+                           duration->property("value").toString() ==
+                               QString::number(measured.value("renderMs").toDouble(), 'f', 2) + " ms" &&
+                           missed->property("value").toULongLong() == measured.value("missed").toULongLong(),
+                       "visible render stats follow a real renderer frame while encoding is idle");
+                const auto at = reset->mapToScene(QPointF(reset->width()/2, reset->height()/2));
+                post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                settle();
+                report(renderedFrames->property("value").toString() == "0" &&
+                           missed->property("value").toString() == "0" &&
+                           duration->property("value").toString() == "0.00 ms" &&
+                           target->property("value").toString() == "30.0",
+                       "Broadcast Stats reset immediately displays zeros and keeps canvas target FPS");
+                document.undo();
+                settle();
+            }
+        }
+
         // ---- machine telemetry ------------------------------------------------------------
         //
         // The half of the broadcast statistics that is real today. What matters here is not the

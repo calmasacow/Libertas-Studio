@@ -158,11 +158,16 @@ Item {
             Repeater {
                 model: Document.canvases
                 delegate: Column {
+                    id: canvasStats
                     required property string canvasId
                     required property string name
-                    readonly property var stats: {
-                        Preview.generation
-                        return Preview.renderStats(canvasId)
+                    required property double fps
+                    property var stats: Preview.renderStats(canvasId)
+                    Connections {
+                        target: Preview
+                        function onChanged() {
+                            canvasStats.stats = Preview.renderStats(canvasStats.canvasId);
+                        }
                     }
                     width: body.width
                     spacing: 1
@@ -175,23 +180,26 @@ Item {
                         topPadding: 5
                     }
                     StatRow {
+                        objectName: "canvasTargetFps"
                         width: parent.width
                         label: qsTr("Canvas target FPS")
-                        value: stats.available && stats.fps > 0
-                            ? stats.fps.toFixed(1) : panel.unavailable
+                        value: canvasStats.fps.toFixed(1)
                     }
                     StatRow {
+                        objectName: "canvasRenderTime"
                         width: parent.width
                         label: qsTr("Average time to render frame")
-                        value: stats.available && stats.frames > 0
+                        value: stats.available
                             ? stats.renderMs.toFixed(2) + " ms" : panel.unavailable
                     }
                     StatRow {
+                        objectName: "canvasRenderedFrames"
                         width: parent.width
                         label: qsTr("Frames rendered since reset")
                         value: stats.available ? stats.frames : panel.unavailable
                     }
                     StatRow {
+                        objectName: "canvasMissedFrames"
                         width: parent.width
                         label: qsTr("Frames missed due to rendering lag")
                         value: stats.available ? stats.missed : panel.unavailable
@@ -414,6 +422,7 @@ Item {
         }
 
         ToolButton {
+            objectName: "resetRenderStats"
             anchors.right: parent.right
             anchors.rightMargin: 6
             anchors.verticalCenter: parent.verticalCenter
