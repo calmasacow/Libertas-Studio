@@ -4,6 +4,24 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## OBS canvas membership, 2026-10-20
+
+ADR-0061 preserves extra OBS canvas identities and scene membership, using native
+canvases instead of flattening/renaming their scenes. Consistent saved custom scene
+sizes supply extra canvas geometry; missing geometry explicitly warns and uses the
+supplied Main dimensions on a separate canvas. Conflicting or oversized geometry
+is refused before writing. FPS inherits the operator-supplied rate with a report.
+Each extra canvas gets its own deck, initialized to its first scene with a warning
+because OBS canvas metadata does not save active scenes here.
+
+A temporary Marathon reimport creates Main at 2560x1440, Aitum Vertical at 1080x1920
+and Vertical at 2560x1440 with an explicit missing-geometry warning. The operator's
+existing collection remains unchanged. Import checks save/reopen and render both
+canvas paths, preserve source identity and verify independent Program selection.
+Extra-canvas OBS export still uses the previously reported custom-size-scene
+approximation and is separate follow-up work. Validation: warning-free `-Werror`
+build and all 29 tests passed with GPU and monitoring checks enabled.
+
 ## Audio monitoring output, 2026-10-20
 
 ADR-0060 adds an Audio Mixer footer selector for None, System default and discovered
@@ -18,7 +36,8 @@ The UI check clicks System default and None in a project containing only colors,
 checks save/undo/redo and rejects unknown identities. An opt-in real-renderer audio
 check (`LIBERTAS_TEST_MONITOR=1`) sends a media tone through two private null sinks,
 verifies output switching and None, and rejects a missing output. It never routes
-its test tone to the operator's speakers.
+its test tone to the operator's speakers. Validation: warning-free `-Werror` build
+and all 29 tests passed with GPU and monitoring checks enabled.
 
 ## Seven blend modes, 2026-10-20
 
@@ -31,7 +50,8 @@ with opacity applied once. Blended sources retain canvas transform handles.
 Native alpha uses source-over coverage in scene-linear RGB. OBS fixed-function
 blending can differ for transparent layers, so conversion reports state this limit.
 Unimplemented blend/effect combinations still report gaps. Real scene tests cover
-all modes, alpha, opacity, transformed/nested groups, and OBS round trips. The UI
+all modes, alpha, opacity, transformed/nested groups, and OBS round trips. Validation:
+warning-free `-Werror` build and all 29 tests passed with GPU checks enabled. The UI
 check clicks each Properties option and verifies actual renderer pixels and handles.
 
 ## Follow-up: plugin support and OBS porting

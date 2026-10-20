@@ -88,6 +88,68 @@ struct Converter {
     std::map<std::string, std::size_t> uuids;
     std::map<std::string, std::vector<std::size_t>> names;
     std::size_t item_count = 0;
+    std::map<std::string, std::size_t> canvas_indices;
+
+    std::size_t canvas_index(const Entry& e) const {
+        const auto uuid = str(e.original, "canvas_uuid");
+        const auto found = canvas_indices.find(uuid);
+        return found == canvas_indices.end() ? 0 : found->second;
+    }
+
+    void canvases(const J& root) {
+        std::map<std::string, std::string> labels;
+        if (root.isMember("canvases") && !root["canvases"].isArray())
+            throw std::runtime_error("canvases must be an array");
+        for (const auto& canvas : root["canvases"]) {
+            const auto& info = canvas["info"];
+            const auto uuid = str(info, "uuid");
+            if (uuid == "6c69626f-6273-4c00-9d88-c5136d61696e")
+                continue;
+            if (uuid.empty() || !labels.emplace(uuid, str(info, "name", uuid)).second)
+                throw std::runtime_error("missing or duplicate OBS canvas UUID");
+        }
+        for (const auto& e : entries) {
+            const auto uuid = str(e.original, "canvas_uuid");
+            if (uuid.empty() || uuid == "6c69626f-6273-4c00-9d88-c5136d61696e")
+                continue;
+            labels.try_emplace(uuid, "OBS canvas " + uuid);
+        }
+        if (labels.size() > 64)
+            throw std::runtime_error("too many OBS canvases");
+        for (const auto& [uuid, name] : labels) {
+            std::optional<std::pair<int, int>> dimensions;
+            for (const auto& e : entries) {
+                if (e.type != "scene" || str(e.original, "canvas_uuid") != uuid)
+                    continue;
+                const auto& settings = e.original["settings"];
+                if (!flag(settings, "custom_size"))
+                    continue;
+                const auto size = std::pair{integer(settings, "cx", 0, 1, 8192),
+                                            integer(settings, "cy", 0, 1, 8192)};
+                if (static_cast<std::int64_t>(size.first) * size.second > 33554432)
+                    throw std::runtime_error(name + ": canvas exceeds 32M pixels");
+                if (dimensions && dimensions != size)
+                    throw std::runtime_error(
+                        name +
+                        ": conflicting scene dimensions; choose canvas geometry before import");
+                dimensions = size;
+            }
+            auto canvas = result.project.canvases.front();
+            canvas.id = ldoc::Id::generate();
+            canvas.name = name;
+            canvas.emergency_scene.reset();
+            if (dimensions) {
+                canvas.width = dimensions->first;
+                canvas.height = dimensions->second;
+            } else {
+                result.warnings.push_back(name + ": canvas dimensions absent; separate canvas uses "
+                                                 "supplied Main dimensions; review geometry");
+            }
+            result.warnings.push_back(name + ": canvas FPS inherits operator-supplied Main rate");
+            canvas_indices[uuid] = result.project.canvases.size();
+            result.project.canvases.push_back(std::move(canvas));
+        }
+    }
 
     void warn(const Entry& e, std::string message) {
         result.warnings.push_back(e.name + ": " + message);
@@ -180,7 +242,7 @@ struct Converter {
 
     void source(Entry& e) {
         const auto& s = e.original["settings"];
-        const auto& canvas = result.project.canvases.front();
+        const auto& canvas = result.project.canvases[canvas_index(e)];
         e.size = {static_cast<double>(canvas.width), static_cast<double>(canvas.height)};
         if (e.scene) {
             if (flag(s, "custom_size") || e.type == "group") {
@@ -548,6 +610,7 @@ struct Converter {
                                 "AuxAudioDevice2", "AuxAudioDevice3", "AuxAudioDevice4"})
             if (root.isMember(key) && !root[key].isNull())
                 add(root[key], true);
+        canvases(root);
         for (auto& e : entries) {
             source(e);
             if (!e.original["filters"].empty())
@@ -604,13 +667,7 @@ struct Converter {
             ldoc::Scene scene;
             scene.id = e.id;
             scene.name = e.name;
-            const auto old_canvas = str(e.original, "canvas_uuid");
-            if (!old_canvas.empty() && old_canvas != "6c69626f-6273-4c00-9d88-c5136d61696e") {
-                scene.name += " (OBS canvas " + old_canvas + ")";
-                warn(e, "extra-canvas scene imported onto main canvas; review dimensions and "
-                        "placement");
-            }
-            scene.canvas = result.project.canvases.front().id;
+            scene.canvas = result.project.canvases[canvas_index(e)].id;
             const auto& items = e.original["settings"]["items"];
             for (auto it = items.end(); it != items.begin();) {
                 --it;
@@ -639,12 +696,30 @@ struct Converter {
         };
         deck.program_scene = select(str(root, "current_program_scene", str(root, "current_scene")));
         deck.preview_scene = select(str(root, "current_scene"));
+        for (std::size_t i = 1; i < result.project.canvases.size(); ++i) {
+            const auto& canvas = result.project.canvases[i];
+            ldoc::Deck extra;
+            extra.id = ldoc::Id::generate();
+            extra.name = canvas.name;
+            extra.canvas = canvas.id;
+            for (const auto index : order) {
+                const auto& e = entries[index];
+                if (e.type == "scene" && canvas_index(e) == i) {
+                    extra.program_scene = extra.preview_scene = e.id;
+                    result.warnings.push_back(
+                        canvas.name + ": active scene absent; initialized Program/Preview to " +
+                        e.name);
+                    break;
+                }
+            }
+            result.project.decks.push_back(std::move(extra));
+        }
         result.warnings.push_back("OBS track 1 maps to Program; tracks 2-6 are separate buses. "
                                   "Verify active stream/recording tracks in the OBS profile.");
         result.warnings.push_back("Shared audio placements, including nested scenes with global "
                                   "audio, can sum more than once; review routes before use.");
         result.warnings.push_back(
-            "Transitions use Cut. Hotkeys, outputs, plugins, extra canvases and unmapped source "
+            "Transitions use Cut. Hotkeys, outputs, plugins and unmapped source "
             "options are retained only in obs-original.json.");
     }
 };
@@ -694,10 +769,11 @@ import_obs(const fs::path& collection, const fs::path& destination, const ObsOpt
         canvas.height = options.height;
         canvas.fps = options.fps;
         converter.run(root);
-        std::string report = "# OBS Import Report\n\nCanvas: " + std::to_string(canvas.width) +
-                             "x" + std::to_string(canvas.height) + " at " +
-                             std::to_string(canvas.fps.num) + "/" + std::to_string(canvas.fps.den) +
-                             " fps (operator supplied).\n\n";
+        const auto& main_canvas = converter.result.project.canvases.front();
+        std::string report = "# OBS Import Report\n\nCanvas: " + std::to_string(main_canvas.width) +
+                             "x" + std::to_string(main_canvas.height) + " at " +
+                             std::to_string(main_canvas.fps.num) + "/" +
+                             std::to_string(main_canvas.fps.den) + " fps (operator supplied).\n\n";
         for (const auto& warning : converter.result.warnings)
             report += "- " + warning + "\n";
         // Atomic reservation refuses existing directories and dangling symlinks, including races.

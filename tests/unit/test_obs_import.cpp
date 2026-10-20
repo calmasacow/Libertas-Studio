@@ -226,7 +226,67 @@ LTEST_CASE(import_resolves_main_scene_name_against_its_obs_canvas) {
     const auto& p = converted->project;
     CHECK_EQ(p.scenes.size(), 2u);
     CHECK_EQ(p.decks[0].program_scene, std::optional(p.scenes[0].id));
-    CHECK(p.scenes[1].name.find("another-canvas") != std::string::npos);
+    CHECK_EQ(p.scenes[1].name, std::string("Show"));
+    REQUIRE(p.canvases.size() == 2);
+    CHECK_EQ(p.scenes[1].canvas, p.canvases[1].id);
+    CHECK_EQ(p.decks[1].program_scene, std::optional(p.scenes[1].id));
+}
+
+LTEST_CASE(import_builds_independent_vertical_canvas_and_preserves_shared_sources) {
+    Scratch scratch;
+    auto root = collection();
+    J canvas;
+    canvas["info"]["uuid"] = "portrait";
+    canvas["info"]["name"] = "Aitum Vertical";
+    root["canvases"].append(canvas);
+    auto vertical = source("Portrait scene", "scene", "portrait-scene");
+    vertical["canvas_uuid"] = "portrait";
+    vertical["settings"]["custom_size"] = true;
+    vertical["settings"]["cx"] = 2;
+    vertical["settings"]["cy"] = 6;
+    vertical["settings"]["items"].append(item("red", "red"));
+    root["sources"].append(vertical);
+    scratch.write(root);
+    auto imported = scratch.convert();
+    REQUIRE_MSG(imported, "{}", imported.error());
+    const auto reopened = ldoc::open_project(scratch.output);
+    REQUIRE_MSG(reopened, "{}", reopened.error());
+    const auto& p = reopened->project;
+    REQUIRE(p.canvases.size() == 2);
+    CHECK_EQ(p.canvases[1].name, std::string("Aitum Vertical"));
+    CHECK_EQ(p.canvases[1].width, 2);
+    CHECK_EQ(p.canvases[1].height, 6);
+    CHECK_EQ(p.canvases[1].fps, p.canvases[0].fps);
+    CHECK_EQ(p.scenes.back().canvas, p.canvases[1].id);
+    CHECK_EQ(std::get<ldoc::SourceData>(p.scenes.back().roots[0].data).source,
+             std::get<ldoc::SourceData>(p.scenes[0].roots.back().data).source);
+    const auto portrait = lcomp::composite_canvas(p, p.canvases[1].id);
+    CHECK_EQ(portrait.width, 2);
+    CHECK_EQ(portrait.height, 6);
+    CHECK(portrait.gaps.empty());
+    CHECK(pixel(portrait, 1, 1) == (std::array<int, 3>{255, 0, 0}));
+    CHECK(pixel(portrait, 1, 5) == (std::array<int, 3>{0, 0, 0}));
+    const auto main = lcomp::composite_canvas(p, p.canvases[0].id);
+    CHECK(pixel(main, 1, 1) == (std::array<int, 3>{0, 255, 0}));
+}
+
+LTEST_CASE(import_refuses_conflicting_and_oversized_extra_canvas_geometry) {
+    for (const bool oversized : {false, true}) {
+        Scratch scratch;
+        auto root = collection();
+        for (int i = 0; i < 2; ++i) {
+            const auto name = "portrait" + std::to_string(i);
+            auto scene = source(name.c_str(), "scene", name.c_str());
+            scene["canvas_uuid"] = "portrait";
+            scene["settings"]["custom_size"] = true;
+            scene["settings"]["cx"] = oversized ? 8192 : 2 + i;
+            scene["settings"]["cy"] = oversized ? 8192 : 6;
+            root["sources"].append(scene);
+        }
+        scratch.write(root);
+        CHECK(!scratch.convert());
+        CHECK(!fs::exists(scratch.output));
+    }
 }
 
 LTEST_CASE(import_maps_sources_and_preserves_global_audio_settings) {
