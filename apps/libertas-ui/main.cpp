@@ -1489,6 +1489,32 @@ int main(int argc, char** argv) {
                 settle();
                 report(panels.front()->isVisible(), "and visible once a source is handed to it");
 
+                const auto names = collect(panels.front(), QStringLiteral("sourceNameField"));
+                const auto inputs = names.isEmpty() ? QList<QQuickItem*>{}
+                    : collect(names.front(), QStringLiteral("textLineInput"));
+                const auto buttons = collect(panels.front(), QStringLiteral("sourceSettingsOkButton"));
+                report(!inputs.isEmpty() && !buttons.isEmpty(), "source name and OK are editable");
+                if (!inputs.isEmpty() && !buttons.isEmpty()) {
+                    inputs.front()->forceActiveFocus();
+                    QKeyEvent select_all{QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier};
+                    QCoreApplication::sendEvent(window, &select_all);
+                    QKeyEvent type_name{QEvent::KeyPress, 0, Qt::NoModifier,
+                                        QStringLiteral("Elgato Audio")};
+                    QCoreApplication::sendEvent(window, &type_name);
+                    const QPointF at = buttons.front()->mapToScene(
+                        QPointF(buttons.front()->width() / 2, buttons.front()->height() / 2));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    report(document.sourceDetails(browser_id).value("name").toString() ==
+                               QStringLiteral("Elgato Audio"),
+                           "typing a source name then clicking OK saves it without leaving the field");
+                    document.undo();
+                    QMetaObject::invokeMethod(panels.front(), "open",
+                                              Q_ARG(QVariant, QVariant{browser_id}));
+                    settle();
+                }
+
                 int expected = 0;
                 for (const QVariant& v : document.sourceSettingsSchema(
                          QStringLiteral("source.browser")))

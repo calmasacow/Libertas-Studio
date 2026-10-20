@@ -356,6 +356,7 @@ Item {
                     labelWidth: 150
                     labelAlign: Text.AlignRight
                     value: dialog.pendingName
+                    commitOnEdit: true
                     onCommitted: newValue => dialog.pendingName = newValue
                 }
 

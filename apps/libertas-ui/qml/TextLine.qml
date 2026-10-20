@@ -23,6 +23,7 @@ Item {
     property string value: ""
     property string placeholder: ""
     property bool browsable: false
+    property bool commitOnEdit: false
 
     signal committed(string newValue)
     signal browseRequested
@@ -111,6 +112,7 @@ Item {
 
         TextInput {
             id: input
+            objectName: "textLineInput"
 
             anchors.fill: parent
             anchors.leftMargin: 5
@@ -130,6 +132,7 @@ Item {
                 if (text !== field.value)
                     field.committed(text);
             }
+            onTextEdited: if (field.commitOnEdit) field.committed(text)
             Keys.onEscapePressed: {
                 text = field.value;
                 focus = false;
