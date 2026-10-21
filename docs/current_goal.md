@@ -4,6 +4,14 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Text font selector, 2026-10-21
+
+Text source settings now list installed font families in the existing dropdown
+control. The stored `font` setting and `Sans` default remain compatible with
+existing sources and OBS imports. GUI checks click an installed font, save it and
+reopen the dialog to verify the selection persists. Warning-free `-Werror` build;
+all 29 tests passed with GPU and monitoring checks enabled.
+
 ## OBS groups and linked canvas tabs, 2026-10-21
 
 ADR-0064 imports OBS groups as native group nodes inside their scenes, with saved

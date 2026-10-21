@@ -3,26 +3,24 @@
 
 #include "document.hpp"
 
-#include <format>
-
 #include "lcomp/composite.hpp"
 #include "ldoc/command.hpp"
 
-#include <lcapture/screen.hpp>
-#include <lcapture/video.hpp>
-#include <lcapture/audio.hpp>
-#include <lcore/log.hpp>
-
 #include <QElapsedTimer>
+#include <QFontDatabase>
+#include <QImageReader>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QTransform>
-#include <QImageReader>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <format>
 #include <functional>
+#include <lcapture/audio.hpp>
+#include <lcapture/screen.hpp>
+#include <lcapture/video.hpp>
+#include <lcore/log.hpp>
 #include <span>
 
 namespace libertas::ui {
@@ -1727,7 +1725,7 @@ constexpr FieldSpec kImage[] = {
 
 constexpr FieldSpec kText[] = {
     {"text", "Text", "multiline"},
-    {"font", "Font", "text", "Sans"},
+    {"font", "Font", "choice", "Sans"},
     {"size", "Size", "int", "", false, 48, "", "px"},
     {"color", "Colour", "colour", "#ffffff"},
     {"alignment", "Alignment", "choice", "Left", false, 0, "Left|Centre|Right"},
@@ -2309,6 +2307,11 @@ QVariantList Document::sourceSettingsSchema(const QString& type) const {
         }
         const QString choices = QString::fromLatin1(f.choices);
         QStringList options = choices.isEmpty() ? QStringList{} : choices.split(QLatin1Char('|'));
+        if (type == QLatin1String("source.text") && std::string_view{f.key} == "font") {
+            options = QFontDatabase::families();
+            if (!options.contains(QStringLiteral("Sans")))
+                options.prepend(QStringLiteral("Sans"));
+        }
         // The screen field's options are monitors, which no compile-time table can know. Asked
         // when the dialog is opened rather than cached, because a monitor can be plugged in
         // between one opening and the next and a stale list would offer a screen that is gone.

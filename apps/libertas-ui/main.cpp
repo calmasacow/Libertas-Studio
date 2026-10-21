@@ -1299,6 +1299,72 @@ int main(int argc, char** argv) {
         }
 
         {
+            document.addSource(QStringLiteral("Font selector check"),
+                               QStringLiteral("source.text"));
+            const auto source = document.recentSources(1).front().toMap().value("id").toString();
+            const auto dialogs =
+                collect(window->contentItem(), QStringLiteral("sourceSettingsDialog"));
+            report(!dialogs.isEmpty(), "text settings dialog exists");
+            if (!dialogs.isEmpty()) {
+                auto* dialog = dialogs.front();
+                const auto open = [&] {
+                    QMetaObject::invokeMethod(dialog, "open", Q_ARG(QVariant, QVariant{source}));
+                    settle();
+                };
+                const auto click = [&](QQuickItem* item) {
+                    const auto at =
+                        item->mapToScene(QPointF(item->width() * 0.8, item->height() / 2));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                };
+                open();
+                const auto fields = collect(dialog, QStringLiteral("settingInput_font"));
+                report(fields.size() == 1, "text settings expose a font dropdown");
+                QString chosen;
+                if (fields.size() == 1) {
+                    const auto choices = fields.front()->property("choices").toStringList();
+                    report(choices.size() > 1 && choices.contains("Sans"),
+                           "font dropdown includes installed families and the existing default");
+                    click(fields.front());
+                    auto stack = collect(window->contentItem(), QStringLiteral("choicePopup"));
+                    QQuickItem* option = nullptr;
+                    while (!stack.isEmpty()) {
+                        auto* item = stack.takeLast();
+                        const auto value = item->property("modelData").toString();
+                        if (item->isVisible() && item->property("index").toInt() == 1 &&
+                            choices.contains(value) && value != "Sans")
+                            option = item;
+                        stack.append(item->childItems());
+                    }
+                    report(option != nullptr, "font dropdown shows an installed font to select");
+                    if (option) {
+                        chosen = option->property("modelData").toString();
+                        click(option);
+                    }
+                    const auto buttons = collect(dialog, QStringLiteral("sourceSettingsOkButton"));
+                    if (!buttons.isEmpty())
+                        click(buttons.front());
+                    report(!chosen.isEmpty() && document.sourceDetails(source)
+                                                        .value("settings")
+                                                        .toMap()
+                                                        .value("font")
+                                                        .toString() == chosen,
+                           "font dropdown selection saves to the source used by the renderer");
+                    open();
+                    const auto reopened = collect(dialog, QStringLiteral("settingInput_font"));
+                    report(reopened.size() == 1 && reopened.front()->property("value") == chosen,
+                           "reopening text settings retains the selected font");
+                }
+                QMetaObject::invokeMethod(dialog, "close");
+                if (!chosen.isEmpty())
+                    document.undo();
+            }
+            document.undo();
+            settle();
+        }
+
+        {
             document.addSource(QStringLiteral("Capture settings check"), QStringLiteral("source.v4l2"));
             const auto camera = document.recentSources(1).front().toMap().value("id").toString();
             const auto defaults = document.sourceDetails(camera).value("settings").toMap();
