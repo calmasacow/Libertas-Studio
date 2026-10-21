@@ -4,12 +4,28 @@
 #include <chrono>
 #include <cmath>
 #include <deque>
+#include <filesystem>
 #include <lcapture/audio.hpp>
 #include <pulse/pulseaudio.h>
 #include <thread>
 
 namespace libertas::capture {
 namespace {
+std::string physical_device(const std::filesystem::path& device) {
+    std::error_code error;
+    auto path = std::filesystem::canonical(device, error);
+    if (error)
+        return {};
+    for (; path.has_relative_path(); path = path.parent_path()) {
+        if ((std::filesystem::exists(path / "idVendor", error) &&
+             std::filesystem::exists(path / "idProduct", error)) ||
+            (std::filesystem::exists(path / "vendor", error) &&
+             std::filesystem::exists(path / "device", error)))
+            return path.string();
+    }
+    return {};
+}
+
 struct Connection {
     pa_threaded_mainloop* loop = nullptr;
     pa_context* context = nullptr;
@@ -70,9 +86,19 @@ std::vector<AudioDevice> list_audio_devices(std::string& error) {
     auto* operation = pa_context_get_source_info_list(
         connection.context,
         [](pa_context*, const pa_source_info* info, int, void* data) {
-            if (info)
+            if (info) {
+                const char* card = pa_proplist_gets(info->proplist, "api.alsa.card");
+                if (!card)
+                    card = pa_proplist_gets(info->proplist, "alsa.card");
+                const std::string index = card ? card : "";
+                const auto hardware =
+                    !index.empty() && index.find_first_not_of("0123456789") == std::string::npos
+                        ? physical_device("/sys/class/sound/card" + index + "/device")
+                        : "";
                 static_cast<std::vector<AudioDevice>*>(data)->push_back(
-                    {info->name, info->description, info->monitor_of_sink != PA_INVALID_INDEX});
+                    {info->name, info->description, info->monitor_of_sink != PA_INVALID_INDEX,
+                     hardware});
+            }
         },
         &devices);
     pa_threaded_mainloop_unlock(connection.loop);
@@ -94,6 +120,31 @@ std::vector<AudioDevice> list_audio_devices(std::string& error) {
     return devices;
 }
 
+std::string video_audio_device(const std::string& video, std::string& error) {
+    std::error_code ec;
+    const auto path = std::filesystem::canonical(video, ec);
+    const auto hardware = ec ? ""
+                             : physical_device(std::filesystem::path("/sys/class/video4linux") /
+                                               path.filename() / "device");
+    if (hardware.empty()) {
+        error = "video device has no physical identity for audio matching";
+        return {};
+    }
+    std::string match;
+    for (const auto& input : list_audio_devices(error)) {
+        if (input.monitor || input.hardware_path != hardware)
+            continue;
+        if (!match.empty()) {
+            error = "multiple audio inputs match video device; select one explicitly";
+            return {};
+        }
+        match = input.id;
+    }
+    if (match.empty() && error.empty())
+        error = "no audio input matches video device";
+    return match;
+}
+
 std::vector<AudioDevice> list_audio_sinks(std::string& error) {
     Connection connection;
     if (!connection.connect(error))
@@ -105,7 +156,7 @@ std::vector<AudioDevice> list_audio_sinks(std::string& error) {
         [](pa_context*, const pa_sink_info* info, int, void* data) {
             if (info)
                 static_cast<std::vector<AudioDevice>*>(data)->push_back(
-                    {info->name, info->description, false});
+                    {info->name, info->description, false, {}});
         },
         &devices);
     pa_threaded_mainloop_unlock(connection.loop);
@@ -131,6 +182,7 @@ struct AudioCapture::State {
     Connection connection;
     pa_stream* stream = nullptr;
     Callback callback;
+    bool verified = false;
 
     ~State() {
         if (stream) {
@@ -307,7 +359,20 @@ void AudioMonitor::write(std::span<const float> samples) {
 }
 
 std::unique_ptr<AudioCapture> AudioCapture::open(const std::string& device, bool output,
-                                                 Callback callback, std::string& error) {
+                                                 Callback callback, std::string& error,
+                                                 bool exact_device) {
+    if (device.size() > 1024 || device.find('\0') != std::string::npos) {
+        error = "invalid audio device identity";
+        return {};
+    }
+    if (exact_device) {
+        const auto inputs = list_audio_devices(error);
+        if (device.empty() || device == "default" ||
+            std::ranges::none_of(inputs, [&](const auto& input) { return input.id == device; })) {
+            error = "selected capture audio input is unavailable";
+            return {};
+        }
+    }
     auto state = std::make_unique<State>();
     if (!state->connection.connect(error))
         return {};
@@ -332,7 +397,7 @@ std::unique_ptr<AudioCapture> AudioCapture::open(const std::string& device, bool
                 self.callback({});
                 return;
             }
-            if (data && size % (2 * sizeof(float)) == 0 && size <= 1024 * 1024)
+            if (self.verified && data && size % (2 * sizeof(float)) == 0 && size <= 1024 * 1024)
                 self.callback({static_cast<const float*>(data), size / sizeof(float)});
             if (size)
                 pa_stream_drop(stream);
@@ -352,13 +417,30 @@ std::unique_ptr<AudioCapture> AudioCapture::open(const std::string& device, bool
     pa_buffer_attr attr{static_cast<std::uint32_t>(-1), static_cast<std::uint32_t>(-1),
                         static_cast<std::uint32_t>(-1), static_cast<std::uint32_t>(-1),
                         480 * 2 * sizeof(float)};
-    const int connected =
-        pa_stream_connect_record(state->stream, name.c_str(), &attr, PA_STREAM_ADJUST_LATENCY);
+    const int connected = pa_stream_connect_record(
+        state->stream, name.c_str(), &attr,
+        static_cast<pa_stream_flags_t>(PA_STREAM_ADJUST_LATENCY |
+                                       (exact_device ? PA_STREAM_DONT_MOVE : 0)));
     pa_threaded_mainloop_unlock(connection.loop);
     if (connected < 0 ||
         !connection.wait([&] { return pa_stream_get_state(state->stream) == PA_STREAM_READY; })) {
         error = "cannot open selected audio device";
         return {};
+    }
+    if (exact_device) {
+        pa_threaded_mainloop_lock(connection.loop);
+        const char* actual = pa_stream_get_device_name(state->stream);
+        const bool matches = actual && device == actual;
+        state->verified = matches;
+        pa_threaded_mainloop_unlock(connection.loop);
+        if (!matches) {
+            error = "audio server substituted a different capture input";
+            return {};
+        }
+    } else {
+        pa_threaded_mainloop_lock(connection.loop);
+        state->verified = true;
+        pa_threaded_mainloop_unlock(connection.loop);
     }
     return std::unique_ptr<AudioCapture>(new AudioCapture(std::move(state)));
 }

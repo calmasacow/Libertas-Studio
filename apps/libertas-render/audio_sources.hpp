@@ -43,21 +43,51 @@ class AudioSources {
 
         explicit Session(const ldoc::Source& src)
             : source(src), thread([this](std::stop_token stop) {
-                  if (source.type != "source.audio-input" && source.type != "source.audio-output")
+                  if (source.type != "source.audio-input" && source.type != "source.audio-output" &&
+                      source.type != "source.v4l2")
                       return;
+                  const bool video = source.type == "source.v4l2";
                   std::string device = "default", error;
-                  if (auto it = source.settings.find("device"); it != source.settings.end())
+                  if (auto it = source.settings.find(video ? "audioDevice" : "device");
+                      it != source.settings.end())
                       if (auto value = std::get_if<std::string>(&it->second))
                           device = *value;
-                  auto capture = libertas::capture::AudioCapture::open(
-                      device, source.type == "source.audio-output",
-                      [this](std::span<const float> samples) { ingest(samples); }, error);
-                  if (!capture) {
-                      lc::warn("audio {}: {}", source.name, error);
-                      return;
+                  while (!stop.stop_requested()) {
+                      error.clear();
+                      std::string selected = device;
+                      if (video && device == "default") {
+                          const auto it = source.settings.find("device");
+                          const auto* path = it == source.settings.end()
+                                                 ? nullptr
+                                                 : std::get_if<std::string>(&it->second);
+                          selected =
+                              libertas::capture::video_audio_device(path ? *path : "", error);
+                      }
+                      std::unique_ptr<libertas::capture::AudioCapture> capture;
+                      if (!video || !selected.empty())
+                          capture = libertas::capture::AudioCapture::open(
+                              selected, source.type == "source.audio-output",
+                              [this](std::span<const float> samples) { ingest(samples); }, error,
+                              video);
+                      if (!capture) {
+                          lc::warn("audio {}: {}", source.name, error);
+                          if (!video)
+                              return;
+                          for (int i = 0; i < 150 && !stop.stop_requested(); ++i)
+                              std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                          continue;
+                      }
+                      const auto opened = std::chrono::steady_clock::now();
+                      while (!stop.stop_requested()) {
+                          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                          if (video) {
+                              std::lock_guard lock(mu);
+                              if (std::chrono::steady_clock::now() - std::max(opened, received) >
+                                  std::chrono::seconds(3))
+                                  break;
+                          }
+                      }
                   }
-                  while (!stop.stop_requested())
-                      std::this_thread::sleep_for(std::chrono::milliseconds(20));
               }) {}
 
         ~Session() {
@@ -260,6 +290,33 @@ class AudioSources {
         std::vector<lcomp::AudioLevel> result;
         std::vector<Route> routes;
         const ldoc::Scene* owner = nullptr;
+        const auto session_for = [&](const ldoc::Source& source) {
+            wanted.insert(source.id);
+            auto& session = sessions_[source.id];
+            const auto setting = [](const ldoc::Source& src, const char* key) {
+                const auto it = src.settings.find(key);
+                return it == src.settings.end() ? ldoc::ParamValue{} : it->second;
+            };
+            if (session &&
+                (session->source.type != source.type ||
+                 (source.type == "source.v4l2"
+                      ? setting(session->source, "audioDevice") != setting(source, "audioDevice") ||
+                            setting(session->source, "device") != setting(source, "device")
+                      : session->source.settings != source.settings)))
+                session.reset();
+            if (!session)
+                session = std::make_shared<Session>(source);
+            return session;
+        };
+        for (const auto& source : project.sources) {
+            if (source.type != "source.v4l2" || !ldoc::has_audio(source))
+                continue;
+            const auto it = source.settings.find("deactivateWhenHidden");
+            const auto* deactivate =
+                it == source.settings.end() ? nullptr : std::get_if<bool>(&it->second);
+            if (!deactivate || !*deactivate)
+                session_for(source);
+        }
         std::function<void(const std::vector<ldoc::Node>&)> walk;
         walk = [&](const std::vector<ldoc::Node>& nodes) {
             for (const auto& node : nodes) {
@@ -275,19 +332,13 @@ class AudioSources {
                     }
                 } else if (const auto* data = std::get_if<ldoc::SourceData>(&node.data)) {
                     const auto* source = data->source ? project.source(*data->source) : nullptr;
-                    if (!source ||
+                    if (!source || !ldoc::has_audio(*source) ||
                         (source->type != "source.audio-input" &&
                          source->type != "source.audio-output" && source->type != "source.media" &&
                          source->type != "source.playlist" && source->type != "source.blackmagic" &&
-                         source->type != "source.browser"))
+                         source->type != "source.browser" && source->type != "source.v4l2"))
                         continue;
-                    wanted.insert(source->id);
-                    auto& session = sessions_[source->id];
-                    if (session && (session->source.settings != source->settings ||
-                                    session->source.type != source->type))
-                        session.reset();
-                    if (!session)
-                        session = std::make_shared<Session>(*source);
+                    auto session = session_for(*source);
                     auto routing = data->audio;
                     if (owner) if (auto found = owner->audio_overrides.find(node.id); found != owner->audio_overrides.end()) {
                         const auto& change = found->second;

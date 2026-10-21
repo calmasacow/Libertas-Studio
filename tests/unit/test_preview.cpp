@@ -469,6 +469,127 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
     CHECK(!libertas::capture::AudioMonitor::open(error, base + "_missing"));
 }
 
+LTEST_CASE(video_capture_audio_uses_one_source_and_respects_none_and_deletion) {
+    if (!std::getenv("LIBERTAS_TEST_MONITOR"))
+        return;
+    std::string error;
+    const auto name = "libertas_video_audio_" + ldoc::Id::generate().to_string();
+    auto input = libertas::capture::AudioSink::open(name, error);
+    auto other_input = libertas::capture::AudioSink::open(name + "_other", error);
+    auto output = libertas::capture::AudioSink::open(name + "_out", error);
+    REQUIRE_MSG(input && other_input && output, "{}", error);
+    auto tone = libertas::capture::AudioMonitor::open(error, name);
+    auto other_tone = libertas::capture::AudioMonitor::open(error, name + "_other");
+    REQUIRE_MSG(tone && other_tone, "{}", error);
+    std::jthread feed([&](std::stop_token stop) {
+        std::vector<float> block(960, 0.1f);
+        std::vector<float> other_block(960, 0.2f);
+        while (!stop.stop_requested()) {
+            tone->write(block);
+            other_tone->write(other_block);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    });
+    std::mutex mutex;
+    float peak = 0;
+    auto received = libertas::capture::AudioCapture::open(
+        name + "_out.monitor", true,
+        [&](auto samples) {
+            std::lock_guard lock(mutex);
+            for (float sample : samples)
+                peak = std::max(peak, std::abs(sample));
+        },
+        error);
+    REQUIRE(received);
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends);
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child);
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000));
+    auto source = colour_source(0, 0, 0);
+    source.type = "source.v4l2";
+    source.settings["device"] = std::string("/dev/libertas-missing-test-video");
+    source.settings["audioDevice"] = name + ".monitor";
+    auto node = bound_to(source);
+    std::get<ldoc::SourceData>(node.data).audio.monitor = true;
+    ldoc::Scene scene;
+    scene.id = ldoc::Id::generate();
+    auto project = show(scene, {source});
+    std::get<ldoc::SourceData>(node.data).audio.bus = project.buses[0].id;
+    project.settings.extra["audio.monitor.output"] = "sink:" + name + "_out";
+    for (int step = 0; step < 9; ++step) {
+        project.sources = {source};
+        project.scenes[0].roots = {node};
+        if (step == 1)
+            project.sources[0].settings["audioDevice"] = std::string("none");
+        if (step == 2)
+            project.sources[0].settings["audioDevice"] = name + "_missing";
+        if (step == 3)
+            project.sources[0].settings["audioDevice"] = std::string("default");
+        if (step == 4)
+            project.scenes[0].roots[0].visible = false;
+        if (step == 6) {
+            project.sources.clear();
+            project.scenes[0].roots.clear();
+        }
+        if (step == 7)
+            project.sources[0].settings.erase("audioDevice");
+        if (step == 8)
+            project.sources[0].settings["audioDevice"] = name + "_other.monitor";
+        REQUIRE(link.send_project(project));
+        const auto start = std::chrono::steady_clock::now();
+        const auto end = start + std::chrono::milliseconds(1400);
+        bool pending = true, cleared = false, metered = false;
+        while (std::chrono::steady_clock::now() < end) {
+            if (!cleared &&
+                std::chrono::steady_clock::now() - start > std::chrono::milliseconds(600)) {
+                std::lock_guard lock(mutex);
+                peak = 0;
+                metered = false;
+                cleared = true;
+            }
+            auto event = link.receive(50);
+            REQUIRE(event);
+            if (!event->has_value())
+                continue;
+            if ((**event).kind == lcomp::PreviewEvent::Kind::Audio && cleared)
+                for (const auto& level : (**event).audio)
+                    if (level.node == node.id && level.available && level.left > 0.01f)
+                        metered = true;
+            if ((**event).kind == lcomp::PreviewEvent::Kind::Ack) {
+                pending = false;
+                if (std::chrono::steady_clock::now() + std::chrono::milliseconds(100) < end) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    REQUIRE(link.refresh(64));
+                    pending = true;
+                }
+            }
+        }
+        REQUIRE(!pending);
+        const bool audible = step == 0 || step == 5 || step == 8;
+        CHECK_EQ(metered, audible);
+        std::lock_guard lock(mutex);
+        CHECK_EQ(peak > 0.01f, audible);
+        if (step == 8) CHECK(peak > 0.15f);
+    }
+    link.quit();
+    link.close();
+    CHECK_EQ(reap(*child, 3000), 0);
+}
+
+LTEST_CASE(video_audio_default_matches_physical_capture_card) {
+    const char* video = std::getenv("LIBERTAS_TEST_VIDEO_AUDIO");
+    if (!video)
+        return;
+    std::string error;
+    const auto input = libertas::capture::video_audio_device(video, error);
+    REQUIRE_MSG(!input.empty(), "{}", error);
+    const char* expected = std::getenv("LIBERTAS_TEST_VIDEO_AUDIO_EXPECTED");
+    REQUIRE(expected);
+    CHECK_EQ(input, std::string(expected));
+}
+
 LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
     const char* connector = std::getenv("LIBERTAS_TEST_CAPTURE");
     const char* video = std::getenv("LIBERTAS_TEST_VIDEO");

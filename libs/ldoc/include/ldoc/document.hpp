@@ -364,6 +364,7 @@ struct Problem {
 /// is audio on air that cannot be muted. Says nothing about whether a *particular* source is
 /// making sound: a media file with no audio track is still a type that can have one.
 [[nodiscard]] bool has_audio(std::string_view source_type);
+[[nodiscard]] bool has_audio(const Source& source);
 
 /// Why `scene` is unsuitable as an emergency scene, or empty if it is suitable.
 ///

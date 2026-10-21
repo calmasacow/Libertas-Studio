@@ -178,6 +178,9 @@ struct Exporter {
                 src.type == "source.audio-input" ? "pulse_input_capture" : "pulse_output_capture";
             settings["device_id"] = text("device", "default");
         } else if (src.type == "source.v4l2") {
+            if (ldoc::has_audio(src))
+                warn(src.name,
+                     "attached capture audio requires a separate audio input source in OBS");
             type = "v4l2_input";
             settings["device_id"] = text("device");
             settings["buffering"] = flag("buffering", true);

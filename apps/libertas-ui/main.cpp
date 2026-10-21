@@ -1374,6 +1374,73 @@ int main(int argc, char** argv) {
             settle();
         }
 
+        {
+            const int strips = document.mixerStripsModel()->rowCount();
+            document.addSource(QStringLiteral("Combined capture"), QStringLiteral("source.v4l2"));
+            const auto camera = document.recentSources(1).front().toMap().value("id").toString();
+            document.applySourceSettings(camera, {},
+                                         {{"device", "/dev/libertas-missing-test-video"}});
+            document.addExistingSourceToScene(camera, true);
+            settle();
+            report(
+                document.mixerStripsModel()->rowCount() == strips + 1 &&
+                    document.sourceDetails(camera).value("settings").toMap().value("audioDevice") ==
+                        "default",
+                "new video source owns one audio strip with matching-card default");
+            const auto dialogs =
+                collect(window->contentItem(), QStringLiteral("sourceSettingsDialog"));
+            if (!dialogs.isEmpty()) {
+                auto* dialog = dialogs.front();
+                QMetaObject::invokeMethod(dialog, "open", Q_ARG(QVariant, QVariant{camera}));
+                settle();
+                const auto fields = collect(dialog, QStringLiteral("settingInput_audioDevice"));
+                const auto click = [&](QQuickItem* item) {
+                    const auto at =
+                        item->mapToScene(QPointF(item->width() * 0.8, item->height() / 2));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                };
+                report(!fields.isEmpty(), "video settings expose an audio input selector");
+                if (!fields.isEmpty()) {
+                    click(fields.front());
+                    QList<QQuickItem*> stack =
+                        collect(window->contentItem(), QStringLiteral("choicePopup"));
+                    QQuickItem* none = nullptr;
+                    while (!stack.isEmpty()) {
+                        auto* item = stack.takeLast();
+                        if (item->isVisible() && item->property("modelData").toString() == "none")
+                            none = item;
+                        stack.append(item->childItems());
+                    }
+                    report(none != nullptr, "audio input dropdown offers None");
+                    if (none)
+                        click(none);
+                    const auto buttons = collect(dialog, QStringLiteral("sourceSettingsOkButton"));
+                    if (!buttons.isEmpty())
+                        click(buttons.front());
+                    report(document.mixerStripsModel()->rowCount() == strips &&
+                               !document.nodeProperties().value("hasAudio").toBool(),
+                           "selecting None removes the video source mixer strip immediately");
+                    if (document.sourceDetails(camera)
+                            .value("settings")
+                            .toMap()
+                            .value("audioDevice") == "none") {
+                        document.undo();
+                        settle();
+                        report(document.mixerStripsModel()->rowCount() == strips + 1,
+                               "undo restores attached capture audio and its strip");
+                    }
+                }
+                QMetaObject::invokeMethod(dialog, "close");
+            }
+            document.undo();
+            document.undo();
+            document.undo();
+            document.selectNode(browser_node);
+            settle();
+        }
+
         const QVariantMap browser = document.sourceDetails(browser_id);
         report(!browser.isEmpty() && browser.value("typeTitle").toString() ==
                                          QLatin1String("Browser"),

@@ -10,16 +10,19 @@ namespace libertas::capture {
 struct AudioDevice {
     std::string id, name;
     bool monitor = false;
+    std::string hardware_path;
 };
 
 std::vector<AudioDevice> list_audio_devices(std::string& error);
 std::vector<AudioDevice> list_audio_sinks(std::string& error);
+std::string video_audio_device(const std::string& video, std::string& error);
 
 class AudioCapture {
   public:
     using Callback = std::function<void(std::span<const float>)>;
     static std::unique_ptr<AudioCapture> open(const std::string& device, bool output,
-                                              Callback callback, std::string& error);
+                                              Callback callback, std::string& error,
+                                              bool exact_device = false);
     ~AudioCapture();
 
   private:

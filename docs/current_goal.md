@@ -4,6 +4,28 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Combined video capture audio, 2026-10-21
+
+ADR-0063 adds an Audio input selector to Video Capture creation/settings: None,
+Default (matching capture device), and discovered recording inputs. New sources
+default to matching the card through physical USB/PCI identity; missing or ambiguous
+matches remain unavailable, never fall back to the system microphone. Explicit
+inputs are verified before delivering samples and cannot move to another device.
+
+The same source owns video and audio, shares its name and mixer controls, and
+retains capture while off-scene unless deactivation is enabled. None removes its
+mixer strip. New attached audio routes to Program; enabling audio on older sources
+routes unassigned placements in the same undo step. Old sources without the setting
+remain video-only, preserving separate audio inputs. Existing projects are not
+automatically converted; remove redundant standalone input after enabling attached
+audio to avoid doubling. OBS export reports attached audio as a conversion gap.
+
+Validation includes real-renderer private audio sinks for capture, switching, None,
+missing/default-unmatched inputs, hidden placements, deletion and legacy settings;
+UI selector/mixer/undo checks; and read-only Elgato physical-device matching. Full
+suite passes 29/29 with GPU and monitoring checks enabled, warning-free build.
+Independent hardware clock drift and automatic video reconnect remain limitations.
+
 ## OBS canvas membership, 2026-10-20
 
 ADR-0061 preserves extra OBS canvas identities and scene membership, using native

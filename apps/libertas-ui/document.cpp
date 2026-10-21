@@ -720,7 +720,7 @@ QVariantMap Document::nodeProperties() const {
         // is why a colour card offered to be routed to a bus.
         const ldoc::Source* src =
             placed->source ? session_->project().source(*placed->source) : nullptr;
-        m["hasAudio"] = src && ldoc::has_audio(src->type);
+        m["hasAudio"] = src && ldoc::has_audio(*src);
         // What the settings dialog is opened against. Empty when the node is bound to nothing,
         // which is what disables the gear rather than opening an empty panel.
         m["sourceId"] = placed->source ? id_str(*placed->source) : QString{};
@@ -974,7 +974,7 @@ void Document::rebuild() {
             // A node bound to nothing has no type to ask, so it gets no strip. Unbound is a
             // state the Sources panel already reports; a silent fader would say it twice and
             // less clearly.
-            if (!src || !ldoc::has_audio(src->type))
+            if (!src || !ldoc::has_audio(*src))
                 return;
             MixerStripRow row;
             row.id = id_str(n.id);
@@ -1750,9 +1750,14 @@ constexpr FieldSpec kWindow[] = {
 };
 
 constexpr FieldSpec kCamera[] = {
-    {"", "V4L2 video capture. Audio capture and reconnect after unplugging are not available yet.", "note"},
+    {"", "V4L2 video capture. Video reconnect after unplugging is not available yet.", "note"},
     {"deactivateWhenHidden", "Deactivate when not showing", "bool", "", false},
     {"device", "Video device", "choice", ""},
+    {"audioDevice", "Audio input", "choice", "default"},
+    {"",
+     "Default matches this capture card's audio, never the system microphone. None disables audio. "
+     "Remove any separate audio source using the same input to avoid doubling the mix.",
+     "note"},
     {"videoFormat", "Video format", "choice", "Auto", false, 0, "Auto"},
     {"resolution", "Resolution", "choice", "Leave unchanged", false, 0,
      "Leave unchanged|3840x2160|2560x1440|1920x1080|1280x720|960x540|640x480"},
@@ -1760,7 +1765,10 @@ constexpr FieldSpec kCamera[] = {
      "Leave unchanged|60|59.94|50|30|29.97|25|24"},
     {"colourRange", "Colour range", "choice", "Default", false, 0, "Default|Partial|Full"},
     {"buffering", "Use buffering", "bool", "", true},
-    {"", "Buffering reads queued device frames in order. Turn it off to discard older queued frames before conversion.", "note"},
+    {"",
+     "Buffering reads queued device frames in order. Turn it off to discard older queued frames "
+     "before conversion.",
+     "note"},
     {"autoReset", "Autoreset on timeout", "bool", "", false},
     {"timeoutFrames", "Frames until timeout", "int", "", false, 5, "", "frames"},
 };
@@ -2089,6 +2097,12 @@ void Document::addNewSourceToScene(const QString& name, const QString& type, boo
 
     ldoc::Node node = ldoc::make_node(ldoc::NodeKind::Source, src.name);
     node.visible = visible;
+    if (src.type == "source.v4l2" && ldoc::has_audio(src))
+        for (const auto& bus : p.buses)
+            if (bus.kind == ldoc::BusKind::Program) {
+                std::get<ldoc::SourceData>(node.data).audio.bus = bus.id;
+                break;
+            }
     const ldoc::Id node_id = node.id;
 
     Placement where;
@@ -2116,6 +2130,12 @@ void Document::addExistingSourceToScene(const QString& sourceId, bool visible) {
 
     ldoc::Node node = ldoc::make_node(ldoc::NodeKind::Source, existing->name);
     node.visible = visible;
+    if (existing->type == "source.v4l2" && ldoc::has_audio(*existing))
+        for (const auto& bus : session_->project().buses)
+            if (bus.kind == ldoc::BusKind::Program) {
+                std::get<ldoc::SourceData>(node.data).audio.bus = bus.id;
+                break;
+            }
     const ldoc::Id node_id = node.id;
 
     Placement where;
@@ -2296,11 +2316,18 @@ QVariantList Document::sourceSettingsSchema(const QString& type) const {
             }
             m["choiceLabels"] = labels;
         }
-        if (std::string_view{f.key} == "device" &&
-            (type == QLatin1String("source.audio-input") || type == QLatin1String("source.audio-output"))) {
+        if ((std::string_view{f.key} == "device" &&
+             (type == QLatin1String("source.audio-input") ||
+              type == QLatin1String("source.audio-output"))) ||
+            (type == QLatin1String("source.v4l2") && std::string_view{f.key} == "audioDevice")) {
             options = {QStringLiteral("default")};
             QVariantMap labels;
             labels["default"] = QStringLiteral("System default");
+            if (type == QLatin1String("source.v4l2")) {
+                options.prepend(QStringLiteral("none"));
+                labels["none"] = QStringLiteral("None");
+                labels["default"] = QStringLiteral("Default (matching capture device)");
+            }
             std::string error;
             for (const auto& device : libertas::capture::list_audio_devices(error)) {
                 if (device.monitor != (type == QLatin1String("source.audio-output"))) continue;
@@ -2332,7 +2359,11 @@ QVariantMap Document::sourceDetails(const QString& id) const {
             v = stored_as(it->second, f.kind);
         // Absent, or stored as something this field cannot be: either way the default shows,
         // so every field is always editable rather than blank and unexplained.
-        settings[QString::fromLatin1(f.key)] = v.isValid() ? v : default_of(f);
+        settings[QString::fromLatin1(f.key)] =
+            v.isValid() ? v
+                        : (src->type == "source.v4l2" && std::string_view{f.key} == "audioDevice"
+                               ? QVariant{QStringLiteral("none")}
+                               : default_of(f));
     }
     m["settings"] = settings;
     m["fieldCount"] = static_cast<int>(settings.size());
@@ -2349,6 +2380,13 @@ void Document::applySourceSettings(const QString& id, const QString& name,
     }
 
     ldoc::Source copy = *src;
+    if (copy.type == "source.v4l2" && values.contains(QStringLiteral("audioDevice"))) {
+        const auto device = values.value(QStringLiteral("audioDevice")).toString();
+        if (device.isEmpty() || device.size() > 1024 || device.contains(QChar::Null)) {
+            emit notice(QStringLiteral("Invalid capture audio input identity."));
+            return;
+        }
+    }
     if (copy.type == "source.v4l2" && values.contains(QStringLiteral("timeoutFrames"))) {
         bool valid = false;
         const auto text = values.value(QStringLiteral("timeoutFrames")).toString();
@@ -2389,6 +2427,26 @@ void Document::applySourceSettings(const QString& id, const QString& name,
     // is a step the operator has to press Ctrl+Z through later to reach a real one.
     if (copy == *src)
         return;
+    if (copy.type == "source.v4l2" && !ldoc::has_audio(*src) && ldoc::has_audio(copy)) {
+        std::vector<ldoc::Command> steps;
+        for (const auto& bus : session_->project().buses) {
+            if (bus.kind != ldoc::BusKind::Program)
+                continue;
+            for (const auto& scene : session_->project().scenes)
+                ldoc::visit(scene.roots, [&](const ldoc::Node& node) {
+                    const auto* placed = std::get_if<ldoc::SourceData>(&node.data);
+                    if (!placed || placed->source != copy.id || placed->audio.bus)
+                        return;
+                    auto routing = placed->audio;
+                    routing.bus = bus.id;
+                    steps.push_back(ldoc::SetNodeAudio{scene.id, node.id, std::move(routing)});
+                });
+            break;
+        }
+        steps.push_back(ldoc::SetSource{std::move(copy)});
+        run(ldoc::make_batch(std::move(steps), "Enable capture audio"));
+        return;
+    }
     run(ldoc::SetSource{std::move(copy)});
 }
 

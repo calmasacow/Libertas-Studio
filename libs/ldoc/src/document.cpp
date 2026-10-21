@@ -158,6 +158,15 @@ bool has_audio(std::string_view source_type) {
            kSilentSources.end();
 }
 
+bool has_audio(const Source& source) {
+    if (source.type != "source.v4l2")
+        return has_audio(source.type);
+    const auto it = source.settings.find("audioDevice");
+    const auto* device =
+        it == source.settings.end() ? nullptr : std::get_if<std::string>(&it->second);
+    return device && !device->empty() && *device != "none";
+}
+
 std::vector<Problem> check_emergency_scene(const Project& project, const Id& scene_id) {
     std::vector<Problem> out;
     const Scene* scene = project.scene(scene_id);
