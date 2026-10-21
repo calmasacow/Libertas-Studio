@@ -25,6 +25,7 @@ struct Effect {
     std::optional<Id> mask;
     /// How this effect's output combines with its input. Absent means "replace".
     std::optional<Blend> blend;
+    std::string name{};
 
     friend bool operator==(const Effect&, const Effect&) = default;
 };

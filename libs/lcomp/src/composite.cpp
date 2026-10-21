@@ -816,6 +816,16 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         }
         if (audio_only(src->type))
             return;
+        if (std::ranges::any_of(src->effects, [](const auto& effect) { return effect.enabled; })) {
+            // Filters do not deactivate their input worker or its audio capture.
+            if (target.frames && *target.frames &&
+                (src->type == "source.text" || src->type == "source.media" ||
+                 src->type == "source.playlist" || src->type == "source.slideshow" ||
+                 src->type == "source.browser" || src->type == "source.blackmagic"))
+                (*target.frames)(*src);
+            refuse(target.picture, node, GapReason::UnsupportedEffect);
+            return;
+        }
         if (src->type == "source.image") {
             paint_image(*src, node, opacity, target);
             return;
@@ -918,8 +928,15 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
 
 void paint_scene(const ldoc::Project& project, const ldoc::Scene& scene, double opacity,
                  CanvasTarget& target) {
+    const auto first = target.picture.ops.size();
+    const bool previously_drew = target.drew;
     for (auto it = scene.roots.rbegin(); it != scene.roots.rend(); ++it)
         paint_node(project, *it, opacity, target);
+    if (std::ranges::any_of(scene.effects, [](const auto& effect) { return effect.enabled; })) {
+        target.picture.ops.resize(first);
+        target.drew = previously_drew;
+        target.picture.gaps.push_back({scene.id, scene.name, GapReason::UnsupportedEffect});
+    }
 }
 
 void fill_opaque_black(Picture& picture) {

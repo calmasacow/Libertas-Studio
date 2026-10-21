@@ -149,6 +149,12 @@ struct SetNodeAudio {
 
 // ---- effects --------------------------------------------------------------------------------
 
+struct SetEffects {
+    Id owner;
+    std::vector<Effect> effects;
+    friend bool operator==(const SetEffects&, const SetEffects&) = default;
+};
+
 struct AddEffect {
     Id scene;
     Id node;
@@ -414,17 +420,14 @@ struct Batch {
     friend bool operator==(const Batch& a, const Batch& b);
 };
 
-using Command =
-    std::variant<SetProjectName, AddScene, RemoveScene, RenameScene, MoveScene,
-                 SetSceneFavourite, AddNode, RemoveNode,
-                 MoveNode, RenameNode, SetNodeVisible, SetNodeLocked, SetNodeTransform,
-                 SetNodeLayout, SetNodeBlend, SetNodeAudio, AddEffect,
-                 RemoveEffect, SetEffectParams, SetEffectEnabled, SetDeck, AddDeck, RemoveDeck, SetDeckProgram,
-                 SetDeckPreview, AddSceneLink, RemoveSceneLink,
-                 SetCanvasEmergencyScene, SetNodeSource, AddSource, RemoveSource, SetSource,
-                 AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus, SetBus, AddOutput,
-                 RemoveOutput, SetOutput, AddEncode, RemoveEncode, SetEncode,
-                 SetProjectSettings, Batch>;
+using Command = std::variant<
+    SetProjectName, AddScene, RemoveScene, RenameScene, MoveScene, SetSceneFavourite, AddNode,
+    RemoveNode, MoveNode, RenameNode, SetNodeVisible, SetNodeLocked, SetNodeTransform,
+    SetNodeLayout, SetNodeBlend, SetNodeAudio, SetEffects, AddEffect, RemoveEffect, SetEffectParams,
+    SetEffectEnabled, SetDeck, AddDeck, RemoveDeck, SetDeckProgram, SetDeckPreview, AddSceneLink,
+    RemoveSceneLink, SetCanvasEmergencyScene, SetNodeSource, AddSource, RemoveSource, SetSource,
+    AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus, SetBus, AddOutput, RemoveOutput,
+    SetOutput, AddEncode, RemoveEncode, SetEncode, SetProjectSettings, Batch>;
 
 struct BatchBody {
     std::vector<Command> commands;

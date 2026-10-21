@@ -572,6 +572,30 @@ LTEST_CASE(a_screen_with_no_frame_yet_is_a_gap_and_not_a_black_rectangle) {
     CHECK_EQ(picture.gaps.front().reason, GapReason::NoFrame);
 }
 
+LTEST_CASE(shared_enabled_unknown_filters_report_gaps_and_disabled_filters_draw) {
+    auto source = colour_source(255, 0, 0, 8, 8);
+    auto scene = scene_named("Filters");
+    scene.roots.push_back(bound_to(source));
+    auto project = show(8, scene, {source});
+    ldoc::Effect effect;
+    effect.id = ldoc::Id::generate();
+    effect.type = "unknown.filter";
+    for (const auto owner : {source.id, scene.id}) {
+        auto* stack = project.effect_stack(owner);
+        REQUIRE(stack);
+        *stack = {effect};
+        auto picture = lcomp::composite_canvas(project, project.canvases.front().id);
+        REQUIRE(!picture.gaps.empty());
+        CHECK(picture.gaps.front().reason == GapReason::UnsupportedEffect);
+        stack->front().enabled = false;
+        picture = lcomp::composite_canvas(project, project.canvases.front().id);
+        CHECK(picture.gaps.empty());
+        REQUIRE(!picture.pixels.empty());
+        CHECK_EQ(picture.pixels.front(), 255);
+        stack->clear();
+    }
+}
+
 LTEST_CASE(a_screen_is_still_an_unsupported_type_when_the_caller_has_no_device) {
     // The overload with no frame source is what every deviceless caller uses, and a screen source
     // has to stay the gap it has always been there -- not NoFrame, which would promise a frame is

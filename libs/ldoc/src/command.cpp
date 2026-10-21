@@ -124,8 +124,11 @@ std::unordered_set<Id> all_ids(const Project& p) {
         for (const Effect& e : b.inserts)
             ids.insert(e.id);
     }
-    for (const Source& s : p.sources)
+    for (const Source& s : p.sources) {
         ids.insert(s.id);
+        for (const auto& effect : s.effects)
+            ids.insert(effect.id);
+    }
     for (const Asset& a : p.assets)
         ids.insert(a.id);
     for (const Deck& d : p.decks)
@@ -138,6 +141,8 @@ std::unordered_set<Id> all_ids(const Project& p) {
         ids.insert(l.id);
     for (const Scene& s : p.scenes) {
         ids.insert(s.id);
+        for (const auto& effect : s.effects)
+            ids.insert(effect.id);
         visit(s.roots, [&ids](const Node& n) {
             ids.insert(n.id);
             for (const Effect& e : n.effects)
@@ -193,6 +198,8 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, SetSceneFavourite>) return "scene.set-favourite";
             else if constexpr (std::is_same_v<T, Batch>) return "batch";
             else if constexpr (std::is_same_v<T, AddEffect>) return "effect.add";
+            else if constexpr (std::is_same_v<T, SetEffects>)
+                return "effects.set";
             else if constexpr (std::is_same_v<T, RemoveEffect>) return "effect.remove";
             else if constexpr (std::is_same_v<T, SetEffectParams>) return "effect.set-params";
             else if constexpr (std::is_same_v<T, SetEffectEnabled>) return "effect.set-enabled";
@@ -269,6 +276,8 @@ std::string describe(const Command& command) {
                 return c.description.empty() ? std::string{"Several changes"} : c.description;
             else if constexpr (std::is_same_v<T, AddEffect>)
                 return std::format("Add effect {}", quoted(c.effect.type));
+            else if constexpr (std::is_same_v<T, SetEffects>)
+                return "Edit filters";
             else if constexpr (std::is_same_v<T, RemoveEffect>)
                 return "Remove effect";
             else if constexpr (std::is_same_v<T, SetEffectParams>)
@@ -395,13 +404,20 @@ struct Apply {
     std::expected<Applied, std::string> operator()(const AddScene& c) const {
         if (c.index > p.scenes.size())
             return std::unexpected(std::format("scene position {} is past the end", c.index));
-        const auto existing = all_ids(p);
+        auto existing = all_ids(p);
         std::vector<Id> incoming{c.scene.id};
+        if (c.scene.effects.size() > 64)
+            return std::unexpected("a filter stack supports at most 64 filters");
+        for (const auto& effect : c.scene.effects) {
+            if (effect.type.empty())
+                return std::unexpected("a filter needs a type");
+            incoming.push_back(effect.id);
+        }
         collect_defined_ids(c.scene.roots, incoming);
         for (const Id& id : incoming) {
             if (id.is_nil())
                 return std::unexpected("the scene contains something with no id");
-            if (existing.contains(id))
+            if (!existing.insert(id).second)
                 return std::unexpected(
                     std::format("id {} is already in the project", id.to_string()));
         }
@@ -677,6 +693,24 @@ struct Apply {
         return out;
     }
 
+    std::expected<Applied, std::string> operator()(const SetEffects& c) const {
+        auto* stack = p.effect_stack(c.owner);
+        if (!stack)
+            return std::unexpected("filter owner does not exist");
+        if (c.effects.size() > 64)
+            return std::unexpected("a filter stack supports at most 64 filters");
+        auto ids = all_ids(p);
+        for (const auto& effect : *stack)
+            ids.erase(effect.id);
+        for (const auto& effect : c.effects) {
+            if (effect.id.is_nil() || effect.type.empty() || !ids.insert(effect.id).second)
+                return std::unexpected("filters need unique IDs and a type");
+        }
+        Applied out{SetEffects{c.owner, *stack}, describe(c)};
+        *stack = c.effects;
+        return out;
+    }
+
     std::expected<Applied, std::string> operator()(const AddEffect& c) const {
         auto scene = find_scene(p, c.scene);
         if (!scene)
@@ -777,6 +811,13 @@ struct Apply {
         if (all_ids(p).contains(c.source.id))
             return std::unexpected(
                 std::format("id {} is already in the project", c.source.id.to_string()));
+        if (c.source.effects.size() > 64)
+            return std::unexpected("a filter stack supports at most 64 filters");
+        auto ids = all_ids(p);
+        ids.insert(c.source.id);
+        for (const auto& effect : c.source.effects)
+            if (effect.id.is_nil() || effect.type.empty() || !ids.insert(effect.id).second)
+                return std::unexpected("filters need unique IDs and a type");
         Applied out{RemoveSource{c.source.id}, describe(c)};
         p.sources.insert(p.sources.begin() + static_cast<std::ptrdiff_t>(c.index), c.source);
         return out;
@@ -804,6 +845,14 @@ struct Apply {
                 std::format("there is no source {}", c.value.id.to_string()));
         if (c.value.type.empty())
             return std::unexpected("a source needs a type");
+        if (c.value.effects.size() > 64)
+            return std::unexpected("a filter stack supports at most 64 filters");
+        auto ids = all_ids(p);
+        for (const auto& effect : it->effects)
+            ids.erase(effect.id);
+        for (const auto& effect : c.value.effects)
+            if (effect.id.is_nil() || effect.type.empty() || !ids.insert(effect.id).second)
+                return std::unexpected("filters need unique IDs and a type");
         Applied out{SetSource{*it}, describe(c)};
         *it = c.value;
         return out;

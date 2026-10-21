@@ -4,6 +4,28 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Shared filter stack foundation, 2026-10-21
+
+ADR-0065 records the required stock video/audio inventory, shared ownership,
+CPU/GPU processing contract and editor scope. Sources and Scenes now own ordered
+effect stacks alongside existing node effects and bus inserts. Named filters,
+enabled state and parameters persist through schema version 3; SetEffects edits
+any owner with Undo and journal serialization. Scene duplication gives owned
+filters fresh IDs and remaps their node masks. Version 2 fixtures remain frozen;
+version 3 has a separate golden fixture and migration checks.
+
+Unknown active shared filters report video gaps and unavailable audio rather than
+silently bypassing processing. Media workers remain alive during filter refusal,
+so disabling a filter restores audio without restarting capture. OBS export warns
+when shared filters cannot be converted. Real renderer monitoring checks cover
+source/scene enable-disable recovery. Warning-free build and all 29 tests pass,
+with GPU and monitoring checks enabled.
+
+This is persistence infrastructure, not completed filter processing. Next: native
+filter catalog and CPU/Vulkan video stages, audio DSP and isolated Linux VST2
+hosting, OBS translation, and source context-menu editor with add/edit/reorder/
+toggle/delete. Existing imported OBS records still do not apply filters.
+
 ## Scene-only audio import and mixer deletion, 2026-10-21
 
 Scene imports skip OBS global Desktop/Aux audio devices and no longer create

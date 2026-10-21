@@ -153,6 +153,8 @@ Jv enc(const Effect& e) {
     Jv o{Json::objectValue};
     o["id"] = enc(e.id);
     o["type"] = e.type;
+    if (!e.name.empty())
+        o["name"] = e.name;
     o["enabled"] = e.enabled;
     o["params"] = enc(e.params);
     o["mask"] = e.mask ? enc(*e.mask) : Jv{Json::nullValue};
@@ -289,6 +291,8 @@ Jv enc(const Source& s) {
     o["type"] = s.type;
     o["settings"] = enc(s.settings);
     o["asset"] = s.asset ? enc(*s.asset) : Jv{Json::nullValue};
+    if (!s.effects.empty())
+        o["effects"] = enc_array(s.effects);
     return o;
 }
 
@@ -353,6 +357,8 @@ Jv enc_scene(const Scene& scene) {
     root["name"] = scene.name;
     root["canvas"] = enc(scene.canvas);
     root["favourite"] = scene.favourite;
+    if (!scene.effects.empty())
+        root["effects"] = enc_array(scene.effects);
 
     Jv roots{Json::arrayValue};
     for (const Node& n : scene.roots)
@@ -689,6 +695,7 @@ Effect dec_effect(Rd& rd, const Jv& o, std::string_view path) {
     Effect e;
     e.id = rd.id(o, "id", path);
     e.type = rd.text(o, "type", path);
+    e.name = rd.text(o, "name", path);
     e.enabled = rd.boolean(o, "enabled", path, true);
     e.params = dec_params(rd, o, "params", path);
     e.mask = rd.id_opt(o, "mask", path);
@@ -945,6 +952,7 @@ Source dec_source(Rd& rd, const Jv& v, std::string_view path) {
     s.type = rd.text(v, "type", path);
     s.settings = dec_params(rd, v, "settings", path);
     s.asset = rd.id_opt(v, "asset", path);
+    s.effects = dec_effects(rd, v, "effects", path);
     return s;
 }
 
@@ -969,6 +977,7 @@ Scene dec_scene(Rd& rd, const Jv& root, std::string_view path) {
     // knows what the canvas list looks like.
     s.canvas = root.isMember("canvas") ? rd.id(root, "canvas", path) : Id::nil();
     s.favourite = rd.boolean(root, "favourite", path, false);
+    s.effects = dec_effects(rd, root, "effects", path);
     if (const Jv* roots = rd.array(root, "roots", path)) {
         for (const Jv& n : *roots) {
             if (!n.isObject()) {

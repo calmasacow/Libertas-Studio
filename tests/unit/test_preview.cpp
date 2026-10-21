@@ -424,13 +424,24 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
     scene.id = ldoc::Id::generate();
     auto project = show(scene, {source});
     project.scenes[0].roots = {node};
-    for (const int selected : {-1, 1, 2, 0}) {
+    for (const int selected : {-1, 1, 2, 0, 3, 4, 5, 6}) {
+        project.sources.front().effects.clear();
+        project.scenes.front().effects.clear();
+        if (selected >= 3) {
+            ldoc::Effect effect;
+            effect.id = ldoc::Id::generate();
+            effect.type = "unknown.audio-filter";
+            effect.enabled = selected == 3 || selected == 5;
+            auto& stack =
+                selected <= 4 ? project.sources.front().effects : project.scenes.front().effects;
+            stack.push_back(effect);
+        }
         if (selected < 0)
             project.settings.extra.erase("audio.monitor.output");
         else
             project.settings.extra["audio.monitor.output"] =
                 selected == 0 ? std::string("none")
-                              : "sink:" + base + "_" + std::to_string(selected);
+                              : "sink:" + base + "_" + std::to_string(selected >= 3 ? 1 : selected);
         REQUIRE(link.send_project(project));
         const auto start = std::chrono::steady_clock::now();
         const auto end = start + std::chrono::milliseconds(1400);
@@ -460,7 +471,7 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
                 pending = false;
         }
         REQUIRE(!pending);
-        CHECK_EQ(first.take() > 0.01f, selected == 1);
+        CHECK_EQ(first.take() > 0.01f, selected == 1 || selected == 4 || selected == 6);
         CHECK_EQ(second.take() > 0.01f, selected == 2);
     }
     link.quit();

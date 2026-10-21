@@ -103,6 +103,7 @@ class AudioSources {
         ldoc::Id node;
         std::shared_ptr<Session> session;
         ldoc::AudioRouting audio;
+        bool unsupported_effect = false;
     };
 
     std::mutex mu_;
@@ -151,6 +152,8 @@ class AudioSources {
                     dst[i] += src[i] * volume;
             };
             for (const auto& route : routes) {
+                if (route.unsupported_effect)
+                    continue;
                 auto* session = route.session.get();
                 if (!inputs.contains(session)) {
                     auto& block = inputs[session];
@@ -290,6 +293,10 @@ class AudioSources {
         std::vector<lcomp::AudioLevel> result;
         std::vector<Route> routes;
         const ldoc::Scene* owner = nullptr;
+        bool inherited_effect = false;
+        const auto active_effect = [](const auto& effects) {
+            return std::ranges::any_of(effects, [](const auto& effect) { return effect.enabled; });
+        };
         const auto session_for = [&](const ldoc::Source& source) {
             wanted.insert(source.id);
             auto& session = sessions_[source.id];
@@ -322,11 +329,14 @@ class AudioSources {
             for (const auto& node : nodes) {
                 if (!node.visible || !visited.insert(node.id).second)
                     continue;
+                const bool previous_effect = inherited_effect;
+                inherited_effect = inherited_effect || active_effect(node.effects);
                 if (const auto* group = std::get_if<ldoc::GroupData>(&node.data))
                     walk(group->children);
                 else if (const auto* pre = std::get_if<ldoc::PrecompData>(&node.data)) {
                     if (const auto* scene = project.scene(pre->scene)) {
                         const auto* previous = owner; owner = scene;
+                        inherited_effect = inherited_effect || active_effect(scene->effects);
                         walk(scene->roots);
                         owner = previous;
                     }
@@ -336,8 +346,10 @@ class AudioSources {
                         (source->type != "source.audio-input" &&
                          source->type != "source.audio-output" && source->type != "source.media" &&
                          source->type != "source.playlist" && source->type != "source.blackmagic" &&
-                         source->type != "source.browser" && source->type != "source.v4l2"))
+                         source->type != "source.browser" && source->type != "source.v4l2")) {
+                        inherited_effect = previous_effect;
                         continue;
+                    }
                     auto session = session_for(*source);
                     auto routing = data->audio;
                     if (owner) if (auto found = owner->audio_overrides.find(node.id); found != owner->audio_overrides.end()) {
@@ -347,20 +359,23 @@ class AudioSources {
                         if (change.mute) routing.mute = *change.mute;
                         if (change.sends) routing.sends = *change.sends;
                     }
-                    routes.push_back({node.id, session, std::move(routing)});
+                    const bool unsupported = inherited_effect || active_effect(source->effects);
+                    routes.push_back({node.id, session, std::move(routing), unsupported});
                     std::lock_guard lock(session->mu);
-                    const bool available =
-                        session->available && std::chrono::steady_clock::now() - session->received <
-                                                  std::chrono::seconds(1);
+                    const bool available = !unsupported && session->available &&
+                                           std::chrono::steady_clock::now() - session->received <
+                                               std::chrono::seconds(1);
                     result.push_back({node.id, available ? session->left : 0,
                                       available ? session->right : 0, available});
                 }
+                inherited_effect = previous_effect;
             }
         };
         for (const auto& deck : project.decks)
             if (deck.program_scene)
                 if (const auto* scene = project.scene(*deck.program_scene)) {
                     owner = scene;
+                    inherited_effect = active_effect(scene->effects);
                     walk(scene->roots);
                 }
         std::erase_if(sessions_, [&](const auto& item) { return !wanted.contains(item.first); });

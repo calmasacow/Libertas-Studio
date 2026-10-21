@@ -101,6 +101,8 @@ struct Exporter {
     }
 
     J source(const ldoc::Source& src) {
+        if (!src.effects.empty())
+            warn(src.name, "source filters not converted; review OBS filters");
         auto& rec = records.at(src.id);
         const auto text = [&](const char* key, std::string fallback = {}) {
             return setting(src, key, std::move(fallback));
@@ -372,6 +374,8 @@ struct Exporter {
         }
         for (const auto& scene : project.scenes) {
             const auto& rec = records.at(scene.id);
+            if (!scene.effects.empty())
+                warn(scene.name, "scene filters not converted; review OBS filters");
             auto out = base(rec, "scene");
             out["settings"]["custom_size"] = true;
             out["settings"]["cx"] = static_cast<int>(rec.size.x);

@@ -53,7 +53,7 @@ Id fixed_id(std::uint8_t tag) {
 /// The current format, written by this build and committed. The byte-for-byte fixture.
 fs::path fixture_dir() {
     // Beside the test source, not in the build tree: it is an artefact of the repository.
-    return fs::path(LIBERTAS_TEST_FIXTURES) / "golden-project-v2";
+    return fs::path(LIBERTAS_TEST_FIXTURES) / "golden-project-v3";
 }
 
 /// The previous format, frozen. **Never regenerated**: its whole value is that it was written by
@@ -113,6 +113,13 @@ Project golden_project() {
     clip.settings.emplace("loop", true);
     clip.settings.emplace("tracks", std::int64_t{2});
     clip.settings.emplace("gain", 0.75);
+    Effect filter;
+    filter.id = fixed_id(0x32);
+    filter.type = "filter.color-correction";
+    filter.name = "Camera correction";
+    filter.enabled = false;
+    filter.params.emplace("brightness", 0.125);
+    clip.effects.push_back(filter);
     p.sources.push_back(clip);
 
     Source camera;
@@ -128,6 +135,8 @@ Project golden_project() {
     emergency.id = fixed_id(0x40);
     emergency.name = "Emergency";
     emergency.canvas = main_canvas.id;
+    filter.id = fixed_id(0x42);
+    emergency.effects.push_back(filter);
     Node card = make_node(NodeKind::Source, "Card");
     card.id = fixed_id(0x41);
     std::get<SourceData>(card.data).source = clip.id;
@@ -394,6 +403,25 @@ LTEST_CASE(the_committed_project_still_opens) {
     CHECK(p.scene(fixed_id(0x56))->canvas == p.canvases[1].id);
 
     CHECK_MSG(is_valid(p), "the committed project no longer validates");
+}
+
+LTEST_CASE(version_2_migration_preserves_existing_filters_and_starts_shared_stacks_empty) {
+    const ScratchDir sd;
+    const auto dir = sd.copy_of(fs::path(LIBERTAS_TEST_FIXTURES) / "golden-project-v2");
+    auto opened = open_project(dir);
+    REQUIRE(opened);
+    CHECK_EQ(opened->project.schema_version, kSchemaVersion);
+    CHECK(!opened->read_only);
+    for (const auto& source : opened->project.sources)
+        CHECK(source.effects.empty());
+    for (const auto& scene : opened->project.scenes)
+        CHECK(scene.effects.empty());
+    const auto* live = opened->project.scene(fixed_id(0x50));
+    REQUIRE(live);
+    REQUIRE(!live->roots.empty());
+    REQUIRE(live->roots.front().children());
+    CHECK_EQ(live->roots.front().children()->front().effects.size(), 1u);
+    CHECK(is_valid(opened->project));
 }
 
 LTEST_CASE(a_version_1_project_opens_and_is_migrated) {

@@ -149,6 +149,24 @@ const Source* Project::source(const Id& wanted) const {
     return it == sources.end() ? nullptr : &*it;
 }
 
+const std::vector<Effect>* Project::effect_stack(const Id& owner) const {
+    if (const auto* value = source(owner))
+        return &value->effects;
+    if (const auto* value = bus(owner))
+        return &value->inserts;
+    for (const auto& value : scenes) {
+        if (value.id == owner)
+            return &value.effects;
+        if (const auto* node = find_node(value.roots, owner))
+            return &node->effects;
+    }
+    return nullptr;
+}
+
+std::vector<Effect>* Project::effect_stack(const Id& owner) {
+    return const_cast<std::vector<Effect>*>(std::as_const(*this).effect_stack(owner));
+}
+
 bool is_self_contained(std::string_view source_type) {
     return std::find(kSelfContainedSources.begin(), kSelfContainedSources.end(), source_type) !=
            kSelfContainedSources.end();
@@ -300,6 +318,12 @@ Scene duplicate_scene(const Scene& scene, std::string new_name) {
     copy.canvas = scene.canvas;
     std::map<Id, Id> remap;
     copy.roots = duplicate(scene.roots, &remap);
+    copy.effects = scene.effects;
+    for (auto& effect : copy.effects) {
+        effect.id = Id::generate();
+        if (effect.mask && remap.contains(*effect.mask))
+            effect.mask = remap.at(*effect.mask);
+    }
     // Audio overrides are keyed by node id, so they have to follow the remap or they would
     // silently apply to nothing.
     for (const auto& [node_id, ov] : scene.audio_overrides) {
@@ -362,8 +386,11 @@ private:
             for (const Effect& e : b.inserts)
                 define(e.id, "insert", e.type);
         }
-        for (const Source& s : p_.sources)
+        for (const Source& s : p_.sources) {
             define(s.id, "source", s.name);
+            for (const auto& effect : s.effects)
+                define(effect.id, "effect", effect.type);
+        }
         for (const Asset& a : p_.assets)
             define(a.id, "asset", a.path);
         for (const Deck& d : p_.decks)
@@ -376,6 +403,8 @@ private:
             define(l.id, "scene link", "");
         for (const Scene& s : p_.scenes) {
             define(s.id, "scene", s.name);
+            for (const auto& effect : s.effects)
+                define(effect.id, "effect", effect.type);
             visit(s.roots, [&](const Node& n) {
                 define(n.id, to_string(n.kind()), n.name);
                 for (const Effect& e : n.effects)
@@ -449,6 +478,11 @@ private:
 
     void check_sources_and_assets() {
         for (const Source& s : p_.sources) {
+            if (s.effects.size() > 64)
+                err(s.id, "source filter stack exceeds 64 filters");
+            for (const auto& effect : s.effects)
+                if (effect.type.empty())
+                    err(effect.id, "source filter has no type");
             if (s.type.empty())
                 err(s.id, std::format("source '{}' has no type", s.name));
             if (s.asset && !exists_as(*s.asset, "asset"))
@@ -464,6 +498,11 @@ private:
 
     void check_scenes() {
         for (const Scene& s : p_.scenes) {
+            if (s.effects.size() > 64)
+                err(s.id, "scene filter stack exceeds 64 filters");
+            for (const auto& effect : s.effects)
+                if (effect.type.empty())
+                    err(effect.id, "scene filter has no type");
             // Not a dangling reference but a missing precondition, for the same reason a deck's
             // canvas is: a scene with no canvas has no size and no frame rate, so there is no
             // way to render it at all (ADR-0027).

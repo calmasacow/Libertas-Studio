@@ -270,6 +270,7 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         SetNodeLayout{f.scene, f.loose, lay},
         SetNodeBlend{f.scene, f.loose, bl},
         AddEffect{f.scene, f.loose, 0, e},
+        SetEffects{f.existing_source, {e}},
         RemoveEffect{f.scene, f.loose, f.effect},
         SetEffectParams{f.scene, f.loose, f.effect, params},
         SetEffectEnabled{f.scene, f.loose, f.effect, false},
@@ -648,6 +649,35 @@ LTEST_CASE(every_command_survives_a_json_round_trip) {
         CHECK_MSG(command_to_json(*back) == text, "{} re-serialised differently",
                   command_name(c));
         CHECK(text.find(std::string{command_name(c)}) != std::string::npos);
+    }
+}
+
+LTEST_CASE(filter_stacks_are_shared_persistent_commands_with_exact_undo) {
+    const Fixture f;
+    for (const auto owner : {f.existing_source, f.scene, f.group, f.existing_bus}) {
+        DocumentHistory history{f.project};
+        Effect effect;
+        effect.id = Id::generate();
+        effect.type = "filter.color-correction";
+        effect.name = "Warm camera";
+        effect.enabled = false;
+        effect.params.emplace("brightness", 0.25);
+        const Command command = SetEffects{owner, {effect}};
+        const auto decoded = command_from_json(command_to_json(command));
+        REQUIRE(decoded);
+        CHECK(*decoded == command);
+        REQUIRE(history.run(*decoded));
+        REQUIRE(history.project().effect_stack(owner));
+        CHECK(*history.project().effect_stack(owner) == std::vector<Effect>{effect});
+        REQUIRE(history.undo());
+        CHECK(history.project() == f.project);
+        REQUIRE(history.redo());
+        CHECK(*history.project().effect_stack(owner) == std::vector<Effect>{effect});
+        const auto before = history.project();
+        CHECK(!history.run(SetEffects{owner, {effect, effect}}));
+        effect.id = f.scene;
+        CHECK(!history.run(SetEffects{owner, {effect}}));
+        CHECK(history.project() == before);
     }
 }
 

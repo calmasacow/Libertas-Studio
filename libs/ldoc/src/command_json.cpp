@@ -134,6 +134,15 @@ Jv body(const SetNodeAudio& c) {
     return o;
 }
 
+Jv body(const SetEffects& c) {
+    Jv out{Json::objectValue};
+    out["owner"] = detail::enc(c.owner);
+    out["effects"] = Jv{Json::arrayValue};
+    for (const auto& effect : c.effects)
+        out["effects"].append(detail::enc(effect));
+    return out;
+}
+
 Jv body(const AddEffect& c) {
     Jv o{Json::objectValue};
     o["scene"] = detail::enc(c.scene);
@@ -457,6 +466,8 @@ std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
         if (const Jv* a = rd.object(o, "audio", path))
             audio = detail::dec_audio_routing(rd, *a, path);
         out = SetNodeAudio{rd.id(o, "scene", path), rd.id(o, "node", path), audio};
+    } else if (name == "effects.set") {
+        out = SetEffects{rd.id(o, "owner", path), detail::dec_effects(rd, o, "effects", path)};
     } else if (name == "effect.add") {
         const Jv* ev = rd.object(o, "effect", path);
         if (!ev)

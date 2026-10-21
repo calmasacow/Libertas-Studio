@@ -448,6 +448,12 @@ LTEST_CASE(duplicating_a_scene_carries_its_audio_routing_with_it) {
     ov.gain_db = -6.0;
     ov.bus = bus_id;
     s.audio_overrides.emplace(mic_id, ov);
+    Effect filter;
+    filter.id = Id::generate();
+    filter.type = "filter.mask";
+    filter.mask = mic_id;
+    filter.name = "Scene mask";
+    s.effects.push_back(filter);
 
     const Scene copy = duplicate_scene(s, "Show Copy");
     CHECK(copy.id != s.id);
@@ -458,6 +464,10 @@ LTEST_CASE(duplicating_a_scene_carries_its_audio_routing_with_it) {
               "the routing was left keyed to the original node, so it applies to nothing");
     CHECK(!copy.audio_overrides.contains(mic_id));
     CHECK(copy.audio_overrides.at(copied_mic).bus.value() == bus_id);
+    REQUIRE(copy.effects.size() == 1);
+    CHECK(copy.effects.front().id != filter.id);
+    CHECK(copy.effects.front().mask == copied_mic);
+    CHECK_EQ(copy.effects.front().name, filter.name);
 }
 
 LTEST_CASE(validation_reports_every_problem_not_just_the_first) {

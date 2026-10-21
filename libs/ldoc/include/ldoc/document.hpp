@@ -14,7 +14,7 @@ namespace ldoc {
 /// Bumped only by a change that older builds cannot read. Migrations are forward-only, with
 /// golden fixtures; a project newer than this opens read-only rather than silently dropping the
 /// fields this build does not know about.
-inline constexpr int kSchemaVersion = 2;
+inline constexpr int kSchemaVersion = 3;
 
 /// An output surface with its own size, rate and colour space.
 ///
@@ -115,6 +115,7 @@ struct Scene {
     /// workspace, because it is a property of the show -- it should follow the project to
     /// another machine, and it is the same set whichever layout is on screen.
     bool favourite = false;
+    std::vector<Effect> effects{};
 
     friend bool operator==(const Scene&, const Scene&) = default;
 };
@@ -172,6 +173,7 @@ struct Source {
     ParamMap settings;
     /// For file-backed sources.
     std::optional<Id> asset;
+    std::vector<Effect> effects{};
 
     friend bool operator==(const Source&, const Source&) = default;
 };
@@ -314,6 +316,8 @@ struct Project {
     [[nodiscard]] const Bus* bus(const Id& wanted) const;
     [[nodiscard]] const Source* source(const Id& wanted) const;
     [[nodiscard]] const Encode* encode(const Id& wanted) const;
+    [[nodiscard]] const std::vector<Effect>* effect_stack(const Id& owner) const;
+    [[nodiscard]] std::vector<Effect>* effect_stack(const Id& owner);
 
     friend bool operator==(const Project&, const Project&) = default;
 };
