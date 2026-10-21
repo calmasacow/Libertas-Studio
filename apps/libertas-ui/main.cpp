@@ -3249,7 +3249,40 @@ int main(int argc, char** argv) {
 
             // Removing the bus underneath it is allowed: a dangling route is a warning, not an
             // error, and the strip has to stop claiming the node feeds it.
-            document.removeBus(new_bus);
+            QQuickItem* removable = nullptr;
+            for (auto* strip : collect(window->contentItem(), QStringLiteral("busStrip")))
+                if (strip->property("busId").toString() == new_bus)
+                    removable = strip;
+            report(removable != nullptr, "mixer shows the channel to delete");
+            if (removable) {
+                for (auto* parent = removable->parentItem(); parent;
+                     parent = parent->parentItem()) {
+                    if (!parent->property("contentX").isValid())
+                        continue;
+                    parent->setProperty("contentX",
+                                        std::max(0.0, removable->mapToItem(parent, QPointF{}).x() +
+                                                          parent->property("contentX").toDouble() -
+                                                          parent->width() + removable->width()));
+                    break;
+                }
+                settle();
+                const auto at =
+                    removable->mapToScene(QPointF(removable->width() - 2, removable->height() / 2));
+                post(QEvent::MouseButtonPress, at, Qt::RightButton, Qt::RightButton);
+                post(QEvent::MouseButtonRelease, at, Qt::RightButton, Qt::NoButton);
+                settle();
+                QQuickItem* action = nullptr;
+                for (auto* item : collect(window->contentItem(), QStringLiteral("stripMenuItem")))
+                    if (item->isVisible() && item->property("label").toString() == "Delete channel")
+                        action = item;
+                report(action != nullptr, "channel right-click menu offers Delete channel");
+                if (action) {
+                    const auto target =
+                        action->mapToScene(QPointF(action->width() / 2, action->height() / 2));
+                    post(QEvent::MouseButtonPress, target, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, target, Qt::LeftButton, Qt::NoButton);
+                }
+            }
             settle();
             report(document.busesModel()->rowCount() == buses_before,
                    "a bus can be removed while a source node still routes to it");

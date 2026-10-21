@@ -76,9 +76,8 @@ struct Entry {
     std::string name;
     std::string type;
     ldoc::Vec2 size;
-    std::optional<ldoc::Id> bus;
+    ldoc::AudioRouting audio;
     bool scene = false;
-    bool global = false;
     bool ignored = false;
 };
 
@@ -233,9 +232,8 @@ struct Converter {
             throw std::runtime_error("source needs name and id");
         if (source.isMember("settings") && !source["settings"].isObject())
             throw std::runtime_error(e.name + ": settings must be an object");
-        e.global = global;
         e.scene = e.type == "scene" || e.type == "group";
-        e.ignored = e.type == "streamelements_transition_audio_wrapper_source";
+        e.ignored = global || e.type == "streamelements_transition_audio_wrapper_source";
         const auto uuid = str(source, "uuid");
         if (!uuid.empty() && !uuids.emplace(uuid, entries.size()).second)
             throw std::runtime_error("duplicate source UUID: " + uuid);
@@ -245,7 +243,9 @@ struct Converter {
 
     void source(Entry& e) {
         if (e.ignored) {
-            warn(e, "obsolete StreamElements transition audio wrapper ignored");
+            warn(e, e.type == "streamelements_transition_audio_wrapper_source"
+                        ? "obsolete StreamElements transition audio wrapper ignored"
+                        : "global OBS audio device skipped; scene sources only");
             return;
         }
         const auto& s = e.original["settings"];
@@ -468,33 +468,21 @@ struct Converter {
         p["width"] = static_cast<std::int64_t>(e.size.x);
         p["height"] = static_cast<std::int64_t>(e.size.y);
         if (audio) {
-            ldoc::Bus bus;
-            bus.id = ldoc::Id::generate();
-            bus.name = e.name + " (OBS audio)";
-            bus.kind = ldoc::BusKind::Input;
+            e.audio.bus = result.project.buses.front().id;
             const double volume = num(e.original, "volume", 1);
             if (volume < 0 || volume > 16)
                 throw std::runtime_error(e.name + ": invalid volume");
-            bus.gain_db = volume > 0 ? 20 * std::log10(volume) : -120;
-            bus.mute = flag(e.original, "muted") || volume == 0;
-            bus.pan = std::clamp(num(e.original, "balance", 0.5) * 2 - 1, -1.0, 1.0);
-            const double sync = num(e.original, "sync") / 1e6;
-            if (sync < 0 || sync > 10000)
-                warn(e, "audio sync outside 0..10000 ms; clamped");
-            bus.delay_ms = std::clamp(sync, 0.0, 10000.0);
+            e.audio.gain_db = volume > 0 ? 20 * std::log10(volume) : -120;
+            e.audio.mute = flag(e.original, "muted") || volume == 0;
+            if (num(e.original, "balance", 0.5) != 0.5 || num(e.original, "sync") != 0)
+                warn(e, "OBS mixer balance/sync omitted; review native audio settings");
             const int monitoring = integer(e.original, "monitoring_type", 0, 0, 2);
             // Import never starts local monitoring unexpectedly (especially an output loopback).
             if (monitoring)
                 warn(e, "local monitoring left off; review before enabling");
-            const int tracks = integer(e.original, "mixers", 255, 0, 255);
-            if (monitoring != 1) {
-                for (int track = 0; track < 6; ++track)
-                    if ((tracks & (1 << track)) != 0)
-                        bus.sends.push_back(
-                            {result.project.buses[static_cast<std::size_t>(track)].id, 0, false});
-            }
-            e.bus = bus.id;
-            result.project.buses.push_back(std::move(bus));
+            if (monitoring == 1)
+                e.audio.mute = true;
+            warn(e, "scene audio uses Program; OBS mixer/track buses not imported");
         }
         result.project.sources.push_back(std::move(out));
     }
@@ -524,7 +512,7 @@ struct Converter {
         else {
             auto& data = std::get<ldoc::SourceData>(n.data);
             data.source = e.id;
-            data.audio.bus = e.bus;
+            data.audio = e.audio;
         }
         n.visible = flag(item, "visible", true);
         n.locked = flag(item, "locked");
@@ -617,13 +605,6 @@ struct Converter {
         result.project.name = str(root, "name", "Imported OBS collection");
         result.project.scenes.clear();
         result.project.buses.resize(1);
-        for (int track = 2; track <= 6; ++track) {
-            ldoc::Bus bus;
-            bus.id = ldoc::Id::generate();
-            bus.name = "OBS track " + std::to_string(track);
-            bus.kind = ldoc::BusKind::Track;
-            result.project.buses.push_back(bus);
-        }
         for (const auto& s : root["sources"])
             add(s);
         if (root.isMember("groups") && !root["groups"].isArray())
@@ -701,9 +682,6 @@ struct Converter {
                         scene.roots.push_back(node(*it, child));
                 }
             }
-            for (auto& global : entries)
-                if (global.global && !global.ignored)
-                    scene.roots.push_back(node(J(Json::objectValue), global));
             result.project.scenes.push_back(std::move(scene));
         }
         if (result.project.scenes.empty())

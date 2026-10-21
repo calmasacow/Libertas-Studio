@@ -46,6 +46,18 @@ Item {
     Component.onCompleted: refreshMonitoringDevices()
     onVisibleChanged: if (visible) refreshMonitoringDevices()
 
+    function showBusMenu(x, y, id, kind, locked, hidden) {
+        stripMenu.popup(x, y, [
+            { text: qsTr("Lock Level"), checked: locked,
+              action: () => Document.setBusLevelLocked(id, !locked) },
+            { text: qsTr("Hide source"), checked: hidden,
+              action: () => Document.setBusHidden(id, !hidden) },
+            { separator: true },
+            { text: qsTr("Delete channel"), enabled: kind !== "program",
+              action: () => Document.removeBus(id) }
+        ]);
+    }
+
     function faderFraction(db) {
         return (Math.max(panel.gainMin, Math.min(panel.gainMax, db)) - panel.gainMin) /
                (panel.gainMax - panel.gainMin);
@@ -366,19 +378,8 @@ Item {
                 z: -1
                 onClicked: (ev) => {
                     const at = mapToItem(panel, ev.x, ev.y);
-                    stripMenu.popup(at.x, at.y, [
-                        {
-                            text: qsTr("Lock Level"),
-                            checked: strip.levelLocked,
-                            action: () => Document.setBusLevelLocked(
-                                strip.busId, !strip.levelLocked)
-                        },
-                        {
-                            text: qsTr("Hide source"),
-                            checked: strip.hidden,
-                            action: () => Document.setBusHidden(strip.busId, !strip.hidden)
-                        }
-                    ]);
+                    panel.showBusMenu(at.x, at.y, strip.busId, strip.kind,
+                                      strip.levelLocked, strip.hidden);
                 }
             }
 

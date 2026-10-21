@@ -2858,6 +2858,11 @@ void Document::addBus(const QString& name, const QString& kind) {
 
 void Document::removeBus(const QString& id) {
     const auto parsed = parse_id(id);
+    const auto* bus = parsed ? session_->project().bus(*parsed) : nullptr;
+    if (bus && bus->kind == ldoc::BusKind::Program) {
+        emit notice(QStringLiteral("The Program channel cannot be deleted."));
+        return;
+    }
     if (parsed)
         run(ldoc::RemoveBus{*parsed});
 }

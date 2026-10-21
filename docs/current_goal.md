@@ -4,6 +4,22 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Scene-only audio import and mixer deletion, 2026-10-21
+
+Scene imports skip OBS global Desktop/Aux audio devices and no longer create
+track or per-source mixer buses. Scene audio sources route directly to Program,
+preserving placement gain/mute; monitor-only sources remain muted. OBS monitoring,
+balance/sync and track settings are reported rather than rebuilding OBS's mixer.
+The original JSON remains available for reference. A temporary Marathon import
+produces 40 scenes, 61 sources and only the native Program bus.
+
+Mixer bus context menus now offer Delete channel. Program is protected; deleting
+another bus uses the existing undoable command, with missing-route warnings for
+routes still naming it. Undo restores the bus and routes. Real UI right-click/
+delete/undo and import checks pass; warning-free `-Werror` build and all 29 tests
+passed with GPU and monitoring checks enabled. Existing collections are not
+silently migrated; reimport or delete unwanted buses manually.
+
 ## Text worker startup, 2026-10-21
 
 Text workers eagerly constructed QMediaPlayer and QVideoSink, triggering CUDA
@@ -15,8 +31,7 @@ after three seconds, with stop-aware backoff. Real-worker checks cover simultane
 text glyph output and recovery after killing a worker without changing settings.
 Warning-free `-Werror` build and all 29 tests passed, GPU/monitoring checks enabled.
 
-Next: exclude OBS global audio devices and mixer/track buses from scene imports;
-expose deletion of existing mixer buses. Then implement the OBS filter suite and
+Next: implement the OBS filter suite and
 source context-menu filter editing (add, edit, reorder, enable/disable, remove),
 including Linux equivalents where available and no libOBS dependency. Filter
 processing and editing are not currently implemented; retained OBS records alone

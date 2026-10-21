@@ -200,14 +200,15 @@ LTEST_CASE(import_group_skips_backup_items_and_renders_saved_tight_bounds) {
     CHECK(reopened->project.scenes[0].roots == p.scenes[0].roots);
 }
 
-LTEST_CASE(import_omits_obsolete_wrappers_but_keeps_global_audio_and_repeated_groups) {
+LTEST_CASE(import_omits_global_audio_and_wrappers_but_keeps_scene_audio_and_groups) {
     Scratch scratch;
     auto root = collection();
     auto wrapper = source("Obsolete", "streamelements_transition_audio_wrapper_source", "obsolete");
     root["AuxAudioDevice1"] = wrapper;
     auto mic = source("Microphone", "pulse_input_capture", "mic");
     mic["settings"]["device_id"] = "default";
-    root["AuxAudioDevice2"] = mic;
+    root["sources"].append(mic);
+    root["AuxAudioDevice2"] = source("Global mic", "pulse_input_capture", "global-mic");
     auto group = source("Group", "group", "group");
     group["settings"]["cx"] = 2;
     group["settings"]["cy"] = 2;
@@ -219,6 +220,7 @@ LTEST_CASE(import_omits_obsolete_wrappers_but_keeps_global_audio_and_repeated_gr
     items.append(item("Group", "group"));
     items.append(item("Group", "group", 2, 2));
     items.append(item("Obsolete", "obsolete"));
+    items.insert(0, item("Microphone", "mic"));
     scratch.write(root);
     auto converted = scratch.convert();
     REQUIRE_MSG(converted, "{}", converted.error());
@@ -232,6 +234,7 @@ LTEST_CASE(import_omits_obsolete_wrappers_but_keeps_global_audio_and_repeated_gr
     CHECK(std::get<ldoc::SourceData>(first.children[0].data).source ==
           std::get<ldoc::SourceData>(second.children[0].data).source);
     CHECK_EQ(p.sources.size(), 3u);
+    CHECK_EQ(p.buses.size(), 1u);
     CHECK_EQ(p.scenes[0].roots.back().name, std::string("Microphone"));
     const auto picture = lcomp::composite_canvas(p, p.canvases[0].id);
     REQUIRE(picture.status == lcomp::PictureStatus::Complete);
@@ -365,7 +368,7 @@ LTEST_CASE(import_refuses_conflicting_and_oversized_extra_canvas_geometry) {
     }
 }
 
-LTEST_CASE(import_maps_sources_and_preserves_global_audio_settings) {
+LTEST_CASE(import_maps_scene_sources_without_obs_mixer_or_global_audio_devices) {
     Scratch scratch;
     auto root = collection();
     const std::pair<const char*, const char*> mappings[] = {
@@ -391,7 +394,11 @@ LTEST_CASE(import_maps_sources_and_preserves_global_audio_settings) {
     global["muted"] = true;
     global["sync"] = 100000000;
     global["mixers"] = 5;
-    root["AuxAudioDevice1"] = global;
+    root["sources"].append(global);
+    auto& items = root["sources"][2]["settings"]["items"];
+    items.insert(0, item("Global microphone", "mic"));
+    root["AuxAudioDevice1"] = source("Excluded global", "pulse_input_capture", "global");
+    root["DesktopAudioDevice1"] = source("Excluded desktop", "pulse_output_capture", "desktop");
     scratch.write(root);
     auto converted = scratch.convert();
     REQUIRE_MSG(converted.has_value(), "{}", converted.error());
@@ -406,10 +413,13 @@ LTEST_CASE(import_maps_sources_and_preserves_global_audio_settings) {
     REQUIRE(mic.audio.bus.has_value());
     const auto* bus = p.bus(*mic.audio.bus);
     REQUIRE(bus);
-    CHECK(bus->mute);
-    CHECK_NEAR(bus->gain_db, -6.0206, 0.001);
-    CHECK_EQ(bus->delay_ms, 100.0);
-    CHECK_EQ(bus->sends.size(), 2u);
+    CHECK_EQ(p.buses.size(), 1u);
+    CHECK(bus->kind == ldoc::BusKind::Program);
+    CHECK(mic.audio.mute);
+    CHECK_NEAR(mic.audio.gain_db, -6.0206, 0.001);
+    CHECK(mic.audio.sends.empty());
+    CHECK(std::ranges::none_of(p.sources,
+                               [](const auto& s) { return s.name.starts_with("Excluded"); }));
 }
 
 LTEST_CASE(import_preserves_video_format_buffering_and_timeout_settings) {
