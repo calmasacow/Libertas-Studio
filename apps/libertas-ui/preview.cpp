@@ -243,6 +243,8 @@ QString Preview::caption(const QString& canvasId) const {
 }
 
 void Preview::setLive(bool live, ldoc::Fps rate) {
+    program_live_ = live;
+    live = live || !filter_target_.isEmpty();
     if (!live) {
         if (link_) link_->refresh_pending = false;
         if (live_ != nullptr)
@@ -313,6 +315,68 @@ void Preview::publish(const ldoc::Project& project) {
     if (!link_ || !link_->alive)
         return;
     link_->pending = project;
+    if (const auto owner = ldoc::Id::parse(filter_target_.toStdString());
+        owner && !project.canvases.empty()) {
+        auto canvas = project.canvases.front();
+        canvas.id = filter_canvas_;
+        canvas.name = "Filter preview";
+        canvas.emergency_scene.reset();
+        ldoc::Scene scene;
+        scene.id = filter_scene_;
+        scene.name = "Filter preview";
+        scene.canvas = canvas.id;
+        if (const auto* source = project.source(*owner)) {
+            auto node = ldoc::make_node(ldoc::NodeKind::Source, source->name);
+            node.id = filter_node_;
+            std::get<ldoc::SourceData>(node.data).source = source->id;
+            node.layout.fit = ldoc::FitMode::Contain;
+            node.layout.size = {double(canvas.width), double(canvas.height)};
+            scene.roots.push_back(node);
+        } else if (const auto* selected = project.scene(*owner)) {
+            if (const auto* original = project.canvas(selected->canvas)) {
+                canvas.width = original->width;
+                canvas.height = original->height;
+            }
+            auto node = ldoc::make_node(ldoc::NodeKind::Precomp, selected->name);
+            node.id = filter_node_;
+            auto& data = std::get<ldoc::PrecompData>(node.data);
+            data.scene = selected->id;
+            data.size = {double(canvas.width), double(canvas.height)};
+            scene.roots.push_back(node);
+        } else {
+            for (const auto& existing : project.scenes)
+                if (const auto* node = ldoc::find_node(existing.roots, *owner)) {
+                    scene.roots = {*node};
+                    scene.roots[0].visible = true;
+                    scene.roots[0].transform = {};
+                    const auto remap = [&](ldoc::Id& id) {
+                        const auto [it, inserted] =
+                            filter_ids_.try_emplace(id, ldoc::Id::generate());
+                        (void)inserted;
+                        id = it->second;
+                    };
+                    const auto clone = [&](auto&& self, ldoc::Node& item) -> void {
+                        remap(item.id);
+                        for (auto& effect : item.effects)
+                            remap(effect.id);
+                        if (auto* group = std::get_if<ldoc::GroupData>(&item.data))
+                            for (auto& child : group->children)
+                                self(self, child);
+                    };
+                    clone(clone, scene.roots[0]);
+                    break;
+                }
+        }
+        ldoc::Deck deck;
+        deck.id = filter_deck_;
+        deck.name = "Filter preview";
+        deck.canvas = canvas.id;
+        deck.program_scene = scene.id;
+        link_->pending.settings.extra["ui.filter-preview-deck"] = deck.id.to_string();
+        link_->pending.canvases.push_back(canvas);
+        link_->pending.scenes.push_back(scene);
+        link_->pending.decks.push_back(deck);
+    }
     link_->refresh_only = false;
     link_->have_pending = true;
     if (!project.canvases.empty())
@@ -322,6 +386,21 @@ void Preview::publish(const ldoc::Project& project) {
         return;
     }
     try_send();
+}
+
+QString Preview::setFilterTarget(const QString& owner) {
+    if (filter_target_ != owner) {
+        filter_target_ = owner;
+        filter_ids_.clear();
+        {
+            std::lock_guard lock(state_->mu);
+            state_->frames.erase(QString::fromStdString(filter_canvas_.to_string()));
+        }
+        setLive(program_live_,
+                latest_.canvases.empty() ? ldoc::Fps{} : latest_.canvases.front().fps);
+        publish(latest_);
+    }
+    return owner.isEmpty() ? QString{} : QString::fromStdString(filter_canvas_.to_string());
 }
 
 /// Posted, not emitted directly. `start` runs while the singleton is being created, which is

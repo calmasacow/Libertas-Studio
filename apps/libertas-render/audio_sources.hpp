@@ -447,7 +447,12 @@ class AudioSources {
                 inherited.resize(previous_depth);
             }
         };
-        for (const auto& deck : project.decks)
+        for (const auto& deck : project.decks) {
+            const auto preview = project.settings.extra.find("ui.filter-preview-deck");
+            if (preview != project.settings.extra.end())
+                if (const auto* id = std::get_if<std::string>(&preview->second);
+                    id && *id == deck.id.to_string())
+                    continue;
             if (deck.program_scene)
                 if (const auto* scene = project.scene(*deck.program_scene)) {
                     owner = scene;
@@ -455,6 +460,7 @@ class AudioSources {
                     add_filters(scene->id, scene->effects);
                     walk(scene->roots);
                 }
+        }
         std::erase_if(sessions_, [&](const auto& item) { return !wanted.contains(item.first); });
         {
             std::lock_guard lock(mu_);

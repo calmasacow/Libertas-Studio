@@ -22,6 +22,12 @@ Item {
     /// See NumberField: a dialog can afford a wider caption column than a docked panel can.
     property int labelWidth: 54
     property int labelAlign: Text.AlignLeft
+    readonly property real popupLayer: {
+        let layer = 400;
+        for (let item = field.parent; item; item = item.parent)
+            layer = Math.max(layer, item.z + 2);
+        return layer;
+    }
 
     signal committed(string newValue)
 
@@ -93,7 +99,7 @@ Item {
         parent: field.Window.contentItem
         anchors.fill: parent
         visible: popup.visible
-        z: 400
+        z: field.popupLayer
         onClicked: popup.visible = false
     }
 
@@ -103,7 +109,7 @@ Item {
         objectName: "choicePopup"
         parent: field.Window.contentItem
         visible: false
-        z: 401
+        z: field.popupLayer + 1
         width: Math.max(box.width, 140)
         height: Math.min(choiceList.contentHeight + 2, 260)
         color: Theme.c.panelHeaderActive
@@ -144,6 +150,7 @@ Item {
 
             delegate: Rectangle {
                 id: choice
+                objectName: "choiceOption"
 
                 required property int index
                 required property string modelData

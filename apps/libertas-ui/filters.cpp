@@ -37,6 +37,7 @@ QVariantList fields(const lcomp::FilterInfo& info, const ldoc::ParamMap& params 
                         {"label", QString::fromStdString(f.label)},
                         {"kind", QString::fromStdString(f.kind)},
                         {"value", variant(found == params.end() ? f.value : found->second)},
+                        {"defaultValue", variant(f.value)},
                         {"minimum", f.minimum},
                         {"maximum", f.maximum},
                         {"choices", choices},
@@ -89,6 +90,50 @@ QVariantMap Document::filterDetails(const QString& target) const {
                 valid = std::unexpected(size.error());
         }
         auto schema = info ? fields(*info, e.params) : QVariantList{};
+        for (auto& row : schema) {
+            auto field = row.toMap();
+            const auto key = field.value("key").toString();
+            if (key == "key_color" || key == "color_multiply" || key == "color_add" ||
+                key == "color") {
+                field["kind"] = "colour";
+                field["label"] = field.value("label").toString().remove(" (RGB)");
+                field["value"] =
+                    QString("#%1").arg(field.value("value").toUInt(), 6, 16, QLatin1Char('0'));
+                field["defaultValue"] = QString("#%1").arg(field.value("defaultValue").toUInt(), 6,
+                                                           16, QLatin1Char('0'));
+                values[key] = field["value"];
+            } else if (field.value("kind") == "real") {
+                field["kind"] = "slider";
+                field["decimals"] = 4;
+                if (key == "similarity" || key == "smoothness" || key == "spill") {
+                    field["displayScale"] = 1000;
+                    field["value"] = field.value("value").toDouble() * 1000;
+                    field["minimum"] = field.value("minimum").toDouble() * 1000;
+                    field["maximum"] = field.value("maximum").toDouble() * 1000;
+                    field["decimals"] = 0;
+                }
+            }
+            if (key == "attack_time" || key == "release_time" || key == "hold_time" ||
+                key == "delay_ms")
+                field["suffix"] = "ms";
+            if (key == "db" || key == "threshold" || key == "open_threshold" ||
+                key == "close_threshold" || key == "output_gain" || key == "suppress_level" ||
+                key == "low" || key == "mid" || key == "high" || key == "knee")
+                field["suffix"] = "dB";
+            bool visible = key != "chunk_data";
+            if (e.type == "filter.crop" && (key == "right" || key == "bottom"))
+                visible = lcomp::filter_flag(e, "relative");
+            if (e.type == "filter.crop" && (key == "cx" || key == "cy"))
+                visible = !lcomp::filter_flag(e, "relative");
+            if (e.type == "filter.scroll" && key == "cx")
+                visible = lcomp::filter_flag(e, "limit_cx");
+            if (e.type == "filter.scroll" && key == "cy")
+                visible = lcomp::filter_flag(e, "limit_cy");
+            if (e.type == "filter.noise-suppression" && key == "suppress_level")
+                visible = lcomp::filter_text(e, "method") == "speex";
+            field["visible"] = visible;
+            row = field;
+        }
         if (e.type == "filter.vst") {
             const auto plugin = lcomp::vst_probe(e);
             if (!plugin.error.empty())
@@ -101,7 +146,8 @@ QVariantMap Document::filterDetails(const QString& target) const {
                     it == e.params.end() ? QVariant{parameter.value} : variant(it->second);
                 schema.push_back(QVariantMap{{"key", QString::fromStdString(key)},
                                              {"label", QString::fromStdString(parameter.name)},
-                                             {"kind", "real"},
+                                             {"kind", "slider"},
+                                             {"decimals", 3},
                                              {"value", current},
                                              {"minimum", 0},
                                              {"maximum", 1},
@@ -153,7 +199,12 @@ QVariantMap Document::filterDetails(const QString& target) const {
             {"schema", schema},
             {"status", valid ? QString{} : QString::fromStdString(valid.error())}});
     }
-    return {{"owner", QString::fromStdString(owner.to_string())},
+    const auto* source = p.source(owner);
+    const bool audioOnly =
+        p.bus(owner) ||
+        (source && (source->type == "source.audio-input" || source->type == "source.audio-output"));
+    return {{"audioOnly", audioOnly},
+            {"owner", QString::fromStdString(owner.to_string())},
             {"name", QString::fromStdString(name)},
             {"effects", effects}};
 }
@@ -227,7 +278,11 @@ void Document::editFilter(const QString& owner, const QString& effect, const QSt
                         e.params[f.key] = it->toBool();
                     } else if (f.kind == "int" || f.kind == "real") {
                         bool ok = false;
-                        const double n = it->toDouble(&ok);
+                        const bool color = f.key == "key_color" || f.key == "color_multiply" ||
+                                           f.key == "color_add" || f.key == "color";
+                        const double n = color && it->toString().startsWith('#')
+                                             ? it->toString().mid(1).toUInt(&ok, 16)
+                                             : it->toDouble(&ok);
                         if (!ok)
                             return;
                         e.params[f.key] = n;

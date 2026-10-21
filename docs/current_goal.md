@@ -4,6 +4,31 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Filter editor interaction and source preview, 2026-10-21
+
+The editor follows the supplied OBS references: persistent assigned-filter list
+on the left, selected-source preview above settings, sliders with numeric inputs,
+color swatches/pickers, file browsing, defaults, and conditional crop/scroll/noise
+suppression controls. Key ranges display in OBS's 0-1000 units. Resolution and
+expander presets edit the existing native parameters. Audio-only sources offer
+the ten audio filters and do not show a video preview.
+
+Dropdowns now stack above their containing dialog. Outside clicks no longer close
+the filter editor; Close and Escape do. Deferred document refresh avoids rebuilding
+controls during their edit callbacks. Sliders have an explicit hit area and commit
+once on release, preserving one Undo step per drag.
+
+Preview uses a transient renderer-only canvas referencing existing source IDs.
+No saved canvas or output is created, capture workers remain shared, and its deck
+is excluded from audio routing. Closing the editor removes the transient view.
+Renderer animation freshness combines all canvases so a static source preview
+cannot stop an animated Program canvas. Checks exercise actual dropdown clicks,
+every visual filter selection, slider drag/Undo, source preview delivery, audio
+filter availability, excluded preview audio, and multi-canvas animation.
+Warning-free `-Werror` build; all 30 tests pass (29 renderer/library tests plus
+the expanded UI check). The UI timeout is 150 seconds to accommodate added
+interaction coverage. Captured editor screenshot inspected for control alignment.
+
 ## Remaining stock filters and isolated VST2 hosting, 2026-10-21
 
 The Filters editor now covers all 14 Linux stock video filter types and 10 audio

@@ -378,6 +378,44 @@ LTEST_CASE(media_audio_crosses_worker_mixer_and_meter_transport) {
     CHECK(muted);
 }
 
+LTEST_CASE(static_filter_preview_does_not_stop_program_scroll_animation) {
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends);
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child);
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000));
+    auto source = colour_source(255, 0, 0);
+    ldoc::Effect scroll;
+    scroll.id = ldoc::Id::generate();
+    scroll.type = "filter.scroll";
+    scroll.params["speed_x"] = 4.0;
+    source.effects = {scroll};
+    ldoc::Scene scene;
+    scene.id = ldoc::Id::generate();
+    scene.roots = {bound_to(source)};
+    auto project = show(scene, {source});
+    auto canvas = project.canvases.front();
+    canvas.id = ldoc::Id::generate();
+    project.canvases.push_back(canvas);
+    commit(link, project);
+    REQUIRE(link.refresh(4));
+    bool programFrame = false, ack = false;
+    for (int i = 0; i < 20 && !ack; ++i) {
+        const auto event = link.receive(500);
+        REQUIRE(event);
+        if (!event->has_value())
+            continue;
+        if ((**event).kind == lcomp::PreviewEvent::Kind::Frame)
+            programFrame = programFrame || (**event).frame.canvas == project.canvases.front().id;
+        ack = (**event).kind == lcomp::PreviewEvent::Kind::Ack;
+    }
+    CHECK(ack && programFrame);
+    link.quit();
+    link.close();
+    CHECK_EQ(reap(*child, 3000), 0);
+}
+
 LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
     if (!std::getenv("LIBERTAS_TEST_MONITOR"))
         return;
@@ -424,10 +462,10 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
     scene.id = ldoc::Id::generate();
     auto project = show(scene, {source});
     project.scenes[0].roots = {node};
-    for (const int selected : {-1, 1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}) {
+    for (const int selected : {-1, 1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}) {
         project.sources.front().effects.clear();
         project.scenes.front().effects.clear();
-        if (selected >= 3) {
+        if (selected >= 3 && selected < 16) {
             ldoc::Effect effect;
             effect.id = ldoc::Id::generate();
             effect.type = selected >= 7 ? "filter.gain" : "unknown.audio-filter";
@@ -446,6 +484,10 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
                               : project.scenes.front().effects;
             stack.push_back(effect);
         }
+        if (selected == 16)
+            project.settings.extra["ui.filter-preview-deck"] = project.decks.front().id.to_string();
+        else
+            project.settings.extra.erase("ui.filter-preview-deck");
         if (selected < 0)
             project.settings.extra.erase("audio.monitor.output");
         else
@@ -483,7 +525,7 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
         REQUIRE(!pending);
         CHECK_EQ(first.take() > 0.01f, selected == 1 || selected == 4 || selected == 6 ||
                                            selected == 8 || selected == 10 || selected == 12 ||
-                                           selected == 13 || selected == 15);
+                                           selected == 13 || selected == 15 || selected == 17);
         CHECK_EQ(second.take() > 0.01f, selected == 2);
     }
     link.quit();

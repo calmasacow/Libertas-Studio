@@ -58,6 +58,7 @@ class Preview : public QObject {
     /// The id the image URL is keyed by. Empty until a document has named a canvas.
     Q_INVOKABLE [[nodiscard]] QString canvasKey(const QString& canvasId) const;
     Q_INVOKABLE void requestSize(QObject* owner, int edge);
+    Q_INVOKABLE QString setFilterTarget(const QString& owner);
 
     /// The latest document. Called from the session's change notification, never from the
     /// return of the command that caused it (ADR-0024). A snapshot already in flight is not
@@ -103,7 +104,14 @@ class Preview : public QObject {
     QString first_canvas_;
     std::unique_ptr<Link> link_;
     QTimer* live_ = nullptr;
+    bool program_live_ = false;
     ldoc::Project latest_;
+    QString filter_target_;
+    ldoc::Id filter_canvas_ = ldoc::Id::generate();
+    ldoc::Id filter_scene_ = ldoc::Id::generate();
+    ldoc::Id filter_node_ = ldoc::Id::generate();
+    ldoc::Id filter_deck_ = ldoc::Id::generate();
+    std::map<ldoc::Id, ldoc::Id> filter_ids_;
     std::map<QObject*, int> preview_sizes_;
     std::uint32_t preview_edge_ = 0;
     struct RenderBaseline { std::uint64_t ns = 0, frames = 0, missed = 0; };

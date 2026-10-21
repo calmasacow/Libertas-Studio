@@ -70,6 +70,15 @@ per the operator's platform rule. Third-party OBS plugins are separate porting w
 
 ## Editor and verification
 
+The source editor includes a live isolated picture above its controls. The UI
+adds a transient canvas/scene/deck only to its renderer snapshot while this editor
+is open. It references the existing source IDs so capture workers remain shared.
+The transient deck is explicitly excluded from audio routing: opening an editor
+must not double program audio or activate off-scene audio. It never enters the
+saved document, undo history, output configuration, or collection catalog.
+Closing the editor removes this transient view. Audio-only owners have no video
+preview. Slider drags commit on release, retaining one undo step per gesture.
+
 Sources and Program context menus expose Filters. Editor lists ordered audio/video
 filters applicable to the owner, with add, edit, enable/disable, reorder and delete.
 Actions resolve stable owner/effect IDs so a model refresh cannot redirect an edit.

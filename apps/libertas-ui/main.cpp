@@ -1244,6 +1244,37 @@ int main(int argc, char** argv) {
                    "Filters opens one shared editor");
             if (dialogs.size() == 1 && dialogs.front()->isVisible()) {
                 auto* dialog = dialogs.front();
+                const auto canvasCount = document.projectForBindings().canvases.size();
+                const auto previewKey = dialog->property("previewCanvas").toString();
+                for (int i = 0; i < 100 && !preview.hasFrame(previewKey); ++i)
+                    pump(20);
+                report(!previewKey.isEmpty() && preview.hasFrame(previewKey),
+                       "filter editor renders selected source through real renderer");
+                report(document.projectForBindings().canvases.size() == canvasCount,
+                       "source preview does not add a saved canvas");
+                const auto chooser = collect(dialog, QStringLiteral("filterType"));
+                if (!chooser.isEmpty()) {
+                    click(chooser.front());
+                    QQuickItem* popup = nullptr;
+                    for (auto* candidate :
+                         collect(window->contentItem(), QStringLiteral("choicePopup")))
+                        if (candidate->isVisible())
+                            popup = candidate;
+                    report(popup && popup->z() > dialog->z(),
+                           "filter choices draw above modal editor");
+                    QQuickItem* choice = nullptr;
+                    if (popup)
+                        for (auto* candidate : collect(popup, QStringLiteral("choiceOption")))
+                            if (candidate->property("modelData").toString() == "filter.crop")
+                                choice = candidate;
+                    report(choice != nullptr, "filter chooser exposes actual crop option");
+                    if (choice)
+                        click(choice);
+                    report(dialog->isVisible() &&
+                               dialog->property("addType").toString() == "filter.crop",
+                           "selecting dropdown option preserves filter editor");
+                    dialog->setProperty("addType", QStringLiteral("filter.color-correction"));
+                }
                 const auto add = collect(dialog, QStringLiteral("filterAdd"));
                 if (!add.isEmpty())
                     click(add.front());
@@ -1254,6 +1285,10 @@ int main(int argc, char** argv) {
                     auto brightness = collect(dialog, QStringLiteral("settingInput_brightness"));
                     report(brightness.size() == 1,
                            "color correction has an editable brightness field");
+                    report(collect(dialog, QStringLiteral("filterSlider_brightness")).size() == 1,
+                           "color correction has a slider alongside numeric input");
+                    if (parser.isSet(shot_opt))
+                        grab().save(parser.value(shot_opt) + QStringLiteral("/filter-editor.png"));
                     if (brightness.size() == 1) {
                         QMetaObject::invokeMethod(brightness.front(), "committed",
                                                   Q_ARG(double, 0.25));
@@ -1264,6 +1299,33 @@ int main(int argc, char** argv) {
                                    std::get<double>(src->effects.front().params.at("brightness")) ==
                                        0.25,
                                "filter setting commits to renderer document");
+                        const auto sliders =
+                            collect(dialog, QStringLiteral("filterSlider_brightness"));
+                        if (sliders.size() == 1) {
+                            auto* slider = sliders.front();
+                            const auto from = slider->mapToScene(
+                                QPointF(slider->width() * 0.6, slider->height() / 2));
+                            const auto to = slider->mapToScene(
+                                QPointF(slider->width() * 0.8, slider->height() / 2));
+                            post(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+                            post(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton);
+                            post(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+                            settle();
+                            document.undo();
+                            settle();
+                            const auto restored = document.filterDetails(owner)
+                                                      .value("effects")
+                                                      .toList()
+                                                      .front()
+                                                      .toMap()
+                                                      .value("values")
+                                                      .toMap();
+                            if (std::abs(restored.value("brightness").toDouble() - 0.25) >= 1e-6)
+                                std::fprintf(stderr, "       (brightness after undo: %.6f)\n",
+                                             restored.value("brightness").toDouble());
+                            report(std::abs(restored.value("brightness").toDouble() - 0.25) < 1e-6,
+                                   "slider drag uses one undo step");
+                        }
                     }
                     const auto enabled = collect(dialog, QStringLiteral("filterEnabled"));
                     if (!enabled.isEmpty())
@@ -1286,7 +1348,36 @@ int main(int argc, char** argv) {
                            "Undo restores filter and editor");
                     document.removeFilter(owner, effect);
                 }
+                for (const auto& type : document.filterTypes(owner)) {
+                    const auto name = type.toMap().value("type").toString();
+                    document.addFilter(owner, name);
+                    settle();
+                    const auto entries = document.filterDetails(owner).value("effects").toList();
+                    if (!entries.isEmpty()) {
+                        dialog->setProperty("selected", entries.back().toMap().value("id"));
+                        QMetaObject::invokeMethod(dialog, "refresh");
+                        settle();
+                    }
+                    report(dialog->isVisible(),
+                           "each visual filter opens settings without closing editor");
+                }
                 dialog->setVisible(false);
+                document.addNewSourceToScene(QStringLiteral("Audio filter check"),
+                                             QStringLiteral("source.audio-input"));
+                const auto audioOwner =
+                    document.filterDetails(document.selectedNode()).value("owner").toString();
+                document.showFilters(audioOwner);
+                settle();
+                report(dialog->isVisible() &&
+                           dialog->property("details").toMap().value("audioOnly").toBool(),
+                       "audio source opens audio-only filter editor");
+                const auto previews = collect(dialog, QStringLiteral("filterSourcePreview"));
+                report(previews.size() == 1 && !previews.front()->isVisible(),
+                       "audio filter editor does not show video preview");
+                report(document.filterTypes(audioOwner).size() == 10,
+                       "audio source offers all ten audio filters only");
+                dialog->setVisible(false);
+                document.removeSourceAndUses(audioOwner);
             }
             document.removeSourceAndUses(owner);
             settle();
