@@ -4,6 +4,28 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## OBS groups and linked canvas tabs, 2026-10-21
+
+ADR-0064 imports OBS groups as native group nodes inside their scenes, with saved
+local bounds, transforms, cropping and fresh placement IDs. Underlying sources
+remain shared; actual nested scenes remain scene references. CPU/GPU rendering and
+UI transform handles use the saved bounds. Ungroup refuses bounded groups rather
+than silently dropping their clipping; OBS export still reports groups converted
+to nested scenes. Recursive expansion is capped before any project is written.
+
+The obsolete `streamelements_transition_audio_wrapper_source` type is skipped at
+both global and scene placements, with a report warning. Other unknown types keep
+their placeholders. A temporary Marathon import produces 40 scenes, 17 native
+group placements covering all eight group names, and no obsolete wrapper sources.
+Existing collections are untouched: import again to receive these corrections.
+
+Selecting a Scenes or Sources canvas tab activates its counterpart in the other
+panel. Closed panels remain closed; when both panels share one tab group, the
+clicked tab wins. Checks cover actual tab clicks, GUI OBS import and child
+transforms, persistence, shared source identity, CPU/GPU rendering and import
+limits. Validation: warning-free `-Werror` build and all 29 tests passed with GPU
+and monitoring checks enabled.
+
 ## Combined video capture audio, 2026-10-21
 
 ADR-0063 adds an Audio input selector to Video Capture creation/settings: None,

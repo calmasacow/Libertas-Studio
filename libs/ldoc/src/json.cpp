@@ -200,6 +200,8 @@ Jv enc_node_data(const Node& n) {
                     kids.append(enc(c));
                 o["children"] = kids;
                 o["isolate"] = d.isolate;
+                if (d.size)
+                    o["size"] = enc(*d.size);
             } else if constexpr (std::is_same_v<T, SourceData>) {
                 o["source"] = d.source ? enc(*d.source) : Jv{Json::nullValue};
                 o["audio"] = enc(d.audio);
@@ -758,6 +760,8 @@ NodeData dec_node_data(Rd& rd, NodeKind kind, const Jv& parent, std::string_view
     case NodeKind::Group: {
         GroupData g;
         g.isolate = rd.boolean(d, "isolate", path, false);
+        if (d.isMember("size"))
+            g.size = dec_vec2_at(rd, d, "size", path, {});
         if (const Jv* kids = rd.array(d, "children", path)) {
             for (const Jv& c : *kids) {
                 if (!c.isObject()) {

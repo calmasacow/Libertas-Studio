@@ -769,15 +769,24 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
     }
 
     if (const auto* group = std::get_if<ldoc::GroupData>(&node.data)) {
+        const auto size = group->size.value_or(ldoc::Vec2{
+            static_cast<double>(target.picture.width), static_cast<double>(target.picture.height)});
+        if (!std::isfinite(size.x) || !std::isfinite(size.y) || size.x <= 0 || size.y <= 0 ||
+            size.x > 8192 || size.y > 8192 || size.x * size.y > 33554432) {
+            refuse(target.picture, node, GapReason::NoSize);
+            return;
+        }
         GapReason why = GapReason::NoSize;
-        const auto rect = place(node, target.picture.width, target.picture.height, true, why);
+        const auto rect = place(node, size.x, size.y, true, why);
         if (!rect) { refuse(target.picture, node, why); return; }
         const bool identity = !node.layout.crop.any() && rect->x0 == 0 && rect->y0 == 0 && rect->x1 == target.picture.width &&
             rect->y1 == target.picture.height && quarter_turn(node.transform.rotation_deg) == 0 &&
             node.transform.scale.x > 0 && node.transform.scale.y > 0;
-        if (!identity || group->isolate || node.blend.mode != ldoc::BlendMode::Normal) {
+        if (group->size || !identity || group->isolate ||
+            node.blend.mode != ldoc::BlendMode::Normal) {
             DrawPlan inner;
-            inner.width = target.picture.width; inner.height = target.picture.height;
+            inner.width = static_cast<int>(std::ceil(size.x));
+            inner.height = static_cast<int>(std::ceil(size.y));
             bool drew = false;
             CanvasTarget nested{inner, drew, target.stack, target.frames};
             for (auto it = group->children.rbegin(); it != group->children.rend(); ++it)

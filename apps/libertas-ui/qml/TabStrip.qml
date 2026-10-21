@@ -46,6 +46,7 @@ Item {
 
             delegate: Rectangle {
                 id: tab
+                objectName: "workspaceTab"
 
                 required property int index
 

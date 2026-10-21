@@ -107,6 +107,11 @@ LTEST_CASE(gpu_executes_the_shared_walk_for_opacity_precomps_rotations_and_flips
     auto image_result = gpu->render(image_plan, 0, error);
     REQUIRE_MSG(image_result.has_value(), "{}", error);
     compare(lcomp::execute_cpu(image_plan), *image_result);
+    std::get<ldoc::GroupData>(project.scenes[0].roots[0].data).size = ldoc::Vec2{8, 6};
+    const auto bounded_plan = lcomp::plan_canvas(project, project.canvases[0].id);
+    auto bounded_result = gpu->render(bounded_plan, 0, error);
+    REQUIRE_MSG(bounded_result.has_value(), "{}", error);
+    compare(lcomp::execute_cpu(bounded_plan), *bounded_result);
 }
 
 LTEST_CASE(all_seven_blends_match_cpu_for_textures_transparency_and_nested_groups) {

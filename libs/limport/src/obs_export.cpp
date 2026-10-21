@@ -274,12 +274,13 @@ struct Exporter {
                     warn(node.name,
                          "custom nested-scene size differs from scene canvas; check scaling");
             } else if (const auto* group = node.children()) {
-                rec = record(node.name, canvas);
+                const auto size = std::get<ldoc::GroupData>(node.data).size.value_or(canvas);
+                rec = record(node.name, size);
                 auto nested = base(rec, "scene");
                 nested["settings"]["custom_size"] = true;
-                nested["settings"]["cx"] = static_cast<int>(canvas.x);
-                nested["settings"]["cy"] = static_cast<int>(canvas.y);
-                nested["settings"]["items"] = items(*group, canvas, depth + 1);
+                nested["settings"]["cx"] = static_cast<int>(size.x);
+                nested["settings"]["cy"] = static_cast<int>(size.y);
+                nested["settings"]["items"] = items(*group, size, depth + 1);
                 root["sources"].append(nested);
                 warn(node.name, "group exported as a nested OBS scene");
             } else {

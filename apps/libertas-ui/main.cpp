@@ -3916,6 +3916,29 @@ int main(int argc, char** argv) {
             settle();
             report(workspace.layoutHasPanel(v_scenes) && workspace.layoutHasPanel(v_sources),
                    "and gets a scenes and a sources panel of its own");
+            const auto tabFor = [&](const QString& id) -> QQuickItem* {
+                for (auto* tab : collect(window->contentItem(), QStringLiteral("workspaceTab")))
+                    if (tab->property("panelId").toString() == id)
+                        return tab;
+                return nullptr;
+            };
+            for (const auto& id :
+                 {v_scenes, QStringLiteral("scenes"), v_sources, QStringLiteral("sources")}) {
+                auto* tab = tabFor(id);
+                report(tab != nullptr, "canvas panel tab exists for linked selection");
+                if (!tab)
+                    continue;
+                const auto at = tab->mapToScene(QPointF(10, tab->height() / 2));
+                post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                settle();
+                const bool main = !id.contains(':');
+                const auto* scenes = tabFor(main ? QStringLiteral("scenes") : v_scenes);
+                const auto* sources = tabFor(main ? QStringLiteral("sources") : v_sources);
+                report(scenes && sources && scenes->property("isActive").toBool() &&
+                           sources->property("isActive").toBool(),
+                       "clicking Scenes or Sources selects both tabs for the same canvas");
+            }
             report(workspace.title(v_scenes) == QLatin1String("Scenes: Vertical") &&
                        workspace.title(v_sources) == QLatin1String("Sources: Vertical"),
                    "both titled with the canvas they belong to");
@@ -4471,6 +4494,22 @@ int main(int argc, char** argv) {
                 report(QFile::exists(obs) && QFile::exists(obs + ".report.md") &&
                     dialog->property("mode").toString() == "report", "OBS GUI export writes JSON and a visible report");
                 QMetaObject::invokeMethod(dialog, "close");
+                QFile groupedObs(obs);
+                const QByteArray groupedJson = R"({"name":"Group import", "sources":[
+                    {"id":"color_source_v3","name":"Green","uuid":"green","settings":
+                        {"width":100,"height":50,"color":4278255360}},
+                    {"id":"scene","name":"Show","uuid":"show","settings":{"items":[
+                        {"name":"Group","source_uuid":"group","pos":{"x":30,"y":40},
+                         "scale":{"x":2,"y":2},"crop_left":10,"crop_top":5}]}}],
+                    "groups":[{"id":"group","name":"Group","uuid":"group","settings":
+                        {"cx":200,"cy":100,"items":[{"name":"Green","source_uuid":"green",
+                         "pos":{"x":10,"y":20}}]}}],
+                    "AuxAudioDevice1":{"id":"streamelements_transition_audio_wrapper_source",
+                        "name":"Obsolete","settings":{}},"current_scene":"Show"})";
+                report(groupedObs.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+                           groupedObs.write(groupedJson) == groupedJson.size(),
+                       "group import fixture writes OBS groups and an obsolete global wrapper");
+                groupedObs.close();
                 menu("menuCollectionImport");
                 dialog->setProperty("path", obs);
                 name(QStringLiteral("OBS import check"));
@@ -4478,6 +4517,34 @@ int main(int argc, char** argv) {
                 report(document.projectName() == "OBS import check" &&
                     dialog->property("mode").toString() == "report", "OBS GUI import opens its converted collection and report");
                 QMetaObject::invokeMethod(dialog, "close");
+                const auto& imported = document.projectForBindings();
+                report(imported.scenes.size() == 1 && imported.sources.size() == 1 &&
+                           imported.scenes.front().roots.size() == 1 &&
+                           imported.scenes.front().roots.front().is_group(),
+                       "GUI import keeps groups inside scenes and skips obsolete global wrappers");
+                if (imported.scenes.size() == 1 && imported.scenes.front().roots.size() == 1) {
+                    const auto& group = imported.scenes.front().roots.front();
+                    if (const auto* children = group.children();
+                        children && children->size() == 1) {
+                        const auto groupId = QString::fromStdString(group.id.to_string());
+                        const auto childId =
+                            QString::fromStdString(children->front().id.to_string());
+                        const auto box = document.placedRect({}, childId);
+                        report(std::abs(box.value("x").toDouble() - 30) < 0.01 &&
+                                   std::abs(box.value("y").toDouble() - 70) < 0.01 &&
+                                   std::abs(box.value("width").toDouble() - 200) < 0.01,
+                               "imported group child handles respect local bounds, crop and scale");
+                        document.selectNode(childId);
+                        document.setDrawnRect(50, 70, 200, 100);
+                        report(std::abs(document.placedRect({}, childId).value("x").toDouble() -
+                                        50) < 0.01,
+                               "moving an imported group child updates its actual transform");
+                        document.ungroupNode(groupId);
+                        report(
+                            document.projectForBindings().scenes.front().roots.front().is_group(),
+                            "ungroup refuses to silently discard saved group clipping bounds");
+                    }
+                }
                 menu("menuCollectionNew");
                 name(QStringLiteral("New collection check"));
                 accept();

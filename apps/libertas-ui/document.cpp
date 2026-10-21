@@ -282,23 +282,41 @@ std::optional<QVariantMap> placed_map(const ldoc::Project& project, const ldoc::
                                       const ldoc::Node& node);
 
 QTransform group_space(const ldoc::Node& group, const ldoc::Canvas& canvas) {
+    const auto& data = std::get<ldoc::GroupData>(group.data);
+    const auto size = data.size.value_or(
+        ldoc::Vec2{static_cast<double>(canvas.width), static_cast<double>(canvas.height)});
     lcomp::GapReason why = lcomp::GapReason::NoSize;
-    const auto box = lcomp::drawn_frame(group, canvas.width, canvas.height, true, why);
-    if (!box || canvas.width <= 0 || canvas.height <= 0) return {};
+    const auto box = lcomp::drawn_frame(group, size.x, size.y, true, why);
+    const auto width = size.x - group.layout.crop.left - group.layout.crop.right;
+    const auto height = size.y - group.layout.crop.top - group.layout.crop.bottom;
+    if (!box || width <= 0 || height <= 0)
+        return {};
     const auto map = [&](double x, double y) {
-        if (group.transform.scale.x < 0) x = 1 - x;
-        if (group.transform.scale.y < 0) y = 1 - y;
+        x = (x - group.layout.crop.left) / width;
+        y = (y - group.layout.crop.top) / height;
+        if (group.transform.scale.x < 0)
+            x = 1 - x;
+        if (group.transform.scale.y < 0)
+            y = 1 - y;
         double u = x, v = y;
         switch (lcomp::quarter_turn(group.transform.rotation_deg).value_or(0)) {
-        case 1: u = 1 - y; v = x; break;
-        case 2: u = 1 - x; v = 1 - y; break;
-        case 3: u = y; v = 1 - x; break;
+        case 1:
+            u = 1 - y;
+            v = x;
+            break;
+        case 2:
+            u = 1 - x;
+            v = 1 - y;
+            break;
+        case 3:
+            u = y;
+            v = 1 - x;
+            break;
         }
         return QPointF(box->x + u * box->width, box->y + v * box->height);
     };
     const auto origin = map(0, 0), x = map(1, 0) - origin, y = map(0, 1) - origin;
-    return QTransform(x.x() / canvas.width, x.y() / canvas.width,
-        y.x() / canvas.height, y.y() / canvas.height, origin.x(), origin.y());
+    return QTransform(x.x(), x.y(), y.x(), y.y(), origin.x(), origin.y());
 }
 
 QTransform parent_space(const ldoc::Scene& scene, const ldoc::Id& id, const ldoc::Canvas& canvas) {
@@ -556,8 +574,9 @@ bool window_size(const ldoc::Source& src, double& width, double& height);
 /// Natural size for a kind the compositor actually paints. Anything else has no rectangle.
 bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, const ldoc::Node& node,
                   double& width, double& height) {
-    if (std::holds_alternative<ldoc::GroupData>(node.data)) {
-        width = canvas.width; height = canvas.height;
+    if (const auto* group = std::get_if<ldoc::GroupData>(&node.data)) {
+        width = group->size ? group->size->x : canvas.width;
+        height = group->size ? group->size->y : canvas.height;
         return width > 0 && height > 0;
     }
     if (const auto* source = std::get_if<ldoc::SourceData>(&node.data)) {
@@ -3765,6 +3784,11 @@ void Document::ungroupNode(const QString& nodeId) {
     const auto* data = std::get_if<ldoc::GroupData>(&group->data);
     if (!data) {
         emit notice(QStringLiteral("Only a group can be taken apart."));
+        return;
+    }
+    if (data->size && !data->children.empty()) {
+        emit notice(QStringLiteral("This group has saved surface bounds; ungrouping could change "
+                                   "clipping and blending. Move its sources out individually."));
         return;
     }
     if (const auto* canvas = current_canvas(); canvas &&

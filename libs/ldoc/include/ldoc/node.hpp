@@ -91,6 +91,8 @@ struct GroupData {
     std::vector<Node> children;
     /// Composite against transparency instead of the backdrop beneath the group.
     bool isolate = false;
+    /// Local surface bounds; absent means the containing canvas size.
+    std::optional<Vec2> size;
 
     friend bool operator==(const GroupData&, const GroupData&) = default;
 };

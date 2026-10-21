@@ -4,6 +4,7 @@
 
 #include <QGuiApplication>
 #include <QTemporaryDir>
+#include <algorithm>
 #include <fstream>
 #include <json/json.h>
 #include <lcomp/composite.hpp>
@@ -182,12 +183,87 @@ LTEST_CASE(import_group_skips_backup_items_and_renders_saved_tight_bounds) {
     auto converted = scratch.convert();
     REQUIRE_MSG(converted.has_value(), "{}", converted.error());
     const auto& p = converted->project;
+    REQUIRE(p.scenes.size() == 1);
     REQUIRE(p.scenes[0].roots.size() == 1);
+    REQUIRE(p.scenes[0].roots[0].is_group());
+    const auto& native = std::get<ldoc::GroupData>(p.scenes[0].roots[0].data);
+    REQUIRE(native.size.has_value());
+    CHECK(*native.size == (ldoc::Vec2{2, 2}));
+    CHECK_EQ(native.children.size(), 1u);
     CHECK(p.scenes[0].roots[0].locked);
     const auto picture = lcomp::composite_canvas(p, p.canvases[0].id);
     REQUIRE(picture.status == lcomp::PictureStatus::Complete);
     CHECK(pixel(picture, 0, 0) == (std::array<int, 3>{0, 0, 0}));
     CHECK(pixel(picture, 3, 3) == (std::array<int, 3>{0, 255, 0}));
+    auto reopened = ldoc::open_project(scratch.output);
+    REQUIRE(reopened);
+    CHECK(reopened->project.scenes[0].roots == p.scenes[0].roots);
+}
+
+LTEST_CASE(import_omits_obsolete_wrappers_but_keeps_global_audio_and_repeated_groups) {
+    Scratch scratch;
+    auto root = collection();
+    auto wrapper = source("Obsolete", "streamelements_transition_audio_wrapper_source", "obsolete");
+    root["AuxAudioDevice1"] = wrapper;
+    auto mic = source("Microphone", "pulse_input_capture", "mic");
+    mic["settings"]["device_id"] = "default";
+    root["AuxAudioDevice2"] = mic;
+    auto group = source("Group", "group", "group");
+    group["settings"]["cx"] = 2;
+    group["settings"]["cy"] = 2;
+    group["settings"]["items"].append(item("green", "green"));
+    group["settings"]["items"].append(item("Obsolete", "obsolete"));
+    root["groups"].append(group);
+    auto& items = root["sources"][2]["settings"]["items"];
+    items = J(Json::arrayValue);
+    items.append(item("Group", "group"));
+    items.append(item("Group", "group", 2, 2));
+    items.append(item("Obsolete", "obsolete"));
+    scratch.write(root);
+    auto converted = scratch.convert();
+    REQUIRE_MSG(converted, "{}", converted.error());
+    const auto& p = converted->project;
+    REQUIRE(p.scenes.size() == 1);
+    REQUIRE(p.scenes[0].roots.size() == 3);
+    const auto& first = std::get<ldoc::GroupData>(p.scenes[0].roots[0].data);
+    const auto& second = std::get<ldoc::GroupData>(p.scenes[0].roots[1].data);
+    REQUIRE(first.children.size() == 1 && second.children.size() == 1);
+    CHECK(first.children[0].id != second.children[0].id);
+    CHECK(std::get<ldoc::SourceData>(first.children[0].data).source ==
+          std::get<ldoc::SourceData>(second.children[0].data).source);
+    CHECK_EQ(p.sources.size(), 3u);
+    CHECK_EQ(p.scenes[0].roots.back().name, std::string("Microphone"));
+    const auto picture = lcomp::composite_canvas(p, p.canvases[0].id);
+    REQUIRE(picture.status == lcomp::PictureStatus::Complete);
+    CHECK(pixel(picture, 0, 0) == (std::array<int, 3>{0, 255, 0}));
+    CHECK(pixel(picture, 3, 3) == (std::array<int, 3>{0, 255, 0}));
+    CHECK(std::ranges::any_of(converted->warnings, [](const auto& warning) {
+        return warning.find("StreamElements") != std::string::npos;
+    }));
+}
+
+LTEST_CASE(import_rejects_group_expansion_and_surface_limits_before_writing) {
+    for (const bool oversized : {false, true}) {
+        Scratch scratch;
+        auto root = collection();
+        std::string previous = "green";
+        for (int i = 0; i < (oversized ? 1 : 17); ++i) {
+            const auto name = "group" + std::to_string(i);
+            auto group = source(name.c_str(), "group", name.c_str());
+            group["settings"]["cx"] = oversized ? 8192 : 2;
+            group["settings"]["cy"] = oversized ? 8192 : 2;
+            group["settings"]["items"].append(item(previous.c_str(), previous.c_str()));
+            group["settings"]["items"].append(item(previous.c_str(), previous.c_str()));
+            root["groups"].append(group);
+            previous = name;
+        }
+        root["sources"][2]["settings"]["items"].append(item(previous.c_str(), previous.c_str()));
+        scratch.write(root);
+        const auto result = scratch.convert();
+        REQUIRE(!result);
+        CHECK(result.error().find(oversized ? "32M pixels" : "100000 nodes") != std::string::npos);
+        CHECK(!fs::exists(scratch.output));
+    }
 }
 
 LTEST_CASE(import_centered_quarter_turns_keep_the_obs_anchor) {

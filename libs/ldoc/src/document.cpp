@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <format>
 #include <set>
 #include <unordered_map>
@@ -480,7 +481,10 @@ private:
                         err(e.id, std::format("an effect on '{}' has no type", n.name));
                 }
                 if (const auto* g = std::get_if<GroupData>(&n.data)) {
-                    (void)g;
+                    if (g->size && (!std::isfinite(g->size->x) || !std::isfinite(g->size->y) ||
+                                    g->size->x <= 0 || g->size->y <= 0 || g->size->x > 8192 ||
+                                    g->size->y > 8192 || g->size->x * g->size->y > 33554432))
+                        err(n.id, "group surface bounds exceed supported range");
                 } else if (const auto* ref = std::get_if<ReferenceData>(&n.data)) {
                     if (ref->target == n.id)
                         err(n.id, std::format("'{}' references itself", n.name));

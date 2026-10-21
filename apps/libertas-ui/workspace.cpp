@@ -843,6 +843,15 @@ void Workspace::activate(const QString& panel) {
     llayout::Layout next = history_.current();
     if (!next.activate(to_std(panel)))
         return;
+    const auto kind = panel.section(':', 0, 0);
+    if (kind == QLatin1String("scenes") || kind == QLatin1String("sources")) {
+        const auto paired = (kind == QLatin1String("scenes") ? QStringLiteral("sources")
+                                                             : QStringLiteral("scenes")) +
+                            panel.mid(kind.size());
+        if (next.has_panel(to_std(paired)) &&
+            next.node_of_panel(to_std(paired)) != next.node_of_panel(to_std(panel)))
+            static_cast<void>(next.activate(to_std(paired)));
+    }
     if (history_.commit(std::move(next)))
         touch();
 }

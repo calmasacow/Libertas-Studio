@@ -79,6 +79,7 @@ struct Entry {
     std::optional<ldoc::Id> bus;
     bool scene = false;
     bool global = false;
+    bool ignored = false;
 };
 
 struct Converter {
@@ -88,6 +89,7 @@ struct Converter {
     std::map<std::string, std::size_t> uuids;
     std::map<std::string, std::vector<std::size_t>> names;
     std::size_t item_count = 0;
+    std::size_t expanded_nodes = 0;
     std::map<std::string, std::size_t> canvas_indices;
 
     std::size_t canvas_index(const Entry& e) const {
@@ -203,7 +205,7 @@ struct Converter {
             for (auto index : found->second) {
                 const auto& e = entries[index];
                 const auto canvas = str(e.original, "canvas_uuid");
-                if (e.scene &&
+                if (e.type == "scene" &&
                     (canvas.empty() || canvas == "6c69626f-6273-4c00-9d88-c5136d61696e")) {
                     if (selected)
                         throw std::runtime_error("ambiguous main-canvas scene: " + name);
@@ -233,6 +235,7 @@ struct Converter {
             throw std::runtime_error(e.name + ": settings must be an object");
         e.global = global;
         e.scene = e.type == "scene" || e.type == "group";
+        e.ignored = e.type == "streamelements_transition_audio_wrapper_source";
         const auto uuid = str(source, "uuid");
         if (!uuid.empty() && !uuids.emplace(uuid, entries.size()).second)
             throw std::runtime_error("duplicate source UUID: " + uuid);
@@ -241,6 +244,10 @@ struct Converter {
     }
 
     void source(Entry& e) {
+        if (e.ignored) {
+            warn(e, "obsolete StreamElements transition audio wrapper ignored");
+            return;
+        }
         const auto& s = e.original["settings"];
         const auto& canvas = result.project.canvases[canvas_index(e)];
         e.size = {static_cast<double>(canvas.width), static_cast<double>(canvas.height)};
@@ -252,8 +259,8 @@ struct Converter {
                 else
                     warn(e, "group bounds missing; uses canvas bounds; check placement");
             }
-            if (e.type == "group")
-                warn(e, "group converted to a nested scene with saved bounds");
+            if (e.size.x * e.size.y > 33554432)
+                throw std::runtime_error(e.name + ": group surface exceeds 32M pixels");
             return;
         }
         ldoc::Source out;
@@ -493,9 +500,26 @@ struct Converter {
     }
 
     ldoc::Node node(const J& item, Entry& e) {
-        auto n =
-            ldoc::make_node(e.scene ? ldoc::NodeKind::Precomp : ldoc::NodeKind::Source, e.name);
-        if (e.scene)
+        if (++expanded_nodes > 100000)
+            throw std::runtime_error("expanded OBS groups exceed 100000 nodes");
+        auto n = ldoc::make_node(e.type == "group" ? ldoc::NodeKind::Group
+                                 : e.scene         ? ldoc::NodeKind::Precomp
+                                                   : ldoc::NodeKind::Source,
+                                 e.name);
+        if (e.type == "group") {
+            auto& group = std::get<ldoc::GroupData>(n.data);
+            group.size = e.size;
+            group.isolate = true;
+            const auto& items = e.original["settings"]["items"];
+            for (auto it = items.end(); it != items.begin();) {
+                --it;
+                if (flag(*it, "group_item_backup"))
+                    continue;
+                auto& child = entries[reference(*it)];
+                if (!child.ignored)
+                    group.children.push_back(node(*it, child));
+            }
+        } else if (e.scene)
             std::get<ldoc::PrecompData>(n.data) = {e.id, e.size, ldoc::ColorSpace::Rec709};
         else {
             auto& data = std::get<ldoc::SourceData>(n.data);
@@ -656,11 +680,11 @@ struct Converter {
             const auto i = reference(row, true);
             if (!entries[i].scene)
                 throw std::runtime_error("scene order names a non-scene source");
-            if (std::ranges::find(order, i) == order.end())
+            if (entries[i].type == "scene" && std::ranges::find(order, i) == order.end())
                 order.push_back(i);
         }
         for (std::size_t i = 0; i < entries.size(); ++i)
-            if (entries[i].scene && std::ranges::find(order, i) == order.end())
+            if (entries[i].type == "scene" && std::ranges::find(order, i) == order.end())
                 order.push_back(i);
         for (auto i : order) {
             auto& e = entries[i];
@@ -671,14 +695,15 @@ struct Converter {
             const auto& items = e.original["settings"]["items"];
             for (auto it = items.end(); it != items.begin();) {
                 --it;
-                if (!flag(*it, "group_item_backup"))
-                    scene.roots.push_back(node(*it, entries[reference(*it)]));
+                if (!flag(*it, "group_item_backup")) {
+                    auto& child = entries[reference(*it)];
+                    if (!child.ignored)
+                        scene.roots.push_back(node(*it, child));
+                }
             }
-            if (e.type != "group") {
-                for (auto& global : entries)
-                    if (global.global)
-                        scene.roots.push_back(node(J(Json::objectValue), global));
-            }
+            for (auto& global : entries)
+                if (global.global && !global.ignored)
+                    scene.roots.push_back(node(J(Json::objectValue), global));
             result.project.scenes.push_back(std::move(scene));
         }
         if (result.project.scenes.empty())
@@ -690,7 +715,7 @@ struct Converter {
             J ref;
             ref["name"] = name;
             const auto& e = entries[reference(ref, true)];
-            if (!e.scene)
+            if (e.type != "scene")
                 throw std::runtime_error("active scene names a non-scene source");
             return e.id;
         };
