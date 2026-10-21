@@ -976,11 +976,20 @@ struct Apply {
                                      [&c](const Bus& b) { return b.id == c.bus; });
         if (it == p.buses.end())
             return std::unexpected(std::format("there is no bus {}", c.bus.to_string()));
-        // Source nodes routed to it and sends into it are left dangling, which validate()
-        // reports as a warning -- the same line as a source. Refusing would mean a bus could never be removed
-        // while anything named it.
+        // Keep source routes visibly unresolved, but remove incoming bus sends: those
+        // otherwise leave an invalid graph, particularly on older OBS imports.
         const auto index = static_cast<std::size_t>(it - p.buses.begin());
         Applied out{AddBus{*it, index}, std::format("Remove bus {}", quoted(it->name))};
+        std::vector<Command> restore{out.inverse};
+        for (auto& bus : p.buses) {
+            if (bus.id == c.bus ||
+                std::ranges::none_of(bus.sends, [&](const Send& send) { return send.to == c.bus; }))
+                continue;
+            restore.push_back(SetBus{bus});
+            std::erase_if(bus.sends, [&](const Send& send) { return send.to == c.bus; });
+        }
+        if (restore.size() > 1)
+            out.inverse = make_batch(std::move(restore), "Restore bus and sends");
         p.buses.erase(it);
         return out;
     }

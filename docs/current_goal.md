@@ -14,8 +14,8 @@ The original JSON remains available for reference. A temporary Marathon import
 produces 40 scenes, 61 sources and only the native Program bus.
 
 Mixer bus context menus now offer Delete channel. Program is protected; deleting
-another bus uses the existing undoable command, with missing-route warnings for
-routes still naming it. Undo restores the bus and routes. Real UI right-click/
+another bus removes incoming bus sends, with missing-route warnings for source
+routes still naming it. Undo restores the bus and sends. Real UI right-click/
 delete/undo and import checks pass; warning-free `-Werror` build and all 29 tests
 passed with GPU and monitoring checks enabled. Existing collections are not
 silently migrated; reimport or delete unwanted buses manually.

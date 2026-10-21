@@ -1133,6 +1133,30 @@ LTEST_CASE(an_output_needs_a_canvas_but_a_bus_does_not_need_its_listeners) {
     CHECK(!validate(h.project()).empty());
 }
 
+LTEST_CASE(removing_an_imported_track_prunes_incoming_bus_sends_and_undo_restores_them) {
+    auto project = make_default_project("Imported mixer");
+    Bus track;
+    track.id = Id::generate();
+    track.name = "OBS track 2";
+    track.kind = BusKind::Track;
+    Bus input;
+    input.id = Id::generate();
+    input.name = "Imported audio";
+    input.kind = BusKind::Input;
+    input.sends = {{project.buses.front().id, 0, false}, {track.id, -3, true}};
+    project.buses.push_back(track);
+    project.buses.push_back(input);
+    DocumentHistory history{project};
+    REQUIRE(history.run(RemoveBus{track.id}));
+    CHECK(is_valid(history.project()));
+    REQUIRE(history.project().bus(input.id));
+    CHECK_EQ(history.project().bus(input.id)->sends.size(), 1u);
+    REQUIRE(history.undo());
+    CHECK(history.project() == project);
+    REQUIRE(history.redo());
+    CHECK(is_valid(history.project()));
+}
+
 LTEST_CASE(a_continuous_gesture_is_one_undo_step_that_returns_to_where_it_started) {
     // What a dragged fader needs: four hundred commands, one undo, and the undo lands on the
     // value the fader had before the drag -- not one notch back.
