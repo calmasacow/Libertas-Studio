@@ -215,6 +215,7 @@ struct DrawOp {
 };
 
 struct DrawPlan {
+    std::uint64_t time_ns = 0;
     int width = 0;
     int height = 0;
     PictureStatus status = PictureStatus::NoProgram;
@@ -225,6 +226,7 @@ struct DrawPlan {
 
 [[nodiscard]] DrawPlan plan_canvas(const ldoc::Project& project, const ldoc::Id& canvas,
                                    const FrameSource& frames = {});
+[[nodiscard]] bool animated_plan(const DrawPlan& plan);
 [[nodiscard]] Picture execute_cpu(const DrawPlan& plan, bool transparent = false);
 
 /// Fit a completed canvas within an edge budget. Zero preserves its size.

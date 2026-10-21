@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <deque>
 #include <lcomp/audio_filters.hpp>
 #include <lcomp/filters.hpp>
+#include <lcomp/vst.hpp>
 #include <map>
 #include <numbers>
 #include <rnnoise.h>
@@ -20,6 +22,8 @@ struct AudioFilters::Impl {
         std::array<std::array<double, 11>, 2> eq{};
         std::array<DenoiseState*, 2> rn{};
         std::array<SpeexPreprocessState*, 2> speex{};
+        std::deque<float> delay;
+        std::unique_ptr<VstWorker> vst;
 
         ~State() {
             for (auto* p : rn)
@@ -60,12 +64,20 @@ AudioFilters::process(std::span<float> samples, std::span<const ldoc::Effect> ef
         const auto* info = filter_info(e.type);
         if (!info)
             return fail("Unknown audio filter: " + e.type);
-        if (!info->audio)
+        if (!info->audio && e.type != "filter.video-delay")
             continue;
         if (auto valid = validate_filter(e); !valid)
             return fail(valid.error());
         auto& ptr = impl_->states[e.id];
-        if (!ptr || ptr->params != e.params || ptr->type != e.type) {
+        bool changed = ptr && ptr->params != e.params;
+        if (changed && e.type == "filter.vst" && ptr->type == e.type) {
+            ldoc::Effect previous = e;
+            previous.params = ptr->params;
+            changed = filter_text(previous, "path") != filter_text(e, "path") ||
+                      filter_text(previous, "chunk_data") != filter_text(e, "chunk_data") ||
+                      filter_number(previous, "program") != filter_number(e, "program");
+        }
+        if (!ptr || changed || ptr->type != e.type) {
             ptr = std::make_unique<Impl::State>();
             ptr->params = e.params;
             ptr->type = e.type;
@@ -74,7 +86,24 @@ AudioFilters::process(std::span<float> samples, std::span<const ldoc::Effect> ef
         const auto n = [&](const char* key) { return filter_number(e, key); };
         const auto amp = [](double db) { return std::pow(10.0, db / 20); };
         const auto coefficient = [](double ms) { return ms <= 0 ? 0 : std::exp(-1 / (ms * 48)); };
-        if (e.type == "filter.gain" || e.type == "filter.invert") {
+        if (e.type == "filter.vst") {
+            if (filter_text(e, "path").empty())
+                return fail("Choose a Linux VST2 plugin");
+            if (!state.vst)
+                state.vst = std::make_unique<VstWorker>(e);
+            if (!state.vst->process(samples, e.params))
+                return fail("VST plugin warming up, unavailable, or failed");
+        } else if (e.type == "filter.video-delay") {
+            const auto length = static_cast<std::size_t>(n("delay_ms")) * 96;
+            if (state.delay.size() != length)
+                state.delay.assign(length, 0);
+            if (length)
+                for (auto& sample : samples) {
+                    state.delay.push_back(sample);
+                    sample = state.delay.front();
+                    state.delay.pop_front();
+                }
+        } else if (e.type == "filter.gain" || e.type == "filter.invert") {
             const float g = e.type == "filter.invert" ? -1 : static_cast<float>(amp(n("db")));
             for (auto& sample : samples)
                 sample *= g;

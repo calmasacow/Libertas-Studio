@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -20,6 +21,21 @@
 #include <vector>
 
 namespace lcomp {
+
+bool animated_plan(const DrawPlan& plan) {
+    const auto timed = [](const auto& effects) {
+        return std::ranges::any_of(effects, [](const auto& e) {
+            return e.enabled && (e.type == "filter.scroll" || e.type == "filter.render-delay" ||
+                                 e.type == "filter.video-delay");
+        });
+    };
+    if (timed(plan.filters))
+        return true;
+    for (const auto& op : plan.ops)
+        if (timed(op.filters) || (op.nested && animated_plan(*op.nested)))
+            return true;
+    return false;
+}
 
 std::optional<int> quarter_turn(double degrees) {
     if (!std::isfinite(degrees))
@@ -1052,6 +1068,17 @@ DrawPlan plan_canvas(const ldoc::Project& project, const ldoc::Id& canvas_id,
         picture.status = PictureStatus::Empty;
     else
         picture.status = PictureStatus::Complete;
+    const auto now =
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                       std::chrono::steady_clock::now().time_since_epoch())
+                                       .count());
+    const auto stamp = [&](auto&& self, DrawPlan& p) -> void {
+        p.time_ns = now;
+        for (auto& op : p.ops)
+            if (op.nested)
+                self(self, *op.nested);
+    };
+    stamp(stamp, picture);
     return picture;
 }
 
@@ -1061,6 +1088,15 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
     picture.height = plan.height;
     picture.status = plan.status;
     picture.gaps = plan.gaps;
+    const auto add_gaps = [&](const auto& gaps) {
+        for (const auto& gap : gaps)
+            if (std::ranges::none_of(picture.gaps, [&](const auto& existing) {
+                    return existing.node == gap.node && existing.reason == gap.reason;
+                }))
+                picture.gaps.push_back(gap);
+        if (!gaps.empty())
+            picture.status = PictureStatus::Partial;
+    };
     if (plan.status == PictureStatus::Unsupported)
         return picture;
     picture.stride = static_cast<std::uint32_t>(plan.width) * 4u;
@@ -1081,11 +1117,13 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
             const int h = op.nested ? op.nested->height : op.image.height;
             raw.rect = {0, 0, w, h};
             DrawPlan local;
+            local.time_ns = plan.time_ns;
             local.width = w;
             local.height = h;
             local.ops.push_back(std::move(raw));
             local.filters = op.filters;
             Picture filtered = execute_cpu(local, true);
+            add_gaps(filtered.gaps);
             Picture view;
             view.width = filtered.width - op.crop[0] - op.crop[2];
             view.height = filtered.height - op.crop[1] - op.crop[3];
@@ -1105,6 +1143,7 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
             fill_rect(picture, op.rect, *op.colour, op.opacity, op.blend);
         } else {
             const Picture nested = op.nested ? execute_cpu(*op.nested, true) : Picture{};
+            add_gaps(nested.gaps);
             const Picture& source = op.nested ? nested : op.image;
             Picture view;
             view.width = source.width - op.crop[0] - op.crop[2];
@@ -1120,8 +1159,8 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
     }
     for (const auto& effect : plan.filters)
         if (effect.enabled && (!filter_info(effect.type) || !filter_info(effect.type)->audio))
-            picture =
-                filter_picture(picture, resolve_filter(effect, picture.width, picture.height));
+            picture = filter_picture(
+                picture, resolve_filter(effect, picture.width, picture.height, plan.time_ns));
     return picture;
 }
 

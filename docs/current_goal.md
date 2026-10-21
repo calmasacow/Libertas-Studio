@@ -4,6 +4,47 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Remaining stock filters and isolated VST2 hosting, 2026-10-21
+
+The Filters editor now covers all 14 Linux stock video filter types and 10 audio
+types, including Linux VST2. Right-click a source in Sources, Program, or the
+source manager and choose Filters; mixer channels expose the same editor.
+Changes apply immediately, persist, and support Undo. File-based filters have
+a file picker; VST parameters come from the selected plugin.
+
+New native CPU/Vulkan stages implement LUT, scroll, HDR tone mapping, SDR white
+level, render delay and async video delay. Async delay also delays audio.
+Scaling exposes point, bilinear, bicubic, Lanczos and area sampling, including
+aspect-ratio sizing. Keys expose opacity/contrast/brightness/gamma; masks expose
+tint and stretch. OBS import/export preserves these controls, independent scroll
+width/height limits, and VST parameter snapshots. No libOBS dependency.
+
+VST2 loads mono/stereo Linux `.so` plugins in disposable helper processes. Bounded
+queues keep plugin IPC off the mixer thread. Crashes/timeouts mute the affected
+path; disabling the filter restores audio. Generic parameter controls and program
+selection are available; plugin-native windows are not. Processing adds at least
+10 ms latency without automatic compensation. External vendor plugins remain
+untested; the test plugin exercises gain, saved-state restoration and deliberate
+crash through both the worker and real renderer monitoring.
+
+Limits: native effects are not bit-identical OBS shaders/DSP. HDR controls map
+into the current SDR output pipeline, not end-to-end HDR output. LUTs accept
+2-64 entries per axis with finite 0-1 output, stored at 8-bit precision. Video
+delay history is capped at 256 MiB and 1,200 frames per backend; warmup and
+exhaustion report gaps rather than silently ignoring delay. Large resolutions
+therefore support shorter delays. Unsupported imported filters remain visible.
+
+The 4K/eight-filter stress check initially exceeded the 512 MiB compositor
+allocation budget. Reusing equal-size intermediate images fixes that; measured
+6.09 ms/frame including preview readback on this RTX 2070 (five-frame smoke
+measurement, not a production latency guarantee). A temporary Marathon import
+produced 40 scenes and 61 sources without changing the user's saved collection.
+The imported contrast value 3.73 is now accepted; one existing mask file remains
+missing and is reported for repair. Final warning-free `-Werror` build and 30/30
+tests pass with GPU and monitoring enabled. Checks include all sampling modes,
+invalid-LUT recovery, import/export settings, real context-menu editing, delayed
+frames, nested gaps, and VST mute/crash/disable recovery through renderer audio.
+
 ## First working native filters and editor, 2026-10-21
 
 Source, preview and mixer context menus open one shared Filters editor: add,

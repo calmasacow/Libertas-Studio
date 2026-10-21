@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <lcomp/filters.hpp>
+#include <lcomp/vst.hpp>
 
 namespace libertas::ui {
 
@@ -81,10 +82,46 @@ QVariantMap Document::filterDetails(const QString& target) const {
                 values[QString::fromStdString(field.key)] =
                     variant(it == e.params.end() ? field.value : it->second);
             }
-        const auto valid = lcomp::validate_filter(e);
+        auto valid = lcomp::validate_filter(e);
+        if (valid && (e.type == "filter.mask" || e.type == "filter.lut")) {
+            const auto size = lcomp::filter_size(std::span{&e, 1}, 1, 1);
+            if (!size)
+                valid = std::unexpected(size.error());
+        }
         auto schema = info ? fields(*info, e.params) : QVariantList{};
+        if (e.type == "filter.vst") {
+            const auto plugin = lcomp::vst_probe(e);
+            if (!plugin.error.empty())
+                valid = std::unexpected(plugin.error);
+            for (std::size_t index = 0; index < plugin.parameters.size(); ++index) {
+                const auto key = "parameter." + std::to_string(index);
+                const auto& parameter = plugin.parameters[index];
+                const auto it = e.params.find(key);
+                const auto current =
+                    it == e.params.end() ? QVariant{parameter.value} : variant(it->second);
+                schema.push_back(QVariantMap{{"key", QString::fromStdString(key)},
+                                             {"label", QString::fromStdString(parameter.name)},
+                                             {"kind", "real"},
+                                             {"value", current},
+                                             {"minimum", 0},
+                                             {"maximum", 1},
+                                             {"suffix", QString::fromStdString(parameter.unit)}});
+                values[QString::fromStdString(key)] = current;
+            }
+            for (auto& row : schema) {
+                auto field = row.toMap();
+                if (field.value("key") == "program") {
+                    field["maximum"] = std::max(0, plugin.programs - 1);
+                    row = field;
+                }
+            }
+        }
         for (auto& row : schema) {
             auto field = row.toMap();
+            if (field.value("key").toString() == "path") {
+                field["kind"] = "path";
+                row = field;
+            }
             if (field.value("key").toString() != "sidechain")
                 continue;
             QStringList choices{"none"};
@@ -197,6 +234,15 @@ void Document::editFilter(const QString& owner, const QString& effect, const QSt
                     } else
                         e.params[f.key] = it->toString().toStdString();
                 }
+            if (e.type == "filter.vst")
+                for (auto it = values.begin(); it != values.end(); ++it)
+                    if (it.key().startsWith("parameter.")) {
+                        bool ok = false;
+                        const double v = it->toDouble(&ok);
+                        if (!ok || !std::isfinite(v) || v < 0 || v > 1)
+                            return;
+                        e.params[it.key().toStdString()] = v;
+                    }
             if (enabled)
                 if (auto valid = lcomp::validate_filter(e); !valid) {
                     emit notice(QString::fromStdString(valid.error()));

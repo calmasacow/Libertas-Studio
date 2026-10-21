@@ -32,6 +32,7 @@ Item {
         Document.editFilter(owner, selected, current.name, current.enabled, values);
     }
     Connections { target: Document; function onChanged() { if (dialog.visible) dialog.refresh(); } }
+    Timer { interval: 1000; repeat: true; running: dialog.visible && dialog.current.type === "filter.vst" && dialog.current.status === "Loading plugin"; onTriggered: dialog.refresh() }
     Keys.onEscapePressed: visible = false
     Rectangle { anchors.fill: parent; color: "#80000000" }
     MouseArea { anchors.fill: parent; onClicked: dialog.visible = false; onWheel: wheel => { wheel.accepted = true; } }
@@ -95,12 +96,20 @@ Item {
                     onToggled: Document.editFilter(dialog.owner, dialog.selected, dialog.current.name, !checked, dialog.current.values)
                 }
                 Text { width: parent.width; wrapMode: Text.WordWrap; text: dialog.current.status || ""; visible: text !== ""; color: Theme.c.textMuted }
+                Text { width: parent.width; wrapMode: Text.WordWrap; visible: dialog.current.type === "filter.vst"; text: qsTr("Linux VST2 (.so). Generic parameter controls; plugin windows are not supported. Processing adds at least 10 ms of audio latency without automatic compensation."); color: Theme.c.textMuted }
+                Text { width: parent.width; wrapMode: Text.WordWrap; visible: dialog.current.type === "filter.hdr-tonemap" || dialog.current.type === "filter.sdr-white"; text: qsTr("These controls map into SDR output. End-to-end HDR output is not supported."); color: Theme.c.textMuted }
                 Repeater {
                     model: dialog.current.schema || []
                     delegate: SettingRow {
                         required property var modelData
                         width: settings.width; field: modelData; currentValue: modelData.value
                         onCommitted: value => dialog.edit(modelData.key, value)
+                        onBrowseRequested: {
+                            const owner = dialog.owner, effect = dialog.selected;
+                            const path = FileDialog.pick(qsTr("Choose filter file"), String(modelData.value || ""), false);
+                            if (path !== "" && owner === dialog.owner && effect === dialog.selected) dialog.edit(modelData.key, path);
+                            else if (FileDialog.lastError() !== "") NoticeLog.add(FileDialog.lastError());
+                        }
                     }
                 }
             }

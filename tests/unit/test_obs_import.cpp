@@ -8,6 +8,7 @@
 #include <fstream>
 #include <json/json.h>
 #include <lcomp/composite.hpp>
+#include <lcomp/filters.hpp>
 #include <ldoc/project_io.hpp>
 #include <limport/obs.hpp>
 #include <sys/wait.h>
@@ -118,6 +119,7 @@ LTEST_CASE(imported_color_filter_draws_and_exports_with_name_order_and_disabled_
     root["sources"][0]["filters"].append(effect);
     effect["name"] = "Disabled correction";
     effect["enabled"] = false;
+    effect["settings"]["contrast"] = 3.73;
     root["sources"][0]["filters"].append(effect);
     scratch.write(root);
     auto converted = scratch.convert();
@@ -127,6 +129,7 @@ LTEST_CASE(imported_color_filter_draws_and_exports_with_name_order_and_disabled_
     REQUIRE(red->effects.size() == 2);
     CHECK_EQ(red->effects[0].name, std::string("Brighten"));
     CHECK(!red->effects[1].enabled);
+    CHECK(lcomp::validate_filter(red->effects[1]));
     const auto image = lcomp::composite_canvas(p, p.canvases.front().id);
     REQUIRE(image.gaps.empty());
     CHECK(pixel(image, 0, 0)[1] > 40);
@@ -140,6 +143,71 @@ LTEST_CASE(imported_color_filter_draws_and_exports_with_name_order_and_disabled_
     const auto reopened = ldoc::open_project(scratch.output);
     REQUIRE(reopened);
     CHECK(reopened->project.sources.front().effects == red->effects);
+}
+
+LTEST_CASE(imported_scale_mask_and_scroll_preserve_settings_and_render_after_roundtrip) {
+    Scratch scratch;
+    auto root = collection();
+    J scale;
+    scale["id"] = "scale_filter";
+    scale["settings"]["resolution"] = "16:9";
+    scale["settings"]["sampling"] = "lanczos";
+    root["sources"][0]["filters"].append(scale);
+    J mask;
+    mask["id"] = "mask_filter";
+    mask["versioned_id"] = "mask_filter_v2";
+    mask["settings"]["image_path"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/two.png";
+    mask["settings"]["color"] = Json::UInt(0xff804020);
+    mask["settings"]["stretch"] = false;
+    root["sources"][0]["filters"].append(mask);
+    J scroll;
+    scroll["id"] = "scroll_filter";
+    scroll["settings"]["limit_cx"] = true;
+    scroll["settings"]["cx"] = 3;
+    root["sources"][0]["filters"].append(scroll);
+    scratch.write(root);
+    auto imported = scratch.convert();
+    REQUIRE(imported);
+    const auto& effects = imported->project.sources[0].effects;
+    REQUIRE(effects.size() == 3);
+    CHECK(lcomp::filter_flag(effects[0], "aspect_only"));
+    CHECK_EQ(lcomp::filter_text(effects[0], "sampling"), std::string("lanczos"));
+    CHECK_EQ(lcomp::filter_number(effects[1], "color"), double(0x204080));
+    CHECK(!lcomp::filter_flag(effects[1], "stretch"));
+    CHECK(lcomp::filter_flag(effects[2], "limit_cx"));
+    CHECK(!lcomp::filter_flag(effects[2], "limit_cy"));
+    const auto before =
+        lcomp::composite_canvas(imported->project, imported->project.canvases[0].id);
+    REQUIRE(before.gaps.empty());
+    const auto output = fs::path(scratch.temp.path().toStdString()) / "export.json";
+    REQUIRE(limport::export_obs(imported->project, scratch.output, output));
+    auto again = limport::import_obs(output, output.string() + ".libertas", {4, 4, {60, 1}});
+    REQUIRE(again);
+    const auto after = lcomp::composite_canvas(again->project, again->project.canvases[0].id);
+    CHECK(after.gaps.empty());
+    CHECK(before.pixels == after.pixels);
+}
+
+LTEST_CASE(invalid_lut_reports_a_gap_and_correcting_the_path_restores_rendering) {
+    Scratch scratch;
+    const auto invalid = fs::path(scratch.temp.path().toStdString()) / "invalid.cube";
+    std::ofstream(invalid) << "LUT_3D_SIZE 2\nDOMAIN_MIN 1 1 1\nDOMAIN_MAX 0 0 0\n0 0 0\n";
+    auto root = collection();
+    J lut;
+    lut["id"] = "clut_filter";
+    lut["settings"]["image_path"] = invalid.string();
+    root["sources"][0]["filters"].append(lut);
+    scratch.write(root);
+    auto imported = scratch.convert();
+    REQUIRE(imported);
+    auto& project = imported->project;
+    const auto before = lcomp::composite_canvas(project, project.canvases[0].id);
+    CHECK(!before.gaps.empty());
+    project.sources[0].effects[0].params["path"] =
+        std::string(LIBERTAS_IMAGE_FIXTURES) + "/identity.cube";
+    const auto after = lcomp::composite_canvas(project, project.canvases[0].id);
+    CHECK(after.gaps.empty());
+    CHECK(pixel(after, 0, 0)[0] > 250);
 }
 
 LTEST_CASE(all_obs_blend_modes_survive_import_render_export_and_reimport) {

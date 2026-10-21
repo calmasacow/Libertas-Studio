@@ -374,7 +374,7 @@ class AudioSources {
         const auto add_filters = [&](const ldoc::Id& id, const std::vector<ldoc::Effect>& effects) {
             if (std::ranges::any_of(effects, [](const auto& e) {
                     const auto* info = lcomp::filter_info(e.type);
-                    return e.enabled && (!info || info->audio);
+                    return e.enabled && (!info || info->audio || e.type == "filter.video-delay");
                 }))
                 inherited.push_back({id, effects});
         };

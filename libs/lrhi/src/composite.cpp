@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <deque>
 #include <drm_fourcc.h>
 #include <format>
 #include <lcomp/filters.hpp>
@@ -104,6 +105,80 @@ struct GpuCompositor::Impl {
     std::unique_ptr<Buffer> readback;
     std::size_t image_at = 0, upload_at = 0;
     std::uint64_t allocated = 0;
+
+    struct History {
+        int width = 0, height = 0;
+        float delay = 0;
+        std::uint64_t last = 0;
+        std::deque<std::pair<std::uint64_t, std::unique_ptr<Image>>> frames;
+    };
+
+    std::map<ldoc::Id, History> histories;
+    std::vector<std::unique_ptr<Image>> retired, recycled;
+    std::vector<lcomp::Gap> runtime_gaps;
+
+    Image& delayed(Image& input, const lcomp::VideoFilter& op) {
+        auto& h = histories[op.id];
+        if (h.width != input.width || h.height != input.height || h.delay != op.values[0] ||
+            op.time_ns < h.last) {
+            for (auto& frame : h.frames)
+                retired.push_back(std::move(frame.second));
+            h = {input.width, input.height, op.values[0], 0, {}};
+        }
+        const auto delay = static_cast<std::uint64_t>(op.values[0] * 1000000);
+        const auto due = op.time_ns > delay ? op.time_ns - delay : 0;
+        while (h.frames.size() > 1 && h.frames[1].first <= due) {
+            retired.push_back(std::move(h.frames.front().second));
+            h.frames.pop_front();
+        }
+        std::uint64_t bytes = 0;
+        for (const auto& [id, history] : histories)
+            bytes += static_cast<std::uint64_t>(history.width) *
+                     static_cast<std::uint64_t>(history.height) * 8 * history.frames.size();
+        bool full = false;
+        if (h.last != op.time_ns || h.frames.empty()) {
+            const auto need = static_cast<std::uint64_t>(input.width) *
+                              static_cast<std::uint64_t>(input.height) * 8;
+            if (bytes + need > 256ULL * 1024 * 1024 || h.frames.size() >= 1200)
+                full = true;
+            else {
+                std::unique_ptr<Image> saved;
+                const auto reuse = std::ranges::find_if(recycled, [&](const auto& image) {
+                    return image && image->width == input.width && image->height == input.height;
+                });
+                if (reuse != recycled.end()) {
+                    saved = std::move(*reuse);
+                    recycled.erase(reuse);
+                } else {
+                    target(input.width, input.height, VK_FORMAT_R16G16B16A16_SFLOAT);
+                    saved = std::move(images[image_at - 1]);
+                }
+                barrier(*saved, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+                VkImageCopy copy{};
+                copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                copy.dstSubresource = copy.srcSubresource;
+                copy.extent = {static_cast<unsigned>(input.width),
+                               static_cast<unsigned>(input.height), 1};
+                vkCmdCopyImage(cmd, input.image, VK_IMAGE_LAYOUT_GENERAL, saved->image,
+                               VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+                barrier(*saved, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+                h.frames.emplace_back(op.time_ns, std::move(saved));
+            }
+            h.last = op.time_ns;
+        }
+        if (!full && !h.frames.empty() && h.frames.front().first <= due)
+            return *h.frames.front().second;
+        auto& empty = target(input.width, input.height, VK_FORMAT_R16G16B16A16_SFLOAT);
+        barrier(empty, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        VkClearColorValue clear{};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, empty.image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
+        barrier(empty, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+        runtime_gaps.push_back(
+            {op.id, "Video delay",
+             full ? lcomp::GapReason::UnsupportedEffect : lcomp::GapReason::NoFrame});
+        return empty;
+    }
 
     ~Impl() {
         if (!c)
@@ -457,6 +532,7 @@ struct GpuCompositor::Impl {
                 const int h = op.nested ? op.nested->height : op.image.height;
                 raw.rect = {0, 0, w, h};
                 lcomp::DrawPlan local;
+                local.time_ns = plan.time_ns;
                 local.width = w;
                 local.height = h;
                 local.ops.push_back(std::move(raw));
@@ -472,12 +548,27 @@ struct GpuCompositor::Impl {
             dispatch(dest, *input, composite, push, width, height);
         }
         Image* result = &dest;
+        std::vector<Image*> scratch{&dest};
         for (const auto& effect : plan.filters) {
             if (!effect.enabled ||
                 (lcomp::filter_info(effect.type) && lcomp::filter_info(effect.type)->audio))
                 continue;
-            const auto resolved = lcomp::resolve_filter(effect, result->width, result->height);
-            auto& output = target(resolved.width, resolved.height, VK_FORMAT_R16G16B16A16_SFLOAT);
+            const auto resolved =
+                lcomp::resolve_filter(effect, result->width, result->height, plan.time_ns);
+            if (resolved.kind == 13) {
+                if (resolved.values[0] > 0)
+                    result = &delayed(*result, resolved);
+                continue;
+            }
+            const auto reuse = std::ranges::find_if(scratch, [&](const auto* image) {
+                return image != result && image->width == resolved.width &&
+                       image->height == resolved.height;
+            });
+            Image& output = reuse == scratch.end() ? target(resolved.width, resolved.height,
+                                                            VK_FORMAT_R16G16B16A16_SFLOAT)
+                                                   : **reuse;
+            if (reuse == scratch.end())
+                scratch.push_back(&output);
             barrier(output, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
             Push packed;
             static_assert(sizeof(packed) == sizeof(std::array<int, 4>) + sizeof(resolved.values));
@@ -510,11 +601,22 @@ struct GpuCompositor::Impl {
         image_at = upload_at = 0;
         allocated = 0;
         acquired.clear();
+        recycled = std::move(retired);
+        retired.clear();
+        runtime_gaps.clear();
+        std::erase_if(histories, [&](const auto& item) {
+            return plan.time_ns > item.second.last &&
+                   plan.time_ns - item.second.last > 21000000000ULL;
+        });
         VkCommandBufferBeginInfo bi{};
         bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         checked(vkBeginCommandBuffer(cmd, &bi), "begin composite");
         Image& canvas = draw(plan, false);
+        if (!runtime_gaps.empty()) {
+            out.gaps.insert(out.gaps.end(), runtime_gaps.begin(), runtime_gaps.end());
+            out.status = lcomp::PictureStatus::Partial;
+        }
         const auto edge = static_cast<std::uint32_t>(std::max(plan.width, plan.height));
         if (max_edge && max_edge < edge) {
             out.width = std::max(

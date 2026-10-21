@@ -19,6 +19,10 @@ libertas_unit_test(test_capture          libertas::lcapture)
 libertas_unit_test(test_video            libertas::lcapture)
 libertas_unit_test(test_audio            libertas::lcapture)
 libertas_unit_test(test_filters          libertas::lcomp)
+add_library(vst_fixture MODULE vst_fixture.cpp)
+target_link_libraries(vst_fixture PRIVATE libertas::flags)
+target_compile_definitions(test_filters PRIVATE LIBERTAS_VST_FIXTURE="$<TARGET_FILE:vst_fixture>")
+add_dependencies(test_filters vst_fixture)
 libertas_unit_test(test_source_worker    libertas::lcomp libertas::lcore)
 target_sources(test_source_worker PRIVATE ../../apps/libertas-render/source_worker.cpp)
 target_compile_definitions(test_source_worker PRIVATE
@@ -40,9 +44,10 @@ libertas_unit_test(test_ipc              libertas::lipc)
 libertas_unit_test(test_json             libertas::ldoc)
 libertas_unit_test(test_preview         libertas::lcomp libertas::lcapture)
 target_compile_definitions(test_preview PRIVATE
+    LIBERTAS_VST_FIXTURE="$<TARGET_FILE:vst_fixture>"
     LIBERTAS_RENDER="$<TARGET_FILE:libertas-render>"
     LIBERTAS_IMAGE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/images")
-add_dependencies(test_preview libertas-render)
+add_dependencies(test_preview libertas-render vst_fixture)
 set_tests_properties(test_preview PROPERTIES ENVIRONMENT "LIBERTAS_RENDER_BACKEND=cpu")
 libertas_unit_test(test_gpu_composite libertas::lrhi)
 target_compile_definitions(test_gpu_composite PRIVATE

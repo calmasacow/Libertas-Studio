@@ -424,7 +424,7 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
     scene.id = ldoc::Id::generate();
     auto project = show(scene, {source});
     project.scenes[0].roots = {node};
-    for (const int selected : {-1, 1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10}) {
+    for (const int selected : {-1, 1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}) {
         project.sources.front().effects.clear();
         project.scenes.front().effects.clear();
         if (selected >= 3) {
@@ -434,6 +434,13 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
             if (selected >= 7)
                 effect.params["db"] = -60.0;
             effect.enabled = selected % 2 == 1;
+            if (selected >= 11) {
+                effect.type = "filter.vst";
+                effect.params.clear();
+                effect.params["path"] = std::string(LIBERTAS_VST_FIXTURE);
+                effect.params["parameter.0"] = selected == 14 ? 1.0 : selected == 13 ? 0.5 : 0.0;
+                effect.enabled = selected != 12 && selected != 15;
+            }
             auto& stack = selected <= 4 || selected == 7 || selected == 8
                               ? project.sources.front().effects
                               : project.scenes.front().effects;
@@ -475,7 +482,8 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
         }
         REQUIRE(!pending);
         CHECK_EQ(first.take() > 0.01f, selected == 1 || selected == 4 || selected == 6 ||
-                                           selected == 8 || selected == 10);
+                                           selected == 8 || selected == 10 || selected == 12 ||
+                                           selected == 13 || selected == 15);
         CHECK_EQ(second.take() > 0.01f, selected == 2);
     }
     link.quit();

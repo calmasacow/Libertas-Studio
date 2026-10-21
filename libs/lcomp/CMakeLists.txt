@@ -18,11 +18,15 @@ pkg_check_modules(SPEEXDSP REQUIRED IMPORTED_TARGET speexdsp)
 add_library(lcomp STATIC
     src/composite.cpp
     src/filters.cpp
+    src/lut.cpp
     src/audio_filters.cpp
+    src/vst.cpp
     src/image.cpp
     src/preview.cpp
 )
 add_library(libertas::lcomp ALIAS lcomp)
+target_compile_definitions(lcomp PRIVATE LIBERTAS_VST_EXE="$<TARGET_FILE:libertas-vst>")
+add_dependencies(lcomp libertas-vst)
 
 target_include_directories(lcomp PUBLIC include)
 target_link_libraries(lcomp

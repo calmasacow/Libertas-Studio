@@ -11,6 +11,7 @@
 #include <json/json.h>
 #include <lcomp/composite.hpp>
 #include <lcomp/filters.hpp>
+#include <lcomp/vst.hpp>
 #include <lcore/atomic_file.hpp>
 #include <limport/obs.hpp>
 #include <map>
@@ -148,6 +149,7 @@ struct Exporter {
                     settings["color_multiply"] = packed("color_multiply");
                     settings["color_add"] = packed("color_add");
                 } else if (info->type == "filter.color-key" || info->type == "filter.chroma-key") {
+                    out["versioned_id"] = info->obs + "_v2";
                     settings["key_color_type"] = "custom";
                     settings["key_color"] = packed("key_color");
                     settings["similarity"] = lcomp::filter_number(e, "similarity") * 1000;
@@ -156,6 +158,7 @@ struct Exporter {
                         settings["spill"] = lcomp::filter_number(e, "spill") * 1000;
                 } else if (info->type == "filter.mask") {
                     out["versioned_id"] = info->obs + "_v2";
+                    settings["color"] = packed("color");
                     settings["image_path"] = path(lcomp::filter_text(e, "path"));
                     const auto mode = lcomp::filter_text(e, "mode");
                     settings["type"] = mode == "alpha"      ? "mask_alpha_filter.effect"
@@ -163,11 +166,31 @@ struct Exporter {
                                        : mode == "add"      ? "blend_add_filter.effect"
                                        : mode == "subtract" ? "blend_sub_filter.effect"
                                                             : "mask_color_filter.effect";
+                } else if (info->type == "filter.vst") {
+                    settings["plugin_path"] = path(lcomp::filter_text(e, "path"));
+                    settings["chunk_data"] = lcomp::filter_text(e, "chunk_data");
+                    const auto snapshot = lcomp::vst_snapshot(e);
+                    if (snapshot)
+                        settings["chunk_data"] = *snapshot;
+                    else
+                        warn(e.name, "VST state snapshot unavailable: " + snapshot.error());
+                } else if (info->type == "filter.lut") {
+                    settings["image_path"] = path(lcomp::filter_text(e, "path"));
+                    settings["clut_amount"] = lcomp::filter_number(e, "amount");
+                } else if (info->type == "filter.hdr-tonemap") {
+                    settings["sdr_input_maximum_nits"] = lcomp::filter_number(e, "input_maximum");
+                    settings["sdr_output_maximum_nits"] = lcomp::filter_number(e, "output_white");
+                    warn(e.name,
+                         "HDR input transfer depends on OBS source metadata; verify tone mapping");
+                } else if (info->type == "filter.sdr-white") {
+                    settings["sdr_white_level_nits"] = lcomp::filter_number(e, "sdr_white_level");
+                    settings["power"] = lcomp::filter_number(e, "gamma");
                 } else if (info->type == "filter.scale") {
                     settings["resolution"] =
-                        std::to_string(static_cast<int>(lcomp::filter_number(e, "width"))) + "x" +
+                        std::to_string(static_cast<int>(lcomp::filter_number(e, "width"))) +
+                        (lcomp::filter_flag(e, "aspect_only") ? ":" : "x") +
                         std::to_string(static_cast<int>(lcomp::filter_number(e, "height")));
-                    settings["sampling"] = "point";
+                    settings["sampling"] = lcomp::filter_text(e, "sampling");
                 }
                 out["settings"] = settings;
             }

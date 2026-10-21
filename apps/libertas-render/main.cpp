@@ -77,6 +77,7 @@ class Renderer {
         }
         auto frames = [this](const ldoc::Source& source) { return source_frame(source, bool(gpu_)); };
         auto plan = lcomp::plan_canvas(project, canvas, frames);
+        animated_ = lcomp::animated_plan(plan);
         if (gpu_) {
             std::string error;
             auto result = gpu_->render(plan, max_edge, error);
@@ -98,6 +99,8 @@ class Renderer {
     }
 
     bool fresh() const {
+        if (animated_)
+            return true;
         for (const auto& [id, session] : workers_) {
             std::lock_guard lock(session->mu);
             if (session->sequence != session->drawn) return true;
@@ -115,6 +118,8 @@ class Renderer {
         }
         return false;
     }
+
+    bool animated_ = false;
 
     void done() {
         for (const auto& [id, snapshot] : worker_held_) {

@@ -299,6 +299,9 @@ struct Converter {
                         packed(modern ? "color_multiply" : "color", 0xffffffff);
                     effect.params["color_add"] = modern ? packed("color_add", 0) : std::int64_t{0};
                 } else if (info->type == "filter.color-key" || info->type == "filter.chroma-key") {
+                    effect.params["opacity"] =
+                        num(settings, "opacity", version.ends_with("_v2") ? 1 : 100) /
+                        (version.ends_with("_v2") ? 1 : 100);
                     const auto key = str(settings, "key_color_type", "green");
                     effect.params["key_color"] = key == "green"  ? std::int64_t{0x00ff00}
                                                  : key == "blue" ? std::int64_t{0x0000ff}
@@ -313,6 +316,8 @@ struct Converter {
                     if (info->type == "filter.chroma-key")
                         effect.params["spill"] = std::max(1.0, num(settings, "spill", 100)) / 1000;
                 } else if (info->type == "filter.mask") {
+                    effect.params["color"] = packed("color", 0xffffffff);
+                    effect.params["stretch"] = flag(settings, "stretch");
                     auto path = fs::path(str(settings, "image_path"));
                     if (path.is_relative())
                         path = base / path;
@@ -327,12 +332,40 @@ struct Converter {
                     effect.params["opacity"] =
                         num(settings, "opacity", version.ends_with("_v2") ? 1 : 100) /
                         (version.ends_with("_v2") ? 1 : 100);
+                } else if (info->type == "filter.vst") {
+                    auto path = fs::path(str(settings, "plugin_path"));
+                    if (path.is_relative())
+                        path = base / path;
+                    effect.params["path"] = path.string();
+                    effect.params["chunk_data"] = str(settings, "chunk_data");
+                    warn(e, "VST2 requires matching Linux plugin binary; verify imported state and "
+                            "program");
+                } else if (info->type == "filter.lut") {
+                    auto path = fs::path(str(settings, "image_path"));
+                    if (path.is_relative())
+                        path = base / path;
+                    effect.params["path"] = path.string();
+                    effect.params["amount"] = num(settings, "clut_amount", 1);
+                } else if (info->type == "filter.hdr-tonemap") {
+                    effect.params["input_maximum"] = num(settings, "sdr_input_maximum_nits", 1000);
+                    effect.params["output_white"] = num(settings, "sdr_output_maximum_nits", 300);
+                    warn(e, "HDR tone map imported with explicit PQ input; verify transfer and "
+                            "white level");
+                } else if (info->type == "filter.sdr-white") {
+                    effect.params["sdr_white_level"] = num(settings, "sdr_white_level_nits", 300);
+                    effect.params["gamma"] = num(settings, "power", 2.4);
+                    warn(e, "SDR white level uses native gamma conversion; verify HDR appearance");
                 } else if (info->type == "filter.scale") {
+                    effect.params["sampling"] = str(settings, "sampling", "bicubic");
                     int w = 0, h = 0;
                     const auto resolution = str(settings, "resolution");
                     if (std::sscanf(resolution.c_str(), "%dx%d", &w, &h) == 2) {
                         effect.params["width"] = std::int64_t{w};
                         effect.params["height"] = std::int64_t{h};
+                    } else if (std::sscanf(resolution.c_str(), "%d:%d", &w, &h) == 2) {
+                        effect.params["width"] = std::int64_t{w};
+                        effect.params["height"] = std::int64_t{h};
+                        effect.params["aspect_only"] = true;
                     } else {
                         effect.type = "obs.filter." + type;
                         warn(e, "unsupported scale resolution: " + resolution);

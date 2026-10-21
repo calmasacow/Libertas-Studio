@@ -80,6 +80,8 @@ LTEST_CASE(stock_video_filters_execute_on_cpu_and_gpu_from_the_same_scene) {
             effect.params[f.key] = f.value;
         if (info.type == "filter.mask")
             effect.params["path"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/two.png";
+        if (info.type == "filter.lut")
+            effect.params["path"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/identity.cube";
         if (info.type == "filter.scale") {
             effect.params["width"] = std::int64_t{8};
             effect.params["height"] = std::int64_t{12};
@@ -107,6 +109,144 @@ LTEST_CASE(stock_video_filters_execute_on_cpu_and_gpu_from_the_same_scene) {
             compare(lcomp::execute_cpu(plan), *image);
         }
     }
+}
+
+LTEST_CASE(sampling_modes_and_key_adjustments_match_on_both_backends) {
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE(gpu);
+    std::vector<std::uint8_t> pixels(16 * 16 * 4);
+    for (std::size_t i = 0; i < pixels.size(); i += 4) {
+        pixels[i] = static_cast<std::uint8_t>(i % 251);
+        pixels[i + 1] = 100;
+        pixels[i + 2] = 180;
+        pixels[i + 3] = 255;
+    }
+    const lcomp::FrameSource frames = [&](const auto&) {
+        return lcomp::CapturedPicture{16, 16, pixels.data(), pixels.size()};
+    };
+    for (const auto* sampling : {"point", "bilinear", "bicubic", "lanczos", "area"}) {
+        for (const auto size : {8, 23}) {
+            auto p = show(size, size);
+            ldoc::Effect effect;
+            effect.id = ldoc::Id::generate();
+            effect.type = "filter.scale";
+            effect.params["width"] = std::int64_t{size};
+            effect.params["height"] = std::int64_t{size};
+            effect.params["sampling"] = std::string(sampling);
+            p.sources[0].effects = {effect};
+            const auto plan = lcomp::plan_canvas(p, p.canvases[0].id, frames);
+            const auto image = gpu->render(plan, 0, error);
+            REQUIRE_MSG(image, "{}", error);
+            compare(lcomp::execute_cpu(plan), *image);
+        }
+    }
+    for (const auto* type : {"filter.color-key", "filter.chroma-key"}) {
+        auto p = show(16, 16);
+        ldoc::Effect effect;
+        effect.id = ldoc::Id::generate();
+        effect.type = type;
+        effect.params["opacity"] = 0.8;
+        effect.params["contrast"] = -0.2;
+        effect.params["brightness"] = 0.1;
+        effect.params["gamma"] = 0.3;
+        p.sources[0].effects = {effect};
+        const auto plan = lcomp::plan_canvas(p, p.canvases[0].id, frames);
+        const auto image = gpu->render(plan, 0, error);
+        REQUIRE(image);
+        compare(lcomp::execute_cpu(plan), *image);
+    }
+}
+
+LTEST_CASE(video_delay_uses_prior_frames_and_scroll_advances_without_source_damage) {
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE(gpu);
+    auto p = show(4, 4);
+    std::vector<std::uint8_t> pixels(4 * 4 * 4, 0);
+    for (std::size_t i = 0; i < pixels.size(); i += 4) {
+        pixels[i + 2] = 255;
+        pixels[i + 3] = 255;
+    }
+    const lcomp::FrameSource frames = [&](const auto&) {
+        return lcomp::CapturedPicture{4, 4, pixels.data(), pixels.size()};
+    };
+    ldoc::Effect delay;
+    delay.id = ldoc::Id::generate();
+    delay.type = "filter.render-delay";
+    delay.params["delay_ms"] = std::int64_t{100};
+    p.sources[0].effects = {delay};
+    auto first = lcomp::plan_canvas(p, p.canvases[0].id, frames);
+    first.time_ns = 1000000000;
+    REQUIRE(lcomp::animated_plan(first));
+    const auto initial = gpu->render(first, 0, error);
+    REQUIRE(initial);
+    const auto cpu_first = lcomp::execute_cpu(first);
+    compare(cpu_first, *initial);
+    CHECK(!initial->gaps.empty());
+    for (std::size_t i = 0; i < pixels.size(); i += 4) {
+        pixels[i] = 255;
+        pixels[i + 2] = 0;
+    }
+    auto next = lcomp::plan_canvas(p, p.canvases[0].id, frames);
+    next.time_ns = 1100000000;
+    const auto second = gpu->render(next, 0, error);
+    REQUIRE(second);
+    compare(lcomp::execute_cpu(next), *second);
+    CHECK(second->gaps.empty());
+    CHECK(second->pixels[0] > 240);
+    CHECK(second->pixels[2] < 10);
+    ldoc::Effect scroll;
+    scroll.id = ldoc::Id::generate();
+    scroll.type = "filter.scroll";
+    scroll.params["speed_x"] = 1.0;
+    scroll.params["loop"] = false;
+    p.sources[0].effects = {scroll};
+    first = lcomp::plan_canvas(p, p.canvases[0].id, frames);
+    first.time_ns = 2000000000;
+    const auto start = gpu->render(first, 0, error);
+    REQUIRE(start);
+    compare(lcomp::execute_cpu(first), *start);
+    next = lcomp::plan_canvas(p, p.canvases[0].id, frames);
+    next.time_ns = 3000000000;
+    const auto moved = gpu->render(next, 0, error);
+    REQUIRE(moved);
+    compare(lcomp::execute_cpu(next), *moved);
+    CHECK_EQ(moved->pixels[2], 0);
+    CHECK(moved->pixels[6] > 240);
+}
+
+LTEST_CASE(a_4k_filter_chain_stays_within_the_compositor_memory_budget) {
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE(gpu);
+    auto p = show(3840, 2160);
+    auto& source = p.sources[0];
+    source.type = "source.color";
+    source.settings["color"] = ldoc::Rgba::from_srgb8(64, 128, 192);
+    source.settings["width"] = std::int64_t{3840};
+    source.settings["height"] = std::int64_t{2160};
+    for (int i = 0; i < 8; ++i) {
+        ldoc::Effect effect;
+        effect.id = ldoc::Id::generate();
+        effect.type = "filter.color-correction";
+        source.effects.push_back(effect);
+    }
+    const auto plan = lcomp::plan_canvas(p, p.canvases[0].id);
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 5; ++i) {
+        const auto picture = gpu->render(plan, 320, error);
+        REQUIRE_MSG(picture, "{}", error);
+        CHECK(picture->gaps.empty());
+    }
+    const double ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+            .count() /
+        5;
+    std::fprintf(stderr, "  4K eight-filter chain including preview: %.2f ms/frame\n", ms);
 }
 
 LTEST_CASE(gpu_executes_the_shared_walk_for_opacity_precomps_rotations_and_flips) {
@@ -168,6 +308,14 @@ LTEST_CASE(gpu_executes_the_shared_walk_for_opacity_precomps_rotations_and_flips
     auto bounded_result = gpu->render(bounded_plan, 0, error);
     REQUIRE_MSG(bounded_result.has_value(), "{}", error);
     compare(lcomp::execute_cpu(bounded_plan), *bounded_result);
+    auto missing = ldoc::make_node(ldoc::NodeKind::Source, "missing nested source");
+    std::get<ldoc::SourceData>(missing.data).source = ldoc::Id::generate();
+    std::get<ldoc::GroupData>(project.scenes[0].roots[0].data).children.push_back(missing);
+    const auto partial_plan = lcomp::plan_canvas(project, project.canvases[0].id);
+    REQUIRE(!partial_plan.gaps.empty());
+    const auto partial_result = gpu->render(partial_plan, 0, error);
+    REQUIRE(partial_result);
+    compare(lcomp::execute_cpu(partial_plan), *partial_result);
 }
 
 LTEST_CASE(all_seven_blends_match_cpu_for_textures_transparency_and_nested_groups) {

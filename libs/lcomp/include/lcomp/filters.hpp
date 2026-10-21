@@ -37,12 +37,15 @@ filter_size(std::span<const ldoc::Effect> effects, double width, double height);
 struct Picture;
 
 struct VideoFilter {
+    ldoc::Id id;
+    std::uint64_t time_ns = 0;
     int kind = 0;
     int width = 0, height = 0;
     std::array<float, 16> values{};
     std::shared_ptr<Picture> auxiliary;
 };
 
-[[nodiscard]] VideoFilter resolve_filter(const ldoc::Effect& effect, int width, int height);
+[[nodiscard]] VideoFilter resolve_filter(const ldoc::Effect& effect, int width, int height,
+                                         std::uint64_t time_ns = 0);
 [[nodiscard]] Picture filter_picture(const Picture& input, const VideoFilter& filter);
 } // namespace lcomp
