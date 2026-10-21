@@ -4,6 +4,24 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Text worker startup, 2026-10-21
+
+Text workers eagerly constructed QMediaPlayer and QVideoSink, triggering CUDA
+device probes in every process. A 16-worker startup probe took about 21 seconds,
+exceeding the five-second handshake deadline and leaving sources blank until an
+edit recreated their worker. Both media objects now initialize only for media
+and playlist sources; the same probe completes in 309-375 ms. Failed workers retry
+after three seconds, with stop-aware backoff. Real-worker checks cover simultaneous
+text glyph output and recovery after killing a worker without changing settings.
+Warning-free `-Werror` build and all 29 tests passed, GPU/monitoring checks enabled.
+
+Next: exclude OBS global audio devices and mixer/track buses from scene imports;
+expose deletion of existing mixer buses. Then implement the OBS filter suite and
+source context-menu filter editing (add, edit, reorder, enable/disable, remove),
+including Linux equivalents where available and no libOBS dependency. Filter
+processing and editing are not currently implemented; retained OBS records alone
+do not apply filters.
+
 ## Text font selector, 2026-10-21
 
 Text source settings now list installed font families in the existing dropdown

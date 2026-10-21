@@ -31,7 +31,7 @@ class Content : public QObject {
     ldoc::Source source_;
     QSize size_;
     QImage image_;
-    QMediaPlayer player_;
+    std::unique_ptr<QMediaPlayer> player_;
     std::unique_ptr<QAudioBufferOutput> audio_;
     std::vector<float> audio_pending_;
     std::mutex audio_mu_;
@@ -40,7 +40,7 @@ class Content : public QObject {
     std::unique_ptr<Decklink> decklink_;
     std::atomic<bool> vendor_frame_pending_{false};
     std::uint64_t generation_ = 0;
-    QVideoSink video_;
+    std::unique_ptr<QVideoSink> video_;
     QTimer slides_;
     QTimer web_frames_;
     std::unique_ptr<QWebEngineView> web_;
@@ -116,20 +116,22 @@ class Content : public QObject {
             publish({});
             return;
         }
-        player_.setSource(QUrl::fromLocalFile(files_[index_]));
-        player_.play();
+        player_->setSource(QUrl::fromLocalFile(files_[index_]));
+        player_->play();
     }
 
-  public:
-    std::atomic<bool> dirty{true};
-
-    Content() {
+    void ensure_player() {
+        if (player_)
+            return;
+        // QMediaPlayer probes hardware decoders; text and still-image workers need none.
+        player_ = std::make_unique<QMediaPlayer>();
+        video_ = std::make_unique<QVideoSink>();
         QAudioFormat format;
         format.setSampleRate(48000);
         format.setChannelCount(2);
         format.setSampleFormat(QAudioFormat::Float);
         audio_ = std::make_unique<QAudioBufferOutput>(format);
-        player_.setAudioBufferOutput(audio_.get());
+        player_->setAudioBufferOutput(audio_.get());
         connect(
             audio_.get(), &QAudioBufferOutput::audioBufferReceived, this,
             [this](const QAudioBuffer& buffer) {
@@ -140,16 +142,17 @@ class Content : public QObject {
                 const auto count = static_cast<std::size_t>(buffer.sampleCount());
                 append_audio({samples, count});
             });
-        player_.setVideoSink(&video_);
-        connect(&video_, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame& frame) {
+        player_->setVideoSink(video_.get());
+        connect(video_.get(), &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame& frame) {
             if (frame.isValid())
                 publish(frame.toImage());
         });
-        connect(&player_, &QMediaPlayer::errorOccurred, this, [this](auto, const QString& error) {
-            qWarning("media source: %s", qPrintable(error));
-            publish({});
-        });
-        connect(&player_, &QMediaPlayer::mediaStatusChanged, this, [this](auto status) {
+        connect(player_.get(), &QMediaPlayer::errorOccurred, this,
+                [this](auto, const QString& error) {
+                    qWarning("media source: %s", qPrintable(error));
+                    publish({});
+                });
+        connect(player_.get(), &QMediaPlayer::mediaStatusChanged, this, [this](auto status) {
             if (status != QMediaPlayer::EndOfMedia)
                 return;
             if (index_ + 1 < files_.size()) {
@@ -161,6 +164,12 @@ class Content : public QObject {
             } else if (flag("clearOnEnd", true))
                 publish({});
         });
+    }
+
+  public:
+    std::atomic<bool> dirty{true};
+
+    Content() {
         connect(&slides_, &QTimer::timeout, this, [this] {
             if (files_.empty())
                 return;
@@ -194,7 +203,8 @@ class Content : public QObject {
         web_.reset();
         browser_audio_.reset();
         browser_sink_.reset();
-        player_.stop();
+        if (player_)
+            player_->stop();
         {
             std::lock_guard lock(audio_mu_);
             audio_pending_.clear();
@@ -297,10 +307,11 @@ class Content : public QObject {
             show_slide();
             slides_.start(std::clamp(number("intervalMs", 5000), 100, 100000));
         } else if (source.type == "source.media" || source.type == "source.playlist") {
+            ensure_player();
             files_ = source.type == "source.media"
                          ? QStringList{QString::fromStdString(text("localFile"))}
                          : QString::fromStdString(text("files")).split('\n', Qt::SkipEmptyParts);
-            player_.setPlaybackRate(std::clamp(number("speedPercent", 100), 25, 400) / 100.0);
+            player_->setPlaybackRate(std::clamp(number("speedPercent", 100), 25, 400) / 100.0);
             play_file();
         } else
             throw std::runtime_error("unsupported source worker type");

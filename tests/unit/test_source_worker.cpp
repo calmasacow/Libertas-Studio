@@ -3,8 +3,12 @@
 #include "../../apps/libertas-render/source_worker.hpp"
 #include "ltest.hpp"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
+#include <fstream>
 #include <mutex>
 
 namespace {
@@ -52,6 +56,61 @@ LTEST_CASE(text_worker_publishes_real_glyphs_with_transparency) {
     }
     CHECK(ink);
     CHECK(clear);
+}
+
+LTEST_CASE(concurrent_text_workers_draw_without_settings_changes) {
+    std::mutex mu;
+    std::condition_variable ready;
+    std::array<bool, 16> drawn{};
+    std::vector<std::unique_ptr<SourceWorker>> workers;
+    for (std::size_t i = 0; i < drawn.size(); ++i) {
+        auto src = source("source.text");
+        src.settings["text"] = std::string("Hi");
+        src.settings["font"] = std::string("Sans");
+        src.settings["size"] = std::int64_t{22};
+        workers.push_back(std::make_unique<SourceWorker>(src, [&, i](auto frame) {
+            if (!frame)
+                return;
+            std::lock_guard lock(mu);
+            for (std::size_t j = 3; j < frame->pixels.size(); j += 4)
+                drawn[i] = drawn[i] || frame->pixels[j] > 0;
+            ready.notify_all();
+        }));
+    }
+    std::unique_lock lock(mu);
+    ready.wait_for(lock, std::chrono::seconds(8),
+                   [&] { return std::ranges::all_of(drawn, [](bool value) { return value; }); });
+    CHECK(std::ranges::all_of(drawn, [](bool value) { return value; }));
+}
+
+LTEST_CASE(text_worker_recovers_after_process_exit_without_settings_changes) {
+    auto src = source("source.text");
+    src.settings["text"] = std::string("Hi");
+    src.settings["size"] = std::int64_t{22};
+    std::mutex mu;
+    std::condition_variable ready;
+    int pictures = 0;
+    SourceWorker worker(src, [&](auto frame) {
+        if (!frame)
+            return;
+        std::lock_guard lock(mu);
+        ++pictures;
+        ready.notify_all();
+    });
+    {
+        std::unique_lock lock(mu);
+        REQUIRE(ready.wait_for(lock, std::chrono::seconds(8), [&] { return pictures > 0; }));
+    }
+    std::vector<pid_t> children;
+    for (const auto& task : std::filesystem::directory_iterator("/proc/self/task")) {
+        std::ifstream input(task.path() / "children");
+        for (pid_t pid; input >> pid;)
+            children.push_back(pid);
+    }
+    REQUIRE(children.size() == 1);
+    REQUIRE(::kill(children.front(), SIGKILL) == 0);
+    std::unique_lock lock(mu);
+    CHECK(ready.wait_for(lock, std::chrono::seconds(10), [&] { return pictures > 1; }));
 }
 
 LTEST_CASE(slideshow_worker_advances_between_real_images) {
