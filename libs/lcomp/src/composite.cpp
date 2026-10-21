@@ -4,6 +4,7 @@
 #include "lcomp/composite.hpp"
 
 #include "image.hpp"
+#include "lcomp/filters.hpp"
 
 #include <algorithm>
 #include <array>
@@ -348,7 +349,7 @@ bool audio_only(std::string_view type) {
 }
 
 bool effect_enabled(const ldoc::Node& node) {
-    return std::ranges::any_of(node.effects, [](const ldoc::Effect& e) { return e.enabled; });
+    return !video_filters_supported(node.effects);
 }
 
 using Px = DrawRect;
@@ -620,6 +621,30 @@ DrawOp operation(const ldoc::Node& node, const Px& rect, double opacity) {
 void paint_scene(const ldoc::Project& project, const ldoc::Scene& scene, double opacity,
                  CanvasTarget& target);
 
+void append_filtered(const ldoc::Node& node, DrawOp op, int width, int height, CanvasTarget& target,
+                     std::span<const ldoc::Effect> shared = {}) {
+    op.filters.assign(shared.begin(), shared.end());
+    op.filters.insert(op.filters.end(), node.effects.begin(), node.effects.end());
+    std::erase_if(op.filters, [](const auto& e) {
+        const auto* info = filter_info(e.type);
+        return !e.enabled || (info && info->audio);
+    });
+    if (!op.filters.empty()) {
+        const auto size = filter_size(op.filters, width, height);
+        GapReason why = GapReason::NoSize;
+        const auto rect = size ? place(node, size->x, size->y, true, why) : std::nullopt;
+        if (!rect) {
+            refuse(target.picture, node, GapReason::UnsupportedEffect);
+            return;
+        }
+        op.rect = *rect;
+        op.image.width = width;
+        op.image.height = height;
+    }
+    target.drew = true;
+    target.picture.ops.push_back(std::move(op));
+}
+
 /// The most recently decoded image, kept so a still is not decoded again every composite.
 ///
 /// "Nothing is kept between pictures" was true and cheap while a composite only happened when
@@ -693,7 +718,7 @@ void paint_image(const ldoc::Source& src, const ldoc::Node& node, double opacity
     target.drew = true;
     DrawOp op = operation(node, *rect, opacity);
     op.image = std::move(sampled);
-    target.picture.ops.push_back(std::move(op));
+    append_filtered(node, std::move(op), image->width, image->height, target, src.effects);
 }
 
 /// The latest frame of the screen this source names, placed with the same fit as an image.
@@ -742,7 +767,7 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
     op.image = std::move(sampled);
     op.bgra = frame.bgra;
     op.device_image = frame.device_image;
-    target.picture.ops.push_back(std::move(op));
+    append_filtered(node, std::move(op), frame.width, frame.height, target, src.effects);
 }
 
 void paint_node(const ldoc::Project& project, const ldoc::Node& node, double parent_opacity,
@@ -782,7 +807,7 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         const bool identity = !node.layout.crop.any() && rect->x0 == 0 && rect->y0 == 0 && rect->x1 == target.picture.width &&
             rect->y1 == target.picture.height && quarter_turn(node.transform.rotation_deg) == 0 &&
             node.transform.scale.x > 0 && node.transform.scale.y > 0;
-        if (group->size || !identity || group->isolate ||
+        if (group->size || !identity || group->isolate || !node.effects.empty() ||
             node.blend.mode != ldoc::BlendMode::Normal) {
             DrawPlan inner;
             inner.width = static_cast<int>(std::ceil(size.x));
@@ -794,7 +819,8 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
             for (const auto& gap : inner.gaps) target.picture.gaps.push_back(gap);
             auto op = operation(node, *rect, opacity);
             op.nested = std::make_shared<DrawPlan>(std::move(inner));
-            target.picture.ops.push_back(std::move(op));
+            append_filtered(node, std::move(op), static_cast<int>(std::ceil(size.x)),
+                            static_cast<int>(std::ceil(size.y)), target);
             target.drew = target.drew || drew;
             return;
         }
@@ -816,7 +842,7 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         }
         if (audio_only(src->type))
             return;
-        if (std::ranges::any_of(src->effects, [](const auto& effect) { return effect.enabled; })) {
+        if (!video_filters_supported(src->effects)) {
             // Filters do not deactivate their input worker or its audio capture.
             if (target.frames && *target.frames &&
                 (src->type == "source.text" || src->type == "source.media" ||
@@ -862,7 +888,9 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         target.drew = true;
         DrawOp op = operation(node, *rect, opacity);
         op.colour = *colour;
-        target.picture.ops.push_back(std::move(op));
+        append_filtered(
+            node, std::move(op), have_natural ? static_cast<int>(*width) : rect->x1 - rect->x0,
+            have_natural ? static_cast<int>(*height) : rect->y1 - rect->y0, target, src->effects);
         return;
     }
 
@@ -917,7 +945,7 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         target.drew = true;
         DrawOp op = operation(node, *rect, opacity);
         op.nested = std::make_shared<DrawPlan>(std::move(offscreen));
-        target.picture.ops.push_back(std::move(op));
+        append_filtered(node, std::move(op), pw, ph, target);
         return;
     }
 
@@ -932,10 +960,30 @@ void paint_scene(const ldoc::Project& project, const ldoc::Scene& scene, double 
     const bool previously_drew = target.drew;
     for (auto it = scene.roots.rbegin(); it != scene.roots.rend(); ++it)
         paint_node(project, *it, opacity, target);
-    if (std::ranges::any_of(scene.effects, [](const auto& effect) { return effect.enabled; })) {
+    if (!video_filters_supported(scene.effects)) {
         target.picture.ops.resize(first);
         target.drew = previously_drew;
         target.picture.gaps.push_back({scene.id, scene.name, GapReason::UnsupportedEffect});
+    } else if (std::ranges::any_of(scene.effects, [](const auto& e) { return e.enabled; })) {
+        const auto size = filter_size(scene.effects, target.picture.width, target.picture.height);
+        if (!size) {
+            target.picture.ops.resize(first);
+            target.drew = previously_drew;
+            target.picture.gaps.push_back({scene.id, scene.name, GapReason::UnsupportedEffect});
+            return;
+        }
+        DrawPlan inner;
+        inner.width = target.picture.width;
+        inner.height = target.picture.height;
+        inner.filters = scene.effects;
+        inner.ops.assign(std::make_move_iterator(target.picture.ops.begin() +
+                                                 static_cast<std::ptrdiff_t>(first)),
+                         std::make_move_iterator(target.picture.ops.end()));
+        target.picture.ops.resize(first);
+        DrawOp op;
+        op.rect = {0, 0, static_cast<int>(size->x), static_cast<int>(size->y)};
+        op.nested = std::make_shared<DrawPlan>(std::move(inner));
+        target.picture.ops.push_back(std::move(op));
     }
 }
 
@@ -1021,6 +1069,36 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
     if (!transparent)
         fill_opaque_black(picture);
     for (const DrawOp& op : plan.ops) {
+        if (!op.filters.empty()) {
+            DrawOp raw = op;
+            raw.filters.clear();
+            raw.opacity = 1;
+            raw.blend = ldoc::BlendMode::Normal;
+            raw.crop = {};
+            raw.quarter = 0;
+            raw.flip_x = raw.flip_y = false;
+            const int w = op.nested ? op.nested->width : op.image.width;
+            const int h = op.nested ? op.nested->height : op.image.height;
+            raw.rect = {0, 0, w, h};
+            DrawPlan local;
+            local.width = w;
+            local.height = h;
+            local.ops.push_back(std::move(raw));
+            local.filters = op.filters;
+            Picture filtered = execute_cpu(local, true);
+            Picture view;
+            view.width = filtered.width - op.crop[0] - op.crop[2];
+            view.height = filtered.height - op.crop[1] - op.crop[3];
+            view.stride = filtered.stride;
+            if (view.width > 0 && view.height > 0) {
+                view.borrowed = filtered.read_from() +
+                                static_cast<std::size_t>(op.crop[1]) * filtered.stride +
+                                static_cast<std::size_t>(op.crop[0]) * 4;
+                blit(picture, op.rect, view, op.opacity, op.quarter, op.flip_x, op.flip_y, false,
+                     op.blend);
+            }
+            continue;
+        }
         if (op.device_image)
             throw std::invalid_argument("CPU executor requires host pixels, not a device image");
         if (op.colour) {
@@ -1040,6 +1118,10 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
             }
         }
     }
+    for (const auto& effect : plan.filters)
+        if (effect.enabled && (!filter_info(effect.type) || !filter_info(effect.type)->audio))
+            picture =
+                filter_picture(picture, resolve_filter(effect, picture.width, picture.height));
     return picture;
 }
 

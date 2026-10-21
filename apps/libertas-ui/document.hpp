@@ -356,6 +356,14 @@ public:
     /// the field it is about. They are in the schema rather than looked up separately so that
     /// a note sits where it belongs instead of all of them piling up at the top.
     Q_INVOKABLE [[nodiscard]] QVariantList sourceSettingsSchema(const QString& type) const;
+    Q_INVOKABLE void showFilters(const QString& target);
+    Q_INVOKABLE QVariantMap filterDetails(const QString& target) const;
+    Q_INVOKABLE QVariantList filterTypes(const QString& owner) const;
+    Q_INVOKABLE void addFilter(const QString& owner, const QString& type);
+    Q_INVOKABLE void editFilter(const QString& owner, const QString& effect, const QString& name,
+                                bool enabled, const QVariantMap& values);
+    Q_INVOKABLE void moveFilter(const QString& owner, const QString& effect, int offset);
+    Q_INVOKABLE void removeFilter(const QString& owner, const QString& effect);
     Q_INVOKABLE [[nodiscard]] QVariantMap videoFormatChoices(const QString& device) const;
 
     /// What the compositor says about one monitor: name, description, size and refresh. Empty
@@ -609,16 +617,17 @@ public:
     void runCommand(const ldoc::Command& command);
 
 signals:
-    void collectionsChanged();
-    void encoderPresetsChanged();
-    void changed();
-    void selectionChanged();
-    /// The shell is now working on a different canvas.
-    void canvasChanged();
-    /// Something to say in the status bar: a refused command, a failed save, a recovered journal.
-    void notice(const QString& text);
-    /// The sources list should start renaming this node.
-    void renameRequested(const QString& nodeId);
+  void filtersRequested(const QString& owner);
+  void collectionsChanged();
+  void encoderPresetsChanged();
+  void changed();
+  void selectionChanged();
+  /// The shell is now working on a different canvas.
+  void canvasChanged();
+  /// Something to say in the status bar: a refused command, a failed save, a recovered journal.
+  void notice(const QString& text);
+  /// The sources list should start renaming this node.
+  void renameRequested(const QString& nodeId);
 
 private:
     void rebuild();

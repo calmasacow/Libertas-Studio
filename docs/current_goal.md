@@ -4,6 +4,27 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## First working native filters and editor, 2026-10-21
+
+Source, preview and mixer context menus open one shared Filters editor: add,
+rename, edit, enable/disable, move and remove are undoable document commands.
+CPU and Vulkan execute color correction, crop/pad, scaling, color/chroma/luma
+keys, sharpening and image mask/blend. Source geometry uses the shared filtered
+size for transform handles. GPU processing stays on device. OBS translation
+preserves stacks and reports unsupported entries instead of silently bypassing.
+
+Audio supports gain, polarity inversion, three-band EQ, gate, compressor with
+source-ID sidechain, limiter, expander, upward compressor and RNNoise/Speex.
+Source processing precedes routing; group/scene processing folds child sums per
+destination; bus processing precedes its fader. Meters use processed audio.
+Independent native implementations are not claimed bit-identical to OBS.
+
+Warning-free build, 30/30 tests with GPU and monitoring enabled. Checks exercise
+real source-menu/editor actions, rendered pixels on both backends, import/export,
+save/reopen, and source/scene audio enable-disable through renderer monitoring.
+Remaining: LUT, scroll/delay, HDR/SDR controls, isolated Linux VST2 hosting, broader
+parameter fidelity and performance review. No libOBS dependency.
+
 ## Shared filter stack foundation, 2026-10-21
 
 ADR-0065 records the required stock video/audio inventory, shared ownership,

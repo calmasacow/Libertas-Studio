@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Libertas-Studio contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shaders/composite_spv.h"
+#include "shaders/filter_spv.h"
 #include "shaders/preview_spv.h"
 #include "vk_ctx_internal.hpp"
 
@@ -9,6 +10,7 @@
 #include <cstring>
 #include <drm_fourcc.h>
 #include <format>
+#include <lcomp/filters.hpp>
 #include <lrhi/composite.hpp>
 #include <map>
 #include <poll.h>
@@ -92,7 +94,7 @@ struct GpuCompositor::Impl {
     VkFence fence = VK_NULL_HANDLE;
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkPipeline composite = VK_NULL_HANDLE, preview = VK_NULL_HANDLE;
+    VkPipeline composite = VK_NULL_HANDLE, preview = VK_NULL_HANDLE, filter = VK_NULL_HANDLE;
     VkDescriptorPool descriptors = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
     std::vector<std::unique_ptr<Image>> images;
@@ -116,6 +118,8 @@ struct GpuCompositor::Impl {
             vkDestroyDescriptorPool(c->device, descriptors, nullptr);
         if (preview)
             vkDestroyPipeline(c->device, preview, nullptr);
+        if (filter)
+            vkDestroyPipeline(c->device, filter, nullptr);
         if (composite)
             vkDestroyPipeline(c->device, composite, nullptr);
         if (layout)
@@ -178,11 +182,12 @@ struct GpuCompositor::Impl {
         checked(vkCreateFence(c->device, &fi, nullptr, &fence), "create composite fence");
         const VkDescriptorSetLayoutBinding bindings[] = {
             {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-            {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+            {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
              nullptr}};
         VkDescriptorSetLayoutCreateInfo si{};
         si.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        si.bindingCount = 2;
+        si.bindingCount = 3;
         si.pBindings = bindings;
         checked(vkCreateDescriptorSetLayout(c->device, &si, nullptr, &set_layout),
                 "create descriptor layout");
@@ -196,8 +201,9 @@ struct GpuCompositor::Impl {
         checked(vkCreatePipelineLayout(c->device, &li, nullptr, &layout), "create pipeline layout");
         composite = pipeline(kCompositeSpv, sizeof(kCompositeSpv));
         preview = pipeline(kPreviewSpv, sizeof(kPreviewSpv));
+        filter = pipeline(kFilterSpv, sizeof(kFilterSpv));
         const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4096},
-                                              {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096}};
+                                              {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192}};
         VkDescriptorPoolCreateInfo di{};
         di.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         di.maxSets = 4096;
@@ -377,8 +383,8 @@ struct GpuCompositor::Impl {
         return image;
     }
 
-    void dispatch(Image& dest, Image& src, VkPipeline pipe, const Push& push, int width,
-                  int height) {
+    void dispatch(Image& dest, Image& src, VkPipeline pipe, const Push& push, int width, int height,
+                  Image* auxiliary = nullptr) {
         if (width <= 0 || height <= 0)
             return;
         VkDescriptorSetAllocateInfo ai{};
@@ -388,10 +394,12 @@ struct GpuCompositor::Impl {
         ai.pSetLayouts = &set_layout;
         VkDescriptorSet set = VK_NULL_HANDLE;
         checked(vkAllocateDescriptorSets(c->device, &ai, &set), "allocate composite descriptors");
-        const VkDescriptorImageInfo infos[] = {{VK_NULL_HANDLE, dest.view, VK_IMAGE_LAYOUT_GENERAL},
-                                               {sampler, src.view, VK_IMAGE_LAYOUT_GENERAL}};
-        std::array<VkWriteDescriptorSet, 2> writes{};
-        for (std::uint32_t i = 0; i < 2; ++i) {
+        const VkDescriptorImageInfo infos[] = {
+            {VK_NULL_HANDLE, dest.view, VK_IMAGE_LAYOUT_GENERAL},
+            {sampler, src.view, VK_IMAGE_LAYOUT_GENERAL},
+            {sampler, auxiliary ? auxiliary->view : src.view, VK_IMAGE_LAYOUT_GENERAL}};
+        std::array<VkWriteDescriptorSet, 3> writes{};
+        for (std::uint32_t i = 0; i < 3; ++i) {
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet = set;
             writes[i].dstBinding = i;
@@ -400,7 +408,7 @@ struct GpuCompositor::Impl {
                                               : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[i].pImageInfo = &infos[i];
         }
-        vkUpdateDescriptorSets(c->device, 2, writes.data(), 0, nullptr);
+        vkUpdateDescriptorSets(c->device, 3, writes.data(), 0, nullptr);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0,
                                 nullptr);
@@ -429,11 +437,32 @@ struct GpuCompositor::Impl {
             Push push;
             push.rect = {r.x0, r.y0, r.x1, r.y1};
             push.crop = op.crop;
-            push.flags = {op.quarter, op.flip_x, op.flip_y, op.colour ? 0 : op.nested ? 2 : 1};
+            push.flags = {op.quarter, op.flip_x, op.flip_y,
+                          !op.filters.empty() ? 2
+                          : op.colour         ? 0
+                          : op.nested         ? 2
+                                              : 1};
             push.opacity[0] = static_cast<float>(std::clamp(op.opacity, 0.0, 1.0));
             push.opacity[1] = static_cast<float>(op.blend);
             Image* input = &dest;
-            if (op.colour) {
+            if (!op.filters.empty()) {
+                auto raw = op;
+                raw.filters.clear();
+                raw.opacity = 1;
+                raw.blend = ldoc::BlendMode::Normal;
+                raw.crop = {};
+                raw.quarter = 0;
+                raw.flip_x = raw.flip_y = false;
+                const int w = op.nested ? op.nested->width : op.image.width;
+                const int h = op.nested ? op.nested->height : op.image.height;
+                raw.rect = {0, 0, w, h};
+                lcomp::DrawPlan local;
+                local.width = w;
+                local.height = h;
+                local.ops.push_back(std::move(raw));
+                local.filters = op.filters;
+                input = &draw(local, true, depth + 1);
+            } else if (op.colour) {
                 const auto& c0 = *op.colour;
                 push.colour = {static_cast<float>(c0.r), static_cast<float>(c0.g),
                                static_cast<float>(c0.b), static_cast<float>(c0.a)};
@@ -442,7 +471,29 @@ struct GpuCompositor::Impl {
             }
             dispatch(dest, *input, composite, push, width, height);
         }
-        return dest;
+        Image* result = &dest;
+        for (const auto& effect : plan.filters) {
+            if (!effect.enabled ||
+                (lcomp::filter_info(effect.type) && lcomp::filter_info(effect.type)->audio))
+                continue;
+            const auto resolved = lcomp::resolve_filter(effect, result->width, result->height);
+            auto& output = target(resolved.width, resolved.height, VK_FORMAT_R16G16B16A16_SFLOAT);
+            barrier(output, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+            Push packed;
+            static_assert(sizeof(packed) == sizeof(std::array<int, 4>) + sizeof(resolved.values));
+            packed.rect = {resolved.kind, 0, 0, 0};
+            std::memcpy(reinterpret_cast<char*>(&packed) + 16, resolved.values.data(),
+                        sizeof(resolved.values));
+            Image* auxiliary = nullptr;
+            if (resolved.auxiliary) {
+                lcomp::DrawOp mask;
+                mask.image = *resolved.auxiliary;
+                auxiliary = &source(mask);
+            }
+            dispatch(output, *result, filter, packed, resolved.width, resolved.height, auxiliary);
+            result = &output;
+        }
+        return *result;
     }
 
     lcomp::Picture render(const lcomp::DrawPlan& plan, std::uint32_t max_edge) {

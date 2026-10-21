@@ -20,6 +20,7 @@
 #include <lcapture/audio.hpp>
 #include <lcapture/screen.hpp>
 #include <lcapture/video.hpp>
+#include <lcomp/filters.hpp>
 #include <lcore/log.hpp>
 #include <span>
 
@@ -570,8 +571,8 @@ bool video_size(const ldoc::Source& src, double& width, double& height);
 bool window_size(const ldoc::Source& src, double& width, double& height);
 
 /// Natural size for a kind the compositor actually paints. Anything else has no rectangle.
-bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, const ldoc::Node& node,
-                  double& width, double& height) {
+bool unfiltered_natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas,
+                             const ldoc::Node& node, double& width, double& height) {
     if (const auto* group = std::get_if<ldoc::GroupData>(&node.data)) {
         width = group->size ? group->size->x : canvas.width;
         height = group->size ? group->size->y : canvas.height;
@@ -632,6 +633,23 @@ bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, cons
         }
     }
     return false;
+}
+
+bool natural_size(const ldoc::Project& project, const ldoc::Canvas& canvas, const ldoc::Node& node,
+                  double& width, double& height) {
+    if (!unfiltered_natural_size(project, canvas, node, width, height))
+        return false;
+    std::vector<ldoc::Effect> effects;
+    if (const auto* data = std::get_if<ldoc::SourceData>(&node.data); data && data->source)
+        if (const auto* source = project.source(*data->source))
+            effects = source->effects;
+    effects.insert(effects.end(), node.effects.begin(), node.effects.end());
+    const auto size = lcomp::filter_size(effects, width, height);
+    if (!size)
+        return false;
+    width = size->x;
+    height = size->y;
+    return true;
 }
 
 bool drawable(const ldoc::Node& node) {

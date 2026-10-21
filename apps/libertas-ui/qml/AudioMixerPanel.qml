@@ -48,6 +48,7 @@ Item {
 
     function showBusMenu(x, y, id, kind, locked, hidden) {
         stripMenu.popup(x, y, [
+            { text: qsTr("Filters"), action: () => Document.showFilters(id) },
             { text: qsTr("Lock Level"), checked: locked,
               action: () => Document.setBusLevelLocked(id, !locked) },
             { text: qsTr("Hide source"), checked: hidden,
@@ -251,6 +252,7 @@ Item {
                         return;
                     const at = mapToItem(panel, ev.x, ev.y);
                     stripMenu.popup(at.x, at.y, [
+                        { text: qsTr("Filters"), action: () => Document.showFilters(src.nodeId) },
                         {
                             text: qsTr("Lock Level"),
                             checked: src.levelLocked,

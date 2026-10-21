@@ -1,0 +1,240 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "document.hpp"
+
+#include <algorithm>
+#include <lcomp/filters.hpp>
+
+namespace libertas::ui {
+
+namespace {
+QVariant variant(const ldoc::ParamValue& v) {
+    return std::visit(
+        [](const auto& x) -> QVariant {
+            using T = std::decay_t<decltype(x)>;
+            if constexpr (std::is_same_v<T, std::string>)
+                return QString::fromStdString(x);
+            else if constexpr (std::is_same_v<T, std::int64_t>)
+                return QVariant::fromValue(static_cast<qlonglong>(x));
+            else if constexpr (std::is_same_v<T, double> || std::is_same_v<T, bool>)
+                return x;
+            else
+                return {};
+        },
+        v);
+}
+
+QVariantList fields(const lcomp::FilterInfo& info, const ldoc::ParamMap& params = {}) {
+    QVariantList result;
+    for (const auto& f : info.fields) {
+        QStringList choices;
+        for (const auto& choice : f.choices)
+            choices.push_back(QString::fromStdString(choice));
+        const auto found = params.find(f.key);
+        result.push_back(
+            QVariantMap{{"key", QString::fromStdString(f.key)},
+                        {"label", QString::fromStdString(f.label)},
+                        {"kind", QString::fromStdString(f.kind)},
+                        {"value", variant(found == params.end() ? f.value : found->second)},
+                        {"minimum", f.minimum},
+                        {"maximum", f.maximum},
+                        {"choices", choices},
+                        {"suffix", QString{}}});
+    }
+    return result;
+}
+} // namespace
+
+QVariantMap Document::filterDetails(const QString& target) const {
+    const auto parsed = ldoc::Id::parse(target.toStdString());
+    if (!parsed)
+        return {};
+    const auto& p = session_->project();
+    auto owner = *parsed;
+    std::string name;
+    for (const auto& scene : p.scenes)
+        if (const auto* node = ldoc::find_node(scene.roots, owner)) {
+            name = node->name;
+            if (const auto* source = std::get_if<ldoc::SourceData>(&node->data);
+                source && source->source)
+                owner = *source->source;
+            else if (const auto* pre = std::get_if<ldoc::PrecompData>(&node->data))
+                owner = pre->scene;
+            break;
+        }
+    if (const auto* source = p.source(owner))
+        name = source->name;
+    else if (const auto* scene = p.scene(owner))
+        name = scene->name;
+    else if (const auto* bus = p.bus(owner))
+        name = bus->name;
+    const auto* stack = p.effect_stack(owner);
+    if (!stack)
+        return {};
+    QVariantList effects;
+    for (const auto& e : *stack) {
+        const auto* info = lcomp::filter_info(e.type);
+        QVariantMap values;
+        if (info)
+            for (const auto& field : info->fields) {
+                const auto it = e.params.find(field.key);
+                values[QString::fromStdString(field.key)] =
+                    variant(it == e.params.end() ? field.value : it->second);
+            }
+        const auto valid = lcomp::validate_filter(e);
+        auto schema = info ? fields(*info, e.params) : QVariantList{};
+        for (auto& row : schema) {
+            auto field = row.toMap();
+            if (field.value("key").toString() != "sidechain")
+                continue;
+            QStringList choices{"none"};
+            QVariantMap labels{{"none", QStringLiteral("None")}};
+            for (const auto& source : p.sources)
+                if (ldoc::has_audio(source) && source.id != owner) {
+                    const auto id = QString::fromStdString(source.id.to_string());
+                    choices.push_back(id);
+                    labels[id] = QString::fromStdString(source.name);
+                }
+            const auto saved = field.value("value").toString();
+            if (!choices.contains(saved)) {
+                choices.push_back(saved);
+                labels[saved] = QStringLiteral("Unavailable source");
+            }
+            field["kind"] = "choice";
+            field["label"] = "Sidechain source";
+            field["choices"] = choices;
+            field["choiceLabels"] = labels;
+            row = field;
+        }
+        effects.push_back(QVariantMap{
+            {"id", QString::fromStdString(e.id.to_string())},
+            {"name",
+             QString::fromStdString(e.name.empty() ? (info ? info->name : e.type) : e.name)},
+            {"type", QString::fromStdString(e.type)},
+            {"enabled", e.enabled},
+            {"values", values},
+            {"schema", schema},
+            {"status", valid ? QString{} : QString::fromStdString(valid.error())}});
+    }
+    return {{"owner", QString::fromStdString(owner.to_string())},
+            {"name", QString::fromStdString(name)},
+            {"effects", effects}};
+}
+
+void Document::showFilters(const QString& target) {
+    const auto details = filterDetails(target);
+    if (!details.empty())
+        emit filtersRequested(details.value("owner").toString());
+}
+
+QVariantList Document::filterTypes(const QString& owner) const {
+    QVariantList result;
+    const auto id = ldoc::Id::parse(owner.toStdString());
+    if (!id)
+        return result;
+    const auto* source = session_->project().source(*id);
+    const bool audioOnly =
+        session_->project().bus(*id) ||
+        (source && (source->type == "source.audio-input" || source->type == "source.audio-output"));
+    const bool audio = !source || ldoc::has_audio(*source);
+    for (const auto& info : lcomp::filter_catalog()) {
+        if ((info.audio && !audio) || (!info.audio && audioOnly))
+            continue;
+        result.push_back(QVariantMap{{"type", QString::fromStdString(info.type)},
+                                     {"name", QString::fromStdString(info.name)}});
+    }
+    return result;
+}
+
+void Document::addFilter(const QString& owner, const QString& type) {
+    const auto id = ldoc::Id::parse(owner.toStdString());
+    const auto* info = lcomp::filter_info(type.toStdString());
+    const auto* stack = id ? session_->project().effect_stack(*id) : nullptr;
+    if (!stack || !info)
+        return;
+    const auto available = filterTypes(owner);
+    if (std::ranges::none_of(
+            available, [&](const auto& v) { return v.toMap().value("type").toString() == type; }))
+        return;
+    ldoc::Effect e;
+    e.id = ldoc::Id::generate();
+    e.type = info->type;
+    e.name = info->name;
+    for (const auto& f : info->fields)
+        e.params[f.key] = f.value;
+    auto next = *stack;
+    next.push_back(std::move(e));
+    run(ldoc::SetEffects{*id, std::move(next)});
+}
+
+void Document::editFilter(const QString& owner, const QString& effect, const QString& name,
+                          bool enabled, const QVariantMap& values) {
+    const auto id = ldoc::Id::parse(owner.toStdString()),
+               eid = ldoc::Id::parse(effect.toStdString());
+    const auto* stack = id ? session_->project().effect_stack(*id) : nullptr;
+    if (!stack || !eid || name.size() > 256)
+        return;
+    auto next = *stack;
+    for (auto& e : next)
+        if (e.id == *eid) {
+            e.name = name.toStdString();
+            e.enabled = enabled;
+            if (const auto* info = lcomp::filter_info(e.type))
+                for (const auto& f : info->fields) {
+                    const auto it = values.find(QString::fromStdString(f.key));
+                    if (it == values.end())
+                        continue;
+                    if (f.kind == "bool") {
+                        if (it->metaType().id() != QMetaType::Bool)
+                            return;
+                        e.params[f.key] = it->toBool();
+                    } else if (f.kind == "int" || f.kind == "real") {
+                        bool ok = false;
+                        const double n = it->toDouble(&ok);
+                        if (!ok)
+                            return;
+                        e.params[f.key] = n;
+                    } else
+                        e.params[f.key] = it->toString().toStdString();
+                }
+            if (enabled)
+                if (auto valid = lcomp::validate_filter(e); !valid) {
+                    emit notice(QString::fromStdString(valid.error()));
+                    return;
+                }
+            run(ldoc::SetEffects{*id, std::move(next)});
+            return;
+        }
+}
+
+void Document::moveFilter(const QString& owner, const QString& effect, int offset) {
+    if (offset != -1 && offset != 1)
+        return;
+    const auto id = ldoc::Id::parse(owner.toStdString()),
+               eid = ldoc::Id::parse(effect.toStdString());
+    const auto* stack = id ? session_->project().effect_stack(*id) : nullptr;
+    if (!stack || !eid)
+        return;
+    auto next = *stack;
+    for (std::size_t i = 0; i < next.size(); ++i)
+        if (next[i].id == *eid) {
+            if ((offset < 0 && i == 0) || (offset > 0 && i + 1 == next.size()))
+                return;
+            std::swap(next[i], next[offset < 0 ? i - 1 : i + 1]);
+            run(ldoc::SetEffects{*id, std::move(next)});
+            return;
+        }
+}
+
+void Document::removeFilter(const QString& owner, const QString& effect) {
+    const auto id = ldoc::Id::parse(owner.toStdString()),
+               eid = ldoc::Id::parse(effect.toStdString());
+    const auto* stack = id ? session_->project().effect_stack(*id) : nullptr;
+    if (!stack || !eid)
+        return;
+    auto next = *stack;
+    std::erase_if(next, [&](const auto& e) { return e.id == *eid; });
+    if (next.size() != stack->size())
+        run(ldoc::SetEffects{*id, std::move(next)});
+}
+} // namespace libertas::ui

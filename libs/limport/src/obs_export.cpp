@@ -10,6 +10,7 @@
 #include <fstream>
 #include <json/json.h>
 #include <lcomp/composite.hpp>
+#include <lcomp/filters.hpp>
 #include <lcore/atomic_file.hpp>
 #include <limport/obs.hpp>
 #include <map>
@@ -100,9 +101,82 @@ struct Exporter {
         return {1920, 1080};
     }
 
+    J filters(const std::vector<ldoc::Effect>& effects) {
+        J list(Json::arrayValue);
+        for (const auto& e : effects) {
+            J out;
+            if (auto it = e.params.find("obs.original"); it != e.params.end())
+                if (const auto* text = std::get_if<std::string>(&it->second)) {
+                    Json::CharReaderBuilder reader;
+                    std::string error;
+                    std::istringstream input(*text);
+                    Json::parseFromStream(reader, input, &out, &error);
+                }
+            const auto* info = lcomp::filter_info(e.type);
+            if (!info && !out.isObject()) {
+                warn(e.name, "unknown native filter cannot be exported: " + e.type);
+                continue;
+            }
+            out["name"] = e.name.empty() ? (info ? info->name : e.type) : e.name;
+            out["enabled"] = e.enabled;
+            if (info) {
+                out["id"] = info->obs;
+                out["versioned_id"] = info->obs;
+                J settings(Json::objectValue);
+                for (const auto& field : info->fields) {
+                    if (field.kind == "int" || field.kind == "real")
+                        settings[field.key] = lcomp::filter_number(e, field.key);
+                    else if (field.kind == "bool")
+                        settings[field.key] = lcomp::filter_flag(e, field.key);
+                    else
+                        settings[field.key] = lcomp::filter_text(e, field.key);
+                }
+                const auto packed = [&](const char* key) {
+                    const auto c = static_cast<std::uint32_t>(lcomp::filter_number(e, key));
+                    return Json::UInt(0xff000000 | ((c & 255) << 16) | (c & 0xff00) |
+                                      ((c >> 16) & 255));
+                };
+                if (info->type == "filter.compressor") {
+                    const auto side = lcomp::filter_text(e, "sidechain");
+                    const auto id = ldoc::Id::parse(side);
+                    const auto* source = id ? project.source(*id) : nullptr;
+                    settings["sidechain_source"] = source ? source->name : "none";
+                    if (!source && side != "none")
+                        warn(e.name, "missing compressor sidechain exported as None");
+                } else if (info->type == "filter.color-correction") {
+                    out["versioned_id"] = info->obs + "_v2";
+                    settings["color_multiply"] = packed("color_multiply");
+                    settings["color_add"] = packed("color_add");
+                } else if (info->type == "filter.color-key" || info->type == "filter.chroma-key") {
+                    settings["key_color_type"] = "custom";
+                    settings["key_color"] = packed("key_color");
+                    settings["similarity"] = lcomp::filter_number(e, "similarity") * 1000;
+                    settings["smoothness"] = lcomp::filter_number(e, "smoothness") * 1000;
+                    if (info->type == "filter.chroma-key")
+                        settings["spill"] = lcomp::filter_number(e, "spill") * 1000;
+                } else if (info->type == "filter.mask") {
+                    out["versioned_id"] = info->obs + "_v2";
+                    settings["image_path"] = path(lcomp::filter_text(e, "path"));
+                    const auto mode = lcomp::filter_text(e, "mode");
+                    settings["type"] = mode == "alpha"      ? "mask_alpha_filter.effect"
+                                       : mode == "multiply" ? "blend_multiply_filter.effect"
+                                       : mode == "add"      ? "blend_add_filter.effect"
+                                       : mode == "subtract" ? "blend_sub_filter.effect"
+                                                            : "mask_color_filter.effect";
+                } else if (info->type == "filter.scale") {
+                    settings["resolution"] =
+                        std::to_string(static_cast<int>(lcomp::filter_number(e, "width"))) + "x" +
+                        std::to_string(static_cast<int>(lcomp::filter_number(e, "height")));
+                    settings["sampling"] = "point";
+                }
+                out["settings"] = settings;
+            }
+            list.append(out);
+        }
+        return list;
+    }
+
     J source(const ldoc::Source& src) {
-        if (!src.effects.empty())
-            warn(src.name, "source filters not converted; review OBS filters");
         auto& rec = records.at(src.id);
         const auto text = [&](const char* key, std::string fallback = {}) {
             return setting(src, key, std::move(fallback));
@@ -251,6 +325,7 @@ struct Exporter {
         if (type == "text_ft2_source_v2")
             out["id"] = "text_ft2_source";
         out["settings"] = settings;
+        out["filters"] = filters(src.effects);
         return out;
     }
 
@@ -283,6 +358,7 @@ struct Exporter {
                 nested["settings"]["cx"] = static_cast<int>(size.x);
                 nested["settings"]["cy"] = static_cast<int>(size.y);
                 nested["settings"]["items"] = items(*group, size, depth + 1);
+                nested["filters"] = filters(node.effects);
                 root["sources"].append(nested);
                 warn(node.name, "group exported as a nested OBS scene");
             } else {
@@ -374,9 +450,8 @@ struct Exporter {
         }
         for (const auto& scene : project.scenes) {
             const auto& rec = records.at(scene.id);
-            if (!scene.effects.empty())
-                warn(scene.name, "scene filters not converted; review OBS filters");
             auto out = base(rec, "scene");
+            out["filters"] = filters(scene.effects);
             out["settings"]["custom_size"] = true;
             out["settings"]["cx"] = static_cast<int>(rec.size.x);
             out["settings"]["cy"] = static_cast<int>(rec.size.y);

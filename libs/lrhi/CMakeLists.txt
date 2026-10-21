@@ -23,6 +23,7 @@ add_library(lrhi STATIC
 include(CompileShader)
 libertas_compile_shader(lrhi shaders/composite.comp)
 libertas_compile_shader(lrhi shaders/preview.comp)
+libertas_compile_shader(lrhi shaders/filter.comp)
 add_library(libertas::lrhi ALIAS lrhi)
 
 target_include_directories(lrhi

@@ -1213,6 +1213,85 @@ int main(int argc, char** argv) {
             }
         }
 
+        {
+            document.addNewSourceToScene(QStringLiteral("Filter editor check"),
+                                         QStringLiteral("source.color"));
+            const auto node = document.selectedNode();
+            const auto owner = document.filterDetails(node).value("owner").toString();
+            settle();
+            const auto click = [&](QQuickItem* item, Qt::MouseButton button = Qt::LeftButton) {
+                const auto at = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
+                post(QEvent::MouseButtonPress, at, button, button);
+                post(QEvent::MouseButtonRelease, at, button, Qt::NoButton);
+                settle();
+            };
+            QQuickItem* row = nullptr;
+            for (auto* candidate : collect(window->contentItem(), QStringLiteral("sourceRow")))
+                if (candidate->property("nodeId").toString() == node)
+                    row = candidate;
+            report(row != nullptr, "filter source has a row for its real context menu");
+            if (row)
+                click(row, Qt::RightButton);
+            QQuickItem* menu = nullptr;
+            for (auto* candidate : collect(window->contentItem(), QStringLiteral("stripMenuItem")))
+                if (candidate->property("label").toString() == "Filters")
+                    menu = candidate;
+            report(menu != nullptr, "source context menu exposes Filters");
+            if (menu)
+                click(menu);
+            const auto dialogs = collect(window->contentItem(), QStringLiteral("filtersDialog"));
+            report(dialogs.size() == 1 && dialogs.front()->isVisible(),
+                   "Filters opens one shared editor");
+            if (dialogs.size() == 1 && dialogs.front()->isVisible()) {
+                auto* dialog = dialogs.front();
+                const auto add = collect(dialog, QStringLiteral("filterAdd"));
+                if (!add.isEmpty())
+                    click(add.front());
+                auto filters = document.filterDetails(owner).value("effects").toList();
+                report(filters.size() == 1, "Add button creates a persistent shared filter");
+                if (filters.size() == 1) {
+                    const auto effect = filters.front().toMap().value("id").toString();
+                    auto brightness = collect(dialog, QStringLiteral("settingInput_brightness"));
+                    report(brightness.size() == 1,
+                           "color correction has an editable brightness field");
+                    if (brightness.size() == 1) {
+                        QMetaObject::invokeMethod(brightness.front(), "committed",
+                                                  Q_ARG(double, 0.25));
+                        settle();
+                        const auto* src = document.projectForBindings().source(
+                            *ldoc::Id::parse(owner.toStdString()));
+                        report(src && src->effects.size() == 1 &&
+                                   std::get<double>(src->effects.front().params.at("brightness")) ==
+                                       0.25,
+                               "filter setting commits to renderer document");
+                    }
+                    const auto enabled = collect(dialog, QStringLiteral("filterEnabled"));
+                    if (!enabled.isEmpty())
+                        click(enabled.front());
+                    report(!document.filterDetails(owner)
+                                .value("effects")
+                                .toList()
+                                .front()
+                                .toMap()
+                                .value("enabled")
+                                .toBool(),
+                           "filter checkbox disables its shared effect");
+                    const auto remove = collect(dialog, QStringLiteral("filterRemove"));
+                    if (!remove.isEmpty())
+                        click(remove.front());
+                    report(document.filterDetails(owner).value("effects").toList().isEmpty(),
+                           "Remove button deletes filter immediately");
+                    document.undo();
+                    report(document.filterDetails(owner).value("effects").toList().size() == 1,
+                           "Undo restores filter and editor");
+                    document.removeFilter(owner, effect);
+                }
+                dialog->setVisible(false);
+            }
+            document.removeSourceAndUses(owner);
+            settle();
+        }
+
         // A source added with the visibility box cleared arrives hidden.
         document.addNewSourceToScene(QStringLiteral("Hidden"), QStringLiteral("source.color"),
                                      false);

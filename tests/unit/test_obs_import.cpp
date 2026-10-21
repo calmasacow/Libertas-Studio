@@ -106,6 +106,42 @@ LTEST_CASE(import_creates_reopenable_project_and_preserves_stack_and_identity) {
     CHECK_EQ(fs::file_size(scratch.input), fs::file_size(scratch.output / "obs-original.json"));
 }
 
+LTEST_CASE(imported_color_filter_draws_and_exports_with_name_order_and_disabled_state) {
+    Scratch scratch;
+    auto root = collection();
+    J effect;
+    effect["id"] = "color_filter";
+    effect["versioned_id"] = "color_filter_v2";
+    effect["name"] = "Brighten";
+    effect["enabled"] = true;
+    effect["settings"]["brightness"] = 0.25;
+    root["sources"][0]["filters"].append(effect);
+    effect["name"] = "Disabled correction";
+    effect["enabled"] = false;
+    root["sources"][0]["filters"].append(effect);
+    scratch.write(root);
+    auto converted = scratch.convert();
+    REQUIRE(converted);
+    const auto& p = converted->project;
+    const auto* red = &p.sources.front();
+    REQUIRE(red->effects.size() == 2);
+    CHECK_EQ(red->effects[0].name, std::string("Brighten"));
+    CHECK(!red->effects[1].enabled);
+    const auto image = lcomp::composite_canvas(p, p.canvases.front().id);
+    REQUIRE(image.gaps.empty());
+    CHECK(pixel(image, 0, 0)[1] > 40);
+    const auto output = fs::path(scratch.temp.path().toStdString()) / "export.json";
+    REQUIRE(limport::export_obs(p, scratch.output, output));
+    const auto again = limport::import_obs(output, output.string() + ".libertas", {4, 4, {60, 1}});
+    REQUIRE(again);
+    REQUIRE(again->project.sources.front().effects.size() == 2);
+    CHECK_EQ(again->project.sources.front().effects[0].name, std::string("Brighten"));
+    CHECK(!again->project.sources.front().effects[1].enabled);
+    const auto reopened = ldoc::open_project(scratch.output);
+    REQUIRE(reopened);
+    CHECK(reopened->project.sources.front().effects == red->effects);
+}
+
 LTEST_CASE(all_obs_blend_modes_survive_import_render_export_and_reimport) {
     using M = ldoc::BlendMode;
     const std::array modes{M::Normal,   M::LinearDodge, M::Subtract, M::Screen,

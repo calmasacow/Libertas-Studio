@@ -12,9 +12,13 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBPNG  REQUIRED IMPORTED_TARGET libpng)
 pkg_check_modules(LIBJPEG REQUIRED IMPORTED_TARGET libjpeg)
 pkg_check_modules(LIBWEBP REQUIRED IMPORTED_TARGET libwebp)
+pkg_check_modules(RNNOISE REQUIRED IMPORTED_TARGET rnnoise)
+pkg_check_modules(SPEEXDSP REQUIRED IMPORTED_TARGET speexdsp)
 
 add_library(lcomp STATIC
     src/composite.cpp
+    src/filters.cpp
+    src/audio_filters.cpp
     src/image.cpp
     src/preview.cpp
 )
@@ -24,4 +28,5 @@ target_include_directories(lcomp PUBLIC include)
 target_link_libraries(lcomp
     PUBLIC libertas::flags libertas::ldoc libertas::lipc
     PRIVATE PkgConfig::LIBPNG PkgConfig::LIBJPEG PkgConfig::LIBWEBP
+            PkgConfig::RNNOISE PkgConfig::SPEEXDSP
 )

@@ -424,16 +424,19 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
     scene.id = ldoc::Id::generate();
     auto project = show(scene, {source});
     project.scenes[0].roots = {node};
-    for (const int selected : {-1, 1, 2, 0, 3, 4, 5, 6}) {
+    for (const int selected : {-1, 1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10}) {
         project.sources.front().effects.clear();
         project.scenes.front().effects.clear();
         if (selected >= 3) {
             ldoc::Effect effect;
             effect.id = ldoc::Id::generate();
-            effect.type = "unknown.audio-filter";
-            effect.enabled = selected == 3 || selected == 5;
-            auto& stack =
-                selected <= 4 ? project.sources.front().effects : project.scenes.front().effects;
+            effect.type = selected >= 7 ? "filter.gain" : "unknown.audio-filter";
+            if (selected >= 7)
+                effect.params["db"] = -60.0;
+            effect.enabled = selected % 2 == 1;
+            auto& stack = selected <= 4 || selected == 7 || selected == 8
+                              ? project.sources.front().effects
+                              : project.scenes.front().effects;
             stack.push_back(effect);
         }
         if (selected < 0)
@@ -471,7 +474,8 @@ LTEST_CASE(monitoring_routes_real_renderer_audio_to_selected_sink_and_none) {
                 pending = false;
         }
         REQUIRE(!pending);
-        CHECK_EQ(first.take() > 0.01f, selected == 1 || selected == 4 || selected == 6);
+        CHECK_EQ(first.take() > 0.01f, selected == 1 || selected == 4 || selected == 6 ||
+                                           selected == 8 || selected == 10);
         CHECK_EQ(second.take() > 0.01f, selected == 2);
     }
     link.quit();

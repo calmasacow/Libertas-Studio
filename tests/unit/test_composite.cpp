@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "lcomp/composite.hpp"
+#include "lcomp/filters.hpp"
 #include "ltest.hpp"
 
 #include <cmath>
@@ -594,6 +595,36 @@ LTEST_CASE(shared_enabled_unknown_filters_report_gaps_and_disabled_filters_draw)
         CHECK_EQ(picture.pixels.front(), 255);
         stack->clear();
     }
+}
+
+LTEST_CASE(shared_color_correction_changes_pixels_and_crop_changes_placement) {
+    auto source = colour_source(0, 0, 0, 8, 8);
+    auto scene = scene_named("Filtered");
+    scene.roots.push_back(bound_to(source));
+    auto project = show(8, scene, {source});
+    ldoc::Effect effect;
+    effect.id = ldoc::Id::generate();
+    effect.type = "filter.color-correction";
+    effect.params["brightness"] = 0.25;
+    project.sources[0].effects = {effect};
+    auto image = lcomp::composite_canvas(project, project.canvases[0].id);
+    REQUIRE(image.gaps.empty());
+    REQUIRE(!image.pixels.empty());
+    CHECK_EQ(image.pixels[0], 64);
+    project.sources[0].effects[0].enabled = false;
+    image = lcomp::composite_canvas(project, project.canvases[0].id);
+    CHECK_EQ(image.pixels[0], 0);
+    effect.type = "filter.crop";
+    effect.params.clear();
+    effect.params["left"] = std::int64_t{3};
+    project.sources[0].effects = {effect};
+    const auto plan = lcomp::plan_canvas(project, project.canvases[0].id);
+    REQUIRE(plan.gaps.empty());
+    REQUIRE(plan.ops.size() == 1);
+    CHECK_EQ(plan.ops[0].rect.x1 - plan.ops[0].rect.x0, 5);
+    effect.params["left"] = std::int64_t{100};
+    project.sources[0].effects = {effect};
+    CHECK(!lcomp::plan_canvas(project, project.canvases[0].id).gaps.empty());
 }
 
 LTEST_CASE(a_screen_is_still_an_unsupported_type_when_the_caller_has_no_device) {

@@ -274,6 +274,9 @@ Item {
                         action: () => Document.removeSelectedNodes()
                     });
                     if (Document.selectedNodes.length <= 1) {
+                        const filterTarget = row.nodeId;
+                        rows.push({text: qsTr("Filters"), checked: false,
+                                   action: () => Document.showFilters(filterTarget)});
                         rows.push({
                             text: qsTr("Rename"),
                             checked: false,

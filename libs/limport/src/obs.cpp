@@ -9,6 +9,7 @@
 #include <fstream>
 #include <json/json.h>
 #include <lcomp/composite.hpp>
+#include <lcomp/filters.hpp>
 #include <ldoc/project_io.hpp>
 #include <limport/obs.hpp>
 #include <map>
@@ -79,6 +80,7 @@ struct Entry {
     ldoc::AudioRouting audio;
     bool scene = false;
     bool ignored = false;
+    std::vector<ldoc::Effect> effects;
 };
 
 struct Converter {
@@ -239,6 +241,110 @@ struct Converter {
             throw std::runtime_error("duplicate source UUID: " + uuid);
         names[e.name].push_back(entries.size());
         entries.push_back(std::move(e));
+    }
+
+    void filters(Entry& e) {
+        const auto& list = e.original["filters"];
+        if (list.isNull())
+            return;
+        if (!list.isArray() || list.size() > 64)
+            throw std::runtime_error("invalid OBS filter stack");
+        for (const auto& original : list) {
+            const auto type = str(original, "id");
+            const auto version = str(original, "versioned_id", type);
+            const lcomp::FilterInfo* info = nullptr;
+            for (const auto& candidate : lcomp::filter_catalog())
+                if (type == candidate.obs || type == candidate.obs + "_v2" ||
+                    version == candidate.obs + "_v2")
+                    info = &candidate;
+            ldoc::Effect effect;
+            effect.id = ldoc::Id::generate();
+            effect.name = str(original, "name", type);
+            effect.enabled = flag(original, "enabled", true);
+            effect.type = info ? info->type : "obs.filter." + type;
+            const auto& settings = original["settings"];
+            if (info) {
+                for (const auto& field : info->fields) {
+                    effect.params[field.key] = field.value;
+                    if (!settings.isMember(field.key))
+                        continue;
+                    if (field.kind == "bool")
+                        effect.params[field.key] = flag(settings, field.key.c_str());
+                    else if (field.kind == "int" || field.kind == "real")
+                        effect.params[field.key] = num(settings, field.key.c_str());
+                    else
+                        effect.params[field.key] = str(settings, field.key.c_str());
+                }
+                const auto packed = [&](const char* key, std::uint32_t fallback) {
+                    const auto color = colour(settings, key, fallback).to_srgb8();
+                    return std::int64_t{(static_cast<unsigned>(color[0]) << 16) |
+                                        (static_cast<unsigned>(color[1]) << 8) | color[2]};
+                };
+                if (info->type == "filter.compressor") {
+                    const auto name = str(settings, "sidechain_source", "none");
+                    if (!name.empty() && name != "none") {
+                        const auto it = names.find(name);
+                        if (it != names.end() && it->second.size() == 1)
+                            effect.params["sidechain"] = entries[it->second.front()].id.to_string();
+                        else {
+                            effect.params["sidechain"] = name;
+                            warn(e, "compressor sidechain source unresolved: " + name);
+                        }
+                    }
+                } else if (info->type == "filter.color-correction") {
+                    const bool modern = version.ends_with("_v2");
+                    effect.params["opacity"] =
+                        num(settings, "opacity", modern ? 1 : 100) / (modern ? 1 : 100);
+                    effect.params["color_multiply"] =
+                        packed(modern ? "color_multiply" : "color", 0xffffffff);
+                    effect.params["color_add"] = modern ? packed("color_add", 0) : std::int64_t{0};
+                } else if (info->type == "filter.color-key" || info->type == "filter.chroma-key") {
+                    const auto key = str(settings, "key_color_type", "green");
+                    effect.params["key_color"] = key == "green"  ? std::int64_t{0x00ff00}
+                                                 : key == "blue" ? std::int64_t{0x0000ff}
+                                                 : key == "magenta"
+                                                     ? std::int64_t{0xff00ff}
+                                                     : packed("key_color", 0xff00ff00);
+                    effect.params["similarity"] =
+                        num(settings, "similarity", info->type == "filter.chroma-key" ? 400 : 80) /
+                        1000;
+                    effect.params["smoothness"] =
+                        std::max(1.0, num(settings, "smoothness", 80)) / 1000;
+                    if (info->type == "filter.chroma-key")
+                        effect.params["spill"] = std::max(1.0, num(settings, "spill", 100)) / 1000;
+                } else if (info->type == "filter.mask") {
+                    auto path = fs::path(str(settings, "image_path"));
+                    if (path.is_relative())
+                        path = base / path;
+                    effect.params["path"] = path.string();
+                    const auto mode = str(settings, "type", "mask_color_filter.effect");
+                    effect.params["mode"] =
+                        std::string(mode == "mask_alpha_filter.effect"       ? "alpha"
+                                    : mode == "blend_multiply_filter.effect" ? "multiply"
+                                    : mode == "blend_add_filter.effect"      ? "add"
+                                    : mode == "blend_sub_filter.effect"      ? "subtract"
+                                                                             : "alpha-color");
+                    effect.params["opacity"] =
+                        num(settings, "opacity", version.ends_with("_v2") ? 1 : 100) /
+                        (version.ends_with("_v2") ? 1 : 100);
+                } else if (info->type == "filter.scale") {
+                    int w = 0, h = 0;
+                    const auto resolution = str(settings, "resolution");
+                    if (std::sscanf(resolution.c_str(), "%dx%d", &w, &h) == 2) {
+                        effect.params["width"] = std::int64_t{w};
+                        effect.params["height"] = std::int64_t{h};
+                    } else {
+                        effect.type = "obs.filter." + type;
+                        warn(e, "unsupported scale resolution: " + resolution);
+                    }
+                }
+                if (auto valid = lcomp::validate_filter(effect); !valid)
+                    warn(e, valid.error());
+            } else
+                warn(e, "filter requires implementation: " + type);
+            effect.params["obs.original"] = json(original);
+            e.effects.push_back(std::move(effect));
+        }
     }
 
     void source(Entry& e) {
@@ -495,6 +601,9 @@ struct Converter {
                                                    : ldoc::NodeKind::Source,
                                  e.name);
         if (e.type == "group") {
+            n.effects = e.effects;
+            for (auto& effect : n.effects)
+                effect.id = ldoc::Id::generate();
             auto& group = std::get<ldoc::GroupData>(n.data);
             group.size = e.size;
             group.isolate = true;
@@ -618,8 +727,18 @@ struct Converter {
         canvases(root);
         for (auto& e : entries) {
             source(e);
-            if (!e.original["filters"].empty())
-                warn(e, "filters not applied; original filter records retained");
+            if (!e.ignored) {
+                filters(e);
+                if (!e.scene)
+                    for (auto& source : result.project.sources)
+                        if (source.id == e.id) {
+                            source.effects = e.effects;
+                            if (auto size = lcomp::filter_size(e.effects, e.size.x, e.size.y))
+                                e.size = *size;
+                            else
+                                warn(e, size.error());
+                        }
+            }
             if (num(e.original, "deinterlace_mode") != 0)
                 warn(e, "deinterlacing not applied");
         }
@@ -670,6 +789,7 @@ struct Converter {
         for (auto i : order) {
             auto& e = entries[i];
             ldoc::Scene scene;
+            scene.effects = e.effects;
             scene.id = e.id;
             scene.name = e.name;
             scene.canvas = result.project.canvases[canvas_index(e)].id;
@@ -717,10 +837,10 @@ struct Converter {
             }
             result.project.decks.push_back(std::move(extra));
         }
-        result.warnings.push_back("OBS track 1 maps to Program; tracks 2-6 are separate buses. "
-                                  "Verify active stream/recording tracks in the OBS profile.");
-        result.warnings.push_back("Shared audio placements, including nested scenes with global "
-                                  "audio, can sum more than once; review routes before use.");
+        result.warnings.push_back("Scene audio routes to Program; global devices and OBS "
+                                  "track/mixer configuration are not imported.");
+        result.warnings.push_back("Shared audio placements, including nested scenes, can sum more "
+                                  "than once; review routes before use.");
         result.warnings.push_back(
             "Transitions use Cut. Hotkeys, outputs, plugins and unmapped source "
             "options are retained only in obs-original.json.");

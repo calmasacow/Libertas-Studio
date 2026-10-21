@@ -50,6 +50,9 @@ Item {
 
     function showSourceMenu(x, y, sourceId, sourceName) {
         sourceMenu.popup(x, y, [{
+            text: qsTr("Filters"), checked: false,
+            action: () => Document.showFilters(sourceId)
+        }, {
             text: qsTr("Delete source"),
             checked: false,
             action: () => dialog.askDelete(sourceId, sourceName)

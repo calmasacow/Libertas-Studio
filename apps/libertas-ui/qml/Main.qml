@@ -55,10 +55,13 @@ Window {
 
     Connections {
         target: Document
+        function onFiltersRequested(owner) { filtersDialog.open(owner); }
         function onNotice(text) {
             root.report(text);
         }
     }
+
+    FiltersDialog { id: filtersDialog; parent: root.contentItem }
 
     Connections {
         target: Shortcuts

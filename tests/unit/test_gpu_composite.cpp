@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <lcapture/screen.hpp>
+#include <lcomp/filters.hpp>
 #include <lrhi/composite.hpp>
 #include <mutex>
 
@@ -52,6 +53,61 @@ libertas::rhi::VkCtxPtr device() {
     return result;
 }
 } // namespace
+
+LTEST_CASE(stock_video_filters_execute_on_cpu_and_gpu_from_the_same_scene) {
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE(gpu);
+    std::vector<std::uint8_t> pixels(16 * 16 * 4);
+    for (std::size_t i = 0; i < pixels.size(); i += 4) {
+        pixels[i] = static_cast<std::uint8_t>(i % 251);
+        pixels[i + 1] = 100;
+        pixels[i + 2] = 180;
+        pixels[i + 3] = 255;
+    }
+    const lcomp::FrameSource frames = [&](const auto&) {
+        return lcomp::CapturedPicture{16, 16, pixels.data(), pixels.size()};
+    };
+    for (const auto& info : lcomp::filter_catalog()) {
+        if (info.audio)
+            continue;
+        auto p = show(16, 16);
+        ldoc::Effect effect;
+        effect.id = ldoc::Id::generate();
+        effect.type = info.type;
+        for (const auto& f : info.fields)
+            effect.params[f.key] = f.value;
+        if (info.type == "filter.mask")
+            effect.params["path"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/two.png";
+        if (info.type == "filter.scale") {
+            effect.params["width"] = std::int64_t{8};
+            effect.params["height"] = std::int64_t{12};
+        }
+        if (info.type == "filter.crop") {
+            effect.params["left"] = std::int64_t{2};
+            effect.params["top"] = std::int64_t{-2};
+        }
+        if (info.type == "filter.color-correction")
+            effect.params["brightness"] = 0.125;
+        for (int owner = 0; owner < 3; ++owner) {
+            p.sources[0].effects.clear();
+            p.scenes[0].effects.clear();
+            p.scenes[0].roots[0].effects.clear();
+            if (owner == 0)
+                p.sources[0].effects = {effect};
+            else if (owner == 1)
+                p.scenes[0].effects = {effect};
+            else
+                p.scenes[0].roots[0].effects = {effect};
+            const auto plan = lcomp::plan_canvas(p, p.canvases[0].id, frames);
+            REQUIRE(plan.gaps.empty());
+            const auto image = gpu->render(plan, 0, error);
+            REQUIRE_MSG(image, "{}: {}", info.type, error);
+            compare(lcomp::execute_cpu(plan), *image);
+        }
+    }
+}
 
 LTEST_CASE(gpu_executes_the_shared_walk_for_opacity_precomps_rotations_and_flips) {
     auto d = device();

@@ -388,6 +388,7 @@ Item {
         const id = Document.selectedNode;
         const sep = {separator: true};
         return [
+            overlay.row(qsTr("Filters"), "", id !== "", () => Document.showFilters(id)),
             {
                 text: qsTr("Order"),
                 checked: false,

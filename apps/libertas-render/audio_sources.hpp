@@ -6,6 +6,8 @@
 #include <cmath>
 #include <deque>
 #include <lcapture/audio.hpp>
+#include <lcomp/audio_filters.hpp>
+#include <lcomp/filters.hpp>
 #include <lcomp/preview.hpp>
 #include <lcore/log.hpp>
 #include <map>
@@ -99,11 +101,15 @@ class AudioSources {
 
     std::map<ldoc::Id, std::shared_ptr<Session>> sessions_;
 
+    using FilterPath = std::vector<std::pair<ldoc::Id, std::vector<ldoc::Effect>>>;
+
     struct Route {
         ldoc::Id node;
         std::shared_ptr<Session> session;
         ldoc::AudioRouting audio;
-        bool unsupported_effect = false;
+        std::vector<ldoc::Effect> source_effects;
+        std::vector<ldoc::Effect> node_effects;
+        FilterPath parents;
     };
 
     std::mutex mu_;
@@ -131,6 +137,7 @@ class AudioSources {
         };
 
         std::map<ldoc::Id, Delay> delays;
+        std::map<std::string, std::unique_ptr<lcomp::AudioFilters>> processors;
         auto next = std::chrono::steady_clock::now();
         while (!stop.stop_requested()) {
             next += std::chrono::milliseconds(10);
@@ -143,8 +150,25 @@ class AudioSources {
                 buses = buses_;
                 monitor_output = monitor_output_;
             }
-            std::map<Session*, Block> inputs;
-            std::map<ldoc::Id, Block> mixed;
+            std::map<ldoc::Id, Block> inputs, processed, mixed;
+            std::map<ldoc::Id, bool> available;
+            std::map<ldoc::Id, lcomp::AudioLevel> levels;
+            std::set<std::string> used_processors;
+            const auto process = [&](Block& block, const std::vector<ldoc::Effect>& effects,
+                                     const std::string& key) {
+                used_processors.insert(key);
+                auto& processor = processors[key];
+                if (!processor)
+                    processor = std::make_unique<lcomp::AudioFilters>();
+                return processor
+                    ->process(block, effects,
+                              [&](const ldoc::Id& source) -> std::span<const float> {
+                                  const auto it = inputs.find(source);
+                                  return it == inputs.end() ? std::span<const float>{}
+                                                            : std::span<const float>{it->second};
+                              })
+                    .has_value();
+            };
             Block listening{};
             bool monitoring = false;
             auto add = [](Block& dst, const Block& src, float volume) {
@@ -152,34 +176,85 @@ class AudioSources {
                     dst[i] += src[i] * volume;
             };
             for (const auto& route : routes) {
-                if (route.unsupported_effect)
+                auto& session = *route.session;
+                if (inputs.contains(session.source.id))
                     continue;
-                auto* session = route.session.get();
-                if (!inputs.contains(session)) {
-                    auto& block = inputs[session];
-                    std::lock_guard lock(session->mu);
-                    for (auto& value : block) {
-                        if (session->pcm.empty())
-                            break;
-                        value = session->pcm.front();
-                        session->pcm.pop_front();
-                    }
+                auto& input = inputs[session.source.id];
+                std::lock_guard lock(session.mu);
+                available[session.source.id] =
+                    session.available &&
+                    std::chrono::steady_clock::now() - session.received < std::chrono::seconds(1);
+                for (auto& sample : input) {
+                    if (session.pcm.empty())
+                        break;
+                    sample = session.pcm.front();
+                    session.pcm.pop_front();
                 }
-                const auto& input = inputs.at(session);
+            }
+            using Path = std::vector<ldoc::Id>;
+            std::map<Path, std::map<ldoc::Id, Block>> groups;
+            std::map<ldoc::Id, std::vector<ldoc::Effect>> group_filters;
+            for (const auto& route : routes) {
+                const auto source = route.session->source.id;
+                if (!processed.contains(source)) {
+                    processed[source] = inputs[source];
+                    available[source] = process(processed[source], route.source_effects,
+                                                "source:" + source.to_string()) &&
+                                        available[source];
+                }
+                Block input = processed[source];
+                const bool ready =
+                    process(input, route.node_effects, "node:" + route.node.to_string()) &&
+                    available[source];
+                lcomp::AudioLevel level{route.node, 0, 0, ready};
+                for (std::size_t i = 0; i < input.size(); i += 2) {
+                    level.left = std::max(level.left, std::abs(input[i]));
+                    level.right = std::max(level.right, std::abs(input[i + 1]));
+                }
+                levels[route.node] = level;
+                Path path;
+                for (const auto& [id, effects] : route.parents) {
+                    path.push_back(id);
+                    group_filters[id] = effects;
+                }
+                auto& destinations = groups[path];
                 const float volume = route.audio.mute ? 0 : gain(route.audio.gain_db);
                 if (route.audio.bus)
-                    add(mixed[*route.audio.bus], input, volume);
+                    add(destinations[*route.audio.bus], input, volume);
                 for (const auto& send : route.audio.sends)
-                    add(mixed[send.to], input,
+                    add(destinations[send.to], input,
                         (send.pre_fader ? (route.audio.mute ? 0 : 1) : volume) *
                             gain(send.gain_db));
                 if (route.audio.monitor) {
                     monitoring = true;
-                    add(listening, input, volume);
+                    add(destinations[ldoc::Id::nil()], input, volume);
+                }
+            }
+            // Fold deepest groups first so nonlinear filters see the sum of their children.
+            while (!groups.empty()) {
+                auto it = std::max_element(
+                    groups.begin(), groups.end(),
+                    [](const auto& a, const auto& b) { return a.first.size() < b.first.size(); });
+                auto path = it->first;
+                auto destinations = std::move(it->second);
+                groups.erase(it);
+                if (path.empty()) {
+                    for (const auto& [destination, block] : destinations)
+                        if (destination.is_nil())
+                            add(listening, block, 1);
+                        else
+                            add(mixed[destination], block, 1);
+                    continue;
+                }
+                const auto owner = path.back();
+                path.pop_back();
+                for (auto& [destination, block] : destinations) {
+                    process(block, group_filters[owner],
+                            "group:" + owner.to_string() + ":" + destination.to_string());
+                    add(groups[path][destination], block, 1);
                 }
             }
             std::set<ldoc::Id> finished;
-            std::map<ldoc::Id, lcomp::AudioLevel> levels;
             for (std::size_t pass = 0; pass < buses.size(); ++pass) {
                 bool progress = false;
                 for (const auto& bus : buses) {
@@ -192,10 +267,10 @@ class AudioSources {
                                 waiting = waiting || send.to == bus.id;
                     if (waiting)
                         continue;
-                    const auto input = mixed[bus.id];
                     auto& output = mixed[bus.id];
-                    const bool unsupported = std::ranges::any_of(
-                        bus.inserts, [](const auto& effect) { return effect.enabled; });
+                    const bool unsupported =
+                        !process(output, bus.inserts, "bus:" + bus.id.to_string());
+                    const auto input = output;
                     const float volume = bus.mute || unsupported ? 0 : gain(bus.gain_db);
                     const double pan = std::isfinite(bus.pan) ? std::clamp(bus.pan, -1.0, 1.0) : 0;
                     lcomp::AudioLevel level{bus.id, 0, 0, true};
@@ -238,6 +313,8 @@ class AudioSources {
                 if (!progress)
                     break;
             }
+            std::erase_if(processors,
+                          [&](const auto& item) { return !used_processors.contains(item.first); });
             std::erase_if(delays, [&](const auto& item) {
                 return std::ranges::none_of(buses,
                                             [&](const auto& bus) { return bus.id == item.first; });
@@ -293,9 +370,13 @@ class AudioSources {
         std::vector<lcomp::AudioLevel> result;
         std::vector<Route> routes;
         const ldoc::Scene* owner = nullptr;
-        bool inherited_effect = false;
-        const auto active_effect = [](const auto& effects) {
-            return std::ranges::any_of(effects, [](const auto& effect) { return effect.enabled; });
+        FilterPath inherited;
+        const auto add_filters = [&](const ldoc::Id& id, const std::vector<ldoc::Effect>& effects) {
+            if (std::ranges::any_of(effects, [](const auto& e) {
+                    const auto* info = lcomp::filter_info(e.type);
+                    return e.enabled && (!info || info->audio);
+                }))
+                inherited.push_back({id, effects});
         };
         const auto session_for = [&](const ldoc::Source& source) {
             wanted.insert(source.id);
@@ -329,14 +410,15 @@ class AudioSources {
             for (const auto& node : nodes) {
                 if (!node.visible || !visited.insert(node.id).second)
                     continue;
-                const bool previous_effect = inherited_effect;
-                inherited_effect = inherited_effect || active_effect(node.effects);
+                const auto previous_depth = inherited.size();
+                if (node.kind() != ldoc::NodeKind::Source)
+                    add_filters(node.id, node.effects);
                 if (const auto* group = std::get_if<ldoc::GroupData>(&node.data))
                     walk(group->children);
                 else if (const auto* pre = std::get_if<ldoc::PrecompData>(&node.data)) {
                     if (const auto* scene = project.scene(pre->scene)) {
                         const auto* previous = owner; owner = scene;
-                        inherited_effect = inherited_effect || active_effect(scene->effects);
+                        add_filters(scene->id, scene->effects);
                         walk(scene->roots);
                         owner = previous;
                     }
@@ -347,7 +429,7 @@ class AudioSources {
                          source->type != "source.audio-output" && source->type != "source.media" &&
                          source->type != "source.playlist" && source->type != "source.blackmagic" &&
                          source->type != "source.browser" && source->type != "source.v4l2")) {
-                        inherited_effect = previous_effect;
+                        inherited.resize(previous_depth);
                         continue;
                     }
                     auto session = session_for(*source);
@@ -359,23 +441,18 @@ class AudioSources {
                         if (change.mute) routing.mute = *change.mute;
                         if (change.sends) routing.sends = *change.sends;
                     }
-                    const bool unsupported = inherited_effect || active_effect(source->effects);
-                    routes.push_back({node.id, session, std::move(routing), unsupported});
-                    std::lock_guard lock(session->mu);
-                    const bool available = !unsupported && session->available &&
-                                           std::chrono::steady_clock::now() - session->received <
-                                               std::chrono::seconds(1);
-                    result.push_back({node.id, available ? session->left : 0,
-                                      available ? session->right : 0, available});
+                    routes.push_back({node.id, session, std::move(routing), source->effects,
+                                      node.effects, inherited});
                 }
-                inherited_effect = previous_effect;
+                inherited.resize(previous_depth);
             }
         };
         for (const auto& deck : project.decks)
             if (deck.program_scene)
                 if (const auto* scene = project.scene(*deck.program_scene)) {
                     owner = scene;
-                    inherited_effect = active_effect(scene->effects);
+                    inherited.clear();
+                    add_filters(scene->id, scene->effects);
                     walk(scene->roots);
                 }
         std::erase_if(sessions_, [&](const auto& item) { return !wanted.contains(item.first); });

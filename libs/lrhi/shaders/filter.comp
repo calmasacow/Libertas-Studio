@@ -1,0 +1,45 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+#version 450
+layout(local_size_x=16,local_size_y=16) in;
+layout(binding=0,rgba16f) uniform image2D target;
+layout(binding=1) uniform sampler2D source;
+layout(binding=2) uniform sampler2D auxiliary;
+layout(push_constant) uniform Push { ivec4 info; vec4 p[4]; } f;
+vec3 linear_rgb(vec3 c) { return mix(pow((c+0.055)/1.055,vec3(2.4)),c/12.92,lessThanEqual(c,vec3(0.04045))); }
+vec3 srgb(vec3 c) { c=max(c,vec3(0)); return mix(1.055*pow(c,vec3(1./2.4))-0.055,c*12.92,lessThanEqual(c,vec3(0.0031308))); }
+vec4 read_pixel(ivec2 pos) {
+    vec4 c=texelFetch(source,clamp(pos,ivec2(0),textureSize(source,0)-1),0);
+    c.rgb=srgb(c.a>0 ? c.rgb/c.a : vec3(0)); return c;
+}
+void main() {
+    ivec2 pos=ivec2(gl_GlobalInvocationID.xy), size=imageSize(target);
+    if(any(greaterThanEqual(pos,size)))return;
+    int kind=f.info.x;
+    vec4 c=read_pixel(pos), a=f.p[0], b=f.p[1];
+    if(kind==2) {
+        ivec2 uv=pos+ivec2(a.xy);
+        c=any(lessThan(uv,ivec2(0))) || any(greaterThanEqual(uv,textureSize(source,0))) ? vec4(0) : read_pixel(uv);
+    } else if(kind==3) c=read_pixel(ivec2(vec2(pos)*vec2(textureSize(source,0))/vec2(size)));
+    else if(kind==1) {
+        c.rgb=(pow(max(c.rgb,vec3(0)),vec3(a.x))-0.5)*a.y+0.5+a.z;
+        float l=dot(c.rgb,vec3(.2126,.7152,.0722)); c.rgb=mix(vec3(l),c.rgb,a.w);
+        float co=cos(b.x),si=sin(b.x),sum=(c.r+c.g+c.b)*(1-co)/3;
+        c.rgb=c.rgb*co+(c.brg-c.gbr)*si/sqrt(3.)+sum; c.a*=b.y;
+        c.rgb=c.rgb*vec3(b.zw,f.p[2].x)+f.p[2].yzw;
+    } else if(kind==4 || kind==5) {
+        vec3 diff=c.rgb-a.rgb;
+        float d=kind==4 ? length(diff) : length(vec2(dot(diff,vec3(-.168736,-.331264,.5)),dot(diff,vec3(.5,-.418688,-.081312))));
+        float base=d-a.w; c.a*=pow(clamp(base/b.x,0,1),1.5);
+        if(kind==5)c.rgb=mix(vec3(dot(c.rgb,vec3(.2126,.7152,.0722))),c.rgb,pow(clamp(base/b.y,0,1),1.5));
+    } else if(kind==6) {
+        float l=dot(c.rgb,vec3(.2126,.7152,.0722));
+        c.a*=(a.z>0 ? clamp((l-a.x)/a.z,0,1) : float(l>=a.x))*(a.w>0 ? clamp((a.y-l)/a.w,0,1) : float(l<=a.y));
+    } else if(kind==7)c.rgb+=a.x*(4*c.rgb-read_pixel(pos+ivec2(-1,0)).rgb-read_pixel(pos+ivec2(1,0)).rgb-read_pixel(pos+ivec2(0,-1)).rgb-read_pixel(pos+ivec2(0,1)).rgb);
+    if(kind==8) {
+        vec4 mask=texelFetch(auxiliary,ivec2(vec2(pos)*vec2(textureSize(auxiliary,0))/vec2(size)),0);
+        if(a.y<2)c.a*=(a.y==0?dot(mask.rgb,vec3(.2126,.7152,.0722)):mask.a)*a.x;
+        else c.rgb=mix(c.rgb,a.y==2?c.rgb*mask.rgb:a.y==3?c.rgb+mask.rgb:c.rgb-mask.rgb,a.x);
+    }
+    c=clamp(c,0,1); c.rgb=linear_rgb(c.rgb)*c.a; imageStore(target,pos,c);
+}

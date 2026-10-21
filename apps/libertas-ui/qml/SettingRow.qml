@@ -36,6 +36,7 @@ Item {
             case "note":   return noteRow;
             case "bool":   return boolRow;
             case "int":    return intRow;
+            case "real":   return intRow;
             case "choice": return choiceRow;
             case "colour": return colourRow;
             case "multiline": return multilineRow;
@@ -95,11 +96,11 @@ Item {
             labelWidth: row.labelWidth
             labelAlign: Text.AlignRight
             suffix: row.field.suffix
-            decimals: 0
+            decimals: row.field.kind === "real" ? 3 : 0
             minimum: row.field.minimum === undefined ? -1e100 : row.field.minimum
             maximum: row.field.maximum === undefined ? 1e100 : row.field.maximum
             value: row.currentValue === undefined ? 0 : Number(row.currentValue)
-            onCommitted: newValue => row.committed(Math.round(newValue))
+            onCommitted: newValue => row.committed(row.field.kind === "real" ? newValue : Math.round(newValue))
         }
     }
 

@@ -211,6 +211,7 @@ struct DrawOp {
     Picture image;
     const void* device_image = nullptr;
     std::shared_ptr<DrawPlan> nested;
+    std::vector<ldoc::Effect> filters;
 };
 
 struct DrawPlan {
@@ -219,6 +220,7 @@ struct DrawPlan {
     PictureStatus status = PictureStatus::NoProgram;
     std::vector<Gap> gaps;
     std::vector<DrawOp> ops;
+    std::vector<ldoc::Effect> filters;
 };
 
 [[nodiscard]] DrawPlan plan_canvas(const ldoc::Project& project, const ldoc::Id& canvas,
