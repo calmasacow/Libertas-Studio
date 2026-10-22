@@ -3,6 +3,7 @@
 #include "shaders/composite_spv.h"
 #include "shaders/filter_spv.h"
 #include "shaders/preview_spv.h"
+#include "shaders/yuv_spv.h"
 #include "vk_ctx_internal.hpp"
 
 #include <algorithm>
@@ -96,9 +97,22 @@ struct GpuCompositor::Impl {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
+    // LIBERTAS_BENCHMARK only: GPU timestamps splitting the fence wait into upload, compute
+    // and readback time. Uploads are interleaved with draws, so they are summed per copy.
+    VkQueryPool timestamps = VK_NULL_HANDLE;
+    std::uint32_t stamp_at = 0;
+    double stamp_ns = 0;
+    std::uint64_t upload_bytes = 0;
+    unsigned dispatches = 0;
+    // Slots 0-2: frame start, canvas composited, readback copied. Then begin/end pairs per upload.
+    void stamp(VkPipelineStageFlagBits stage, std::uint32_t slot) {
+        vkCmdWriteTimestamp(cmd, stage, timestamps, slot);
+    }
+    static constexpr std::uint32_t kStamps = 256;
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkPipeline composite = VK_NULL_HANDLE, preview = VK_NULL_HANDLE, filter = VK_NULL_HANDLE;
+    VkPipeline composite = VK_NULL_HANDLE, preview = VK_NULL_HANDLE, filter = VK_NULL_HANDLE,
+               yuv = VK_NULL_HANDLE;
     VkDescriptorPool descriptors = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
     std::vector<std::unique_ptr<Image>> images;
@@ -225,6 +239,8 @@ struct GpuCompositor::Impl {
             vkDestroyDescriptorPool(c->device, descriptors, nullptr);
         if (preview)
             vkDestroyPipeline(c->device, preview, nullptr);
+        if (yuv)
+            vkDestroyPipeline(c->device, yuv, nullptr);
         if (filter)
             vkDestroyPipeline(c->device, filter, nullptr);
         if (composite)
@@ -235,6 +251,8 @@ struct GpuCompositor::Impl {
             vkDestroyDescriptorSetLayout(c->device, set_layout, nullptr);
         if (fence)
             vkDestroyFence(c->device, fence, nullptr);
+        if (timestamps)
+            vkDestroyQueryPool(c->device, timestamps, nullptr);
         if (pool)
             vkDestroyCommandPool(c->device, pool, nullptr);
     }
@@ -287,14 +305,26 @@ struct GpuCompositor::Impl {
         VkFenceCreateInfo fi{};
         fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         checked(vkCreateFence(c->device, &fi, nullptr, &fence), "create composite fence");
+        VkPhysicalDeviceProperties device_props{};
+        vkGetPhysicalDeviceProperties(c->phys, &device_props);
+        if (std::getenv("LIBERTAS_BENCHMARK") && device_props.limits.timestampComputeAndGraphics) {
+            VkQueryPoolCreateInfo qi{};
+            qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qi.queryCount = kStamps;
+            checked(vkCreateQueryPool(c->device, &qi, nullptr, &timestamps),
+                    "create composite timestamps");
+            stamp_ns = device_props.limits.timestampPeriod;
+        }
         const VkDescriptorSetLayoutBinding bindings[] = {
             {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
-             nullptr}};
+             nullptr},
+            {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
         VkDescriptorSetLayoutCreateInfo si{};
         si.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        si.bindingCount = 3;
+        si.bindingCount = 4;
         si.pBindings = bindings;
         checked(vkCreateDescriptorSetLayout(c->device, &si, nullptr, &set_layout),
                 "create descriptor layout");
@@ -309,12 +339,14 @@ struct GpuCompositor::Impl {
         composite = pipeline(kCompositeSpv, sizeof(kCompositeSpv));
         preview = pipeline(kPreviewSpv, sizeof(kPreviewSpv));
         filter = pipeline(kFilterSpv, sizeof(kFilterSpv));
+        yuv = pipeline(kYuvSpv, sizeof(kYuvSpv));
         const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4096},
-                                              {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192}};
+                                              {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192},
+                                              {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 256}};
         VkDescriptorPoolCreateInfo di{};
         di.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         di.maxSets = 4096;
-        di.poolSizeCount = 2;
+        di.poolSizeCount = 3;
         di.pPoolSizes = sizes;
         checked(vkCreateDescriptorPool(c->device, &di, nullptr, &descriptors),
                 "create descriptor pool");
@@ -391,7 +423,10 @@ struct GpuCompositor::Impl {
         return *entry;
     }
 
-    void buffer(std::unique_ptr<Buffer>& b, VkDeviceSize size) {
+    // Readback wants HOST_CACHED: the CPU reads it. Upload staging must not be: the GPU then
+    // reads it over PCIe with snooping. Write-combined memory is what the CPU memcpy writes
+    // fastest and the GPU reads fastest.
+    void buffer(std::unique_ptr<Buffer>& b, VkDeviceSize size, bool cached = true) {
         if (b && b->size >= size)
             return;
         b = std::make_unique<Buffer>(*c);
@@ -399,7 +434,8 @@ struct GpuCompositor::Impl {
         VkBufferCreateInfo bi{};
         bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bi.size = size;
-        bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         checked(vkCreateBuffer(c->device, &bi, nullptr, &b->buffer), "create staging buffer");
         VkMemoryRequirements req{};
         vkGetBufferMemoryRequirements(c->device, b->buffer, &req);
@@ -407,6 +443,8 @@ struct GpuCompositor::Impl {
         mi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         mi.allocationSize = req.size;
         try {
+            if (!cached)
+                throw std::runtime_error("write-combined staging");
             mi.memoryTypeIndex = memory_type(*c, req.memoryTypeBits,
                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
@@ -489,6 +527,8 @@ struct GpuCompositor::Impl {
         }
         if (!pic.read_from())
             throw std::runtime_error("draw has no source pixels");
+        if (op.yuv)
+            return convert_yuv(op);
         auto& image = target(pic.width, pic.height,
                              op.bgra ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM);
         if (upload_at == uploads.size())
@@ -496,19 +536,78 @@ struct GpuCompositor::Impl {
         auto& stage = uploads[upload_at++];
         const auto bytes =
             static_cast<VkDeviceSize>(pic.width) * static_cast<VkDeviceSize>(pic.height) * 4;
-        buffer(stage, bytes);
+        buffer(stage, bytes, false);
         std::memcpy(stage->mapped, pic.read_from(), bytes);
+        upload_bytes += bytes;
         barrier(image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        const bool stamped = timestamps && stamp_at + 2 <= kStamps;
+        if (stamped)
+            stamp(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, stamp_at++);
         VkBufferImageCopy copy{};
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {static_cast<std::uint32_t>(pic.width),
                             static_cast<std::uint32_t>(pic.height), 1};
         vkCmdCopyBufferToImage(cmd, stage->buffer, image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+        if (stamped)
+            stamp(VK_PIPELINE_STAGE_TRANSFER_BIT, stamp_at++);
         barrier(image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
         if (pic.owner && source_images.size() < 16 && source_bytes + bytes <= 128ull * 1024 * 1024) {
             source_images.push_back({pic.owner, std::move(images[--image_at])});
             source_bytes += bytes;
         }
+        return image;
+    }
+
+    // Camera planes go up as-is (2 or 1.5 bytes a pixel) and become RGBA8 on the GPU.
+    Image& convert_yuv(const lcomp::DrawOp& op) {
+        const auto& pic = op.image;
+        const auto pixels = static_cast<VkDeviceSize>(pic.width) * static_cast<VkDeviceSize>(pic.height);
+        const auto bytes = op.yuv == 1 ? pixels * 2 : pixels * 3 / 2;
+        auto& image = target(pic.width, pic.height, VK_FORMAT_R8G8B8A8_UNORM);
+        if (upload_at == uploads.size())
+            uploads.emplace_back();
+        auto& stage = uploads[upload_at++];
+        buffer(stage, (bytes + 3) & ~VkDeviceSize{3}, false);
+        std::memcpy(stage->mapped, pic.read_from(), bytes);
+        upload_bytes += bytes;
+        barrier(image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = descriptors;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &set_layout;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        checked(vkAllocateDescriptorSets(c->device, &ai, &set), "allocate composite descriptors");
+        ++dispatches;
+        const VkDescriptorImageInfo target_info{VK_NULL_HANDLE, image.view, VK_IMAGE_LAYOUT_GENERAL};
+        const VkDescriptorBufferInfo planes{stage->buffer, 0, VK_WHOLE_SIZE};
+        std::array<VkWriteDescriptorSet, 2> writes{};
+        for (auto& w : writes) {
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = set;
+            w.descriptorCount = 1;
+        }
+        writes[0].dstBinding = 0;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[0].pImageInfo = &target_info;
+        writes[1].dstBinding = 3;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[1].pBufferInfo = &planes;
+        vkUpdateDescriptorSets(c->device, 2, writes.data(), 0, nullptr);
+        Push push;
+        push.rect = {op.yuv, op.yuv_matrix, 0, 0};
+        const bool stamped = timestamps && stamp_at + 2 <= kStamps;
+        if (stamped)
+            stamp(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, stamp_at++);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, yuv);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0,
+                                nullptr);
+        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdDispatch(cmd, (static_cast<std::uint32_t>(pic.width) + 15) / 16,
+                      (static_cast<std::uint32_t>(pic.height) + 15) / 16, 1);
+        if (stamped)
+            stamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, stamp_at++);
+        barrier(image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
         return image;
     }
 
@@ -523,6 +622,7 @@ struct GpuCompositor::Impl {
         ai.pSetLayouts = &set_layout;
         VkDescriptorSet set = VK_NULL_HANDLE;
         checked(vkAllocateDescriptorSets(c->device, &ai, &set), "allocate composite descriptors");
+        ++dispatches;
         const VkDescriptorImageInfo infos[] = {
             {VK_NULL_HANDLE, dest.view, VK_IMAGE_LAYOUT_GENERAL},
             {sampler, src.view, VK_IMAGE_LAYOUT_GENERAL},
@@ -755,7 +855,16 @@ struct GpuCompositor::Impl {
         bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         checked(vkBeginCommandBuffer(cmd, &bi), "begin composite");
+        upload_bytes = 0;
+        dispatches = 0;
+        stamp_at = 3;
+        if (timestamps) {
+            vkCmdResetQueryPool(cmd, timestamps, 0, kStamps);
+            stamp(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+        }
         Image& canvas = draw(plan, false);
+        if (timestamps)
+            stamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 1);
         if (!runtime_gaps.empty()) {
             out.gaps.insert(out.gaps.end(), runtime_gaps.begin(), runtime_gaps.end());
             out.status = lcomp::PictureStatus::Partial;
@@ -780,6 +889,8 @@ struct GpuCompositor::Impl {
                             static_cast<std::uint32_t>(out.height), 1};
         vkCmdCopyImageToBuffer(cmd, reduced.image, VK_IMAGE_LAYOUT_GENERAL, readback->buffer, 1,
                                &copy);
+        if (timestamps)
+            stamp(VK_PIPELINE_STAGE_TRANSFER_BIT, 2);
         for (auto* image : acquired)
             barrier(*image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, false, true);
         VkMemoryBarrier host{};
@@ -797,13 +908,30 @@ struct GpuCompositor::Impl {
         const auto submitted = std::chrono::steady_clock::now();
         checked(vkWaitForFences(c->device, 1, &fence, VK_TRUE, 2'000'000'000ULL),
                 "GPU fence failed");
-        if (std::getenv("LIBERTAS_BENCHMARK") && ++timing_frames_ % 120 == 0)
-            std::fprintf(stderr, "GPU %dx%d prepare %.3f ms, wait %.3f ms\n", plan.width,
-                         plan.height,
-                         std::chrono::duration<double, std::milli>(submitted - begin).count(),
-                         std::chrono::duration<double, std::milli>(
-                             std::chrono::steady_clock::now() - submitted)
-                             .count());
+        if (timestamps) {
+            // One line per frame: a miss is any frame over budget, not every 120th.
+            std::uint64_t ticks[kStamps]{};
+            if (vkGetQueryPoolResults(c->device, timestamps, 0, stamp_at, sizeof(ticks), ticks,
+                                      sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT) ==
+                VK_SUCCESS) {
+                const auto ms = [&](std::uint64_t t) { return static_cast<double>(t) * stamp_ns / 1e6; };
+                std::uint64_t upload = 0;
+                for (std::uint32_t i = 3; i + 1 < stamp_at; i += 2)
+                    upload += ticks[i + 1] - ticks[i];
+                std::fprintf(
+                    stderr,
+                    "GPU frame %u: prepare %.3f wait %.3f | gpu total %.3f upload %.3f "
+                    "(%u copies, %.1f MB) composite %.3f readback %.3f | %u dispatches\n",
+                    ++timing_frames_,
+                    std::chrono::duration<double, std::milli>(submitted - begin).count(),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                              submitted)
+                        .count(),
+                    ms(ticks[2] - ticks[0]), ms(upload), (stamp_at - 3) / 2,
+                    static_cast<double>(upload_bytes) / 1e6, ms(ticks[1] - ticks[0]),
+                    ms(ticks[2] - ticks[1]), dispatches);
+            }
+        }
         out.pixels.resize(bytes);
         std::memcpy(out.pixels.data(), readback->mapped, bytes);
         std::uint64_t spare_bytes = 0;

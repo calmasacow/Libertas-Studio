@@ -757,8 +757,8 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
     }
     // A buffer that does not hold the pixels it claims is a bug on the device side, and drawing
     // from it would read past the end. Refused as NoFrame rather than trusted.
-    const auto need =
-        static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height) * 4u;
+    const auto pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
+    const auto need = frame.yuv == 0 ? pixels * 4u : frame.yuv == 1 ? pixels * 2u : pixels * 3u / 2u;
     if (!frame.device_image && frame.size < need) {
         refuse(target.picture, node, GapReason::NoFrame);
         return;
@@ -792,6 +792,8 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
     DrawOp op = operation(node, *rect, opacity);
     op.image = std::move(sampled);
     op.bgra = frame.bgra;
+    op.yuv = frame.yuv;
+    op.yuv_matrix = frame.yuv_matrix;
     op.device_image = frame.device_image;
     op.source_key = src.id;
     op.frame_owner = frame.owner;
@@ -809,6 +811,8 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
                       (height - fit_h) / 2 + fit_h};
         image.image = std::move(op.image);
         image.bgra = op.bgra;
+        image.yuv = op.yuv;
+        image.yuv_matrix = op.yuv_matrix;
         image.device_image = op.device_image;
         ldoc::Effect resize;
         resize.type = "filter.scale";
@@ -831,6 +835,7 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
         op.nested->ops.push_back(std::move(image));
         op.device_image = nullptr;
         op.bgra = false;
+        op.yuv = 0;
     }
     append_filtered(node, std::move(op), width, height, target, src.effects);
 }

@@ -176,6 +176,9 @@ struct CapturedPicture {
     bool bgra = true;
     /// Immutable worker frame identity; retains pixels across GPU cache hits.
     std::shared_ptr<const void> owner{};
+    /// GPU only: 0 = packed 4-byte pixels; 1 YUYV, 2 I420, 3 NV12 planes converted on the GPU.
+    /// `size` is then the YUV byte count. Matrix bit 0 = BT.709, bit 1 = full range.
+    std::uint8_t yuv = 0, yuv_matrix = 0;
 
     [[nodiscard]] bool empty() const { return (pixels == nullptr || size == 0) && !device_image; }
 };
@@ -211,6 +214,7 @@ struct DrawOp {
     bool flip_x = false;
     bool flip_y = false;
     bool bgra = false;
+    std::uint8_t yuv = 0, yuv_matrix = 0; // See CapturedPicture.
     std::optional<ldoc::Rgba> colour;
     Picture image;
     const void* device_image = nullptr;

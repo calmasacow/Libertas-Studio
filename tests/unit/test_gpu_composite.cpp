@@ -11,6 +11,9 @@
 #include <lcomp/filters.hpp>
 #include <lrhi/composite.hpp>
 #include <mutex>
+extern "C" {
+#include <libswscale/swscale.h>
+}
 
 namespace {
 ldoc::Project show(int width = 48, int height = 32) {
@@ -634,4 +637,87 @@ int main() {
             return test.name == "a_real_capture_slot_stays_on_device_until_preview_readback";
         });
     return ltest::run_all("GPU composite");
+}
+
+LTEST_CASE(camera_yuv_converts_on_the_gpu_like_swscale) {
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE(gpu);
+    constexpr int w = 16, h = 8;
+    auto p = show(w, h);
+    // A gradient in every plane, so chroma placement and matrix both show up in the result.
+    constexpr std::size_t n = w * h;
+    std::vector<std::uint8_t> luma(n), u(n / 4), v(n / 4);
+    for (std::size_t i = 0; i < n; ++i) luma[i] = static_cast<std::uint8_t>(16 + i * 219 / n);
+    for (std::size_t i = 0; i < n / 4; ++i) {
+        u[i] = static_cast<std::uint8_t>(40 + i * 5);
+        v[i] = static_cast<std::uint8_t>(200 - i * 4);
+    }
+    for (const auto layout : {AV_PIX_FMT_YUYV422, AV_PIX_FMT_YUV420P, AV_PIX_FMT_NV12})
+        for (const int matrix : {0, 1, 2, 3}) {
+            std::vector<std::uint8_t> planes;
+            if (layout == AV_PIX_FMT_YUYV422)
+                for (std::size_t y = 0; y < h; ++y)
+                    for (std::size_t x = 0; x < w; x += 2) {
+                        const std::size_t c = (y / 2) * (w / 2) + x / 2;
+                        planes.insert(planes.end(), {luma[y * w + x], u[c], luma[y * w + x + 1], v[c]});
+                    }
+            else {
+                planes = luma;
+                if (layout == AV_PIX_FMT_YUV420P) {
+                    planes.insert(planes.end(), u.begin(), u.end());
+                    planes.insert(planes.end(), v.begin(), v.end());
+                } else
+                    for (std::size_t i = 0; i < u.size(); ++i) planes.insert(planes.end(), {u[i], v[i]});
+            }
+            // The CPU reference: the same swscale call the capture thread makes.
+            std::vector<std::uint8_t> bgra(n * 4);
+            // swscale's NV12 path interpolates chroma differently from its I420 path (they
+            // differ by ~40 on this gradient). The GPU treats both alike, so NV12 is checked
+            // against the I420 reference built from the same planes.
+            const auto reference = layout == AV_PIX_FMT_NV12 ? AV_PIX_FMT_YUV420P : layout;
+            auto* sws = sws_getContext(w, h, reference, w, h, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr,
+                                       nullptr, nullptr);
+            REQUIRE(sws);
+            const auto* coefficients = sws_getCoefficients(matrix & 1 ? SWS_CS_ITU709 : SWS_CS_ITU601);
+            REQUIRE(sws_setColorspaceDetails(sws, coefficients, matrix >> 1, coefficients, 1, 0,
+                                             1 << 16, 1 << 16) >= 0);
+            const std::uint8_t* src[4] = {planes.data(), nullptr, nullptr, nullptr};
+            int stride[4] = {layout == AV_PIX_FMT_YUYV422 ? w * 2 : w, 0, 0, 0};
+            if (layout == AV_PIX_FMT_YUV420P) {
+                src[1] = planes.data() + n;
+                src[2] = src[1] + n / 4;
+                stride[1] = stride[2] = w / 2;
+            } else if (layout == AV_PIX_FMT_NV12) {
+                src[0] = luma.data();
+                src[1] = u.data();
+                src[2] = v.data();
+                stride[1] = stride[2] = w / 2;
+            }
+            std::uint8_t* dst[4] = {bgra.data(), nullptr, nullptr, nullptr};
+            int dst_stride[4] = {w * 4, 0, 0, 0};
+            REQUIRE(sws_scale(sws, src, stride, 0, h, dst, dst_stride) == h);
+            sws_freeContext(sws);
+            const auto cpu_plan = lcomp::plan_canvas(p, p.canvases[0].id, [&](const auto&) {
+                return lcomp::CapturedPicture{w, h, bgra.data(), bgra.size(), nullptr};
+            });
+            const auto gpu_plan = lcomp::plan_canvas(p, p.canvases[0].id, [&](const auto&) {
+                lcomp::CapturedPicture picture{w, h, planes.data(), planes.size(), nullptr};
+                picture.yuv = layout == AV_PIX_FMT_YUYV422 ? 1 : layout == AV_PIX_FMT_YUV420P ? 2 : 3;
+                picture.yuv_matrix = static_cast<std::uint8_t>(matrix);
+                return picture;
+            });
+            const auto result = gpu->render(gpu_plan, 0, error);
+            REQUIRE_MSG(result, "{}", error);
+            // swscale's bilinear chroma upsampling interpolates where the shader takes the
+            // nearest sample; within a block of flat chroma they agree to rounding.
+            const auto cpu = lcomp::execute_cpu(cpu_plan);
+            REQUIRE(cpu.pixels.size() == result->pixels.size());
+            int maximum = 0;
+            for (std::size_t i = 0; i < cpu.pixels.size(); ++i)
+                maximum = std::max(maximum, std::abs(int(cpu.pixels[i]) - int(result->pixels[i])));
+            CHECK_MSG(maximum <= 24, "layout {} matrix {}: max channel error {}", int(layout), matrix,
+                      maximum);
+        }
 }

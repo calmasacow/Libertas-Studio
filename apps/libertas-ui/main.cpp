@@ -104,6 +104,9 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
         check = check || std::string_view{argv[i]} == "--check";
     insist_on_wayland(check);
+    // The renderer composites in Vulkan; Qt's Linux default is OpenGL, which the project avoids.
+    if (!check)
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
 
     QApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("libertas"));

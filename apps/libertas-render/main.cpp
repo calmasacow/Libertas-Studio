@@ -247,10 +247,12 @@ class Renderer {
         }
         video_held_.clear();
         std::erase_if(videos_, [this](const auto& item) {
+            if (reopen_video_) return true;
             auto& session = *item.second;
             session.visible = video_wanted_.contains(item.first);
             return !session.visible && deactivate_video_when_hidden(session.source);
         });
+        reopen_video_ = false;
         video_wanted_.clear();
         for (auto& [name, snapshot] : held_) {
             auto& s = *sessions_.at(name);
@@ -378,6 +380,12 @@ class Renderer {
             if (setting(a, key) != setting(b, key)) return false;
         return video_options(a) == video_options(b);
     }
+    // GPU compositing converts camera YUV itself; the CPU path still needs BGRA.
+    libertas::capture::VideoOptions capture_options(const ldoc::Source& source) const {
+        auto options = video_options(source);
+        options.raw_yuv = !cpu_ && !gpu_failed_;
+        return options;
+    }
     static bool deactivate_video_when_hidden(const ldoc::Source& source) {
         const auto option = source.settings.find("deactivateWhenHidden");
         const auto* enabled = option == source.settings.end()
@@ -392,7 +400,7 @@ class Renderer {
             std::string error;
             session->capture = libertas::capture::VideoCapture::open(setting(source, "device"),
                 setting(source, "resolution"), setting(source, "frameRate"), setting(source, "colourRange"), error,
-                video_options(source));
+                capture_options(source));
             if (!session->capture) lc::warn("cannot capture {}: {}", setting(source, "device"), error);
             else {
                 auto* ptr = session.get();
@@ -425,7 +433,15 @@ class Renderer {
         }
         const auto& image = video_held_.at(id).first;
         if (!image) return {};
-        return {image->width, image->height, image->pixels.data(), image->pixels.size(), nullptr};
+        lcomp::CapturedPicture picture{image->width, image->height, image->pixels.data(),
+                                       image->pixels.size(), nullptr};
+        if (image->layout != libertas::capture::VideoLayout::Bgra) {
+            // A frame from before a GPU failure cannot be drawn by the CPU; the session reopens.
+            if (!gpu) return {};
+            picture.yuv = static_cast<std::uint8_t>(image->layout);
+            picture.yuv_matrix = static_cast<std::uint8_t>((image->bt709 ? 1 : 0) | (image->full_range ? 2 : 0));
+        }
+        return picture;
     }
 
     struct Session {
@@ -455,12 +471,14 @@ class Renderer {
     // Destroy GPU views before capture images, and capture images before their device.
     // Each canvas keeps its own scratch images; alternating dimensions must not reallocate.
     std::map<ldoc::Id, std::unique_ptr<libertas::rhi::GpuCompositor>> gpus_;
+    bool reopen_video_ = false;
     bool cpu_ = false, require_gpu_ = false, device_failed_ = false, gpu_failed_ = false,
          capture_failed_ = false;
 
     void fail_gpu(const std::string& error) {
         lc::warn("GPU composite unavailable: {}; using CPU", error);
         gpu_failed_ = true;
+        reopen_video_ = true; // Raw YUV cameras reopen delivering BGRA for the CPU path.
         capture_failed_ = error.find("(-4)") != std::string::npos;
         if (require_gpu_)
             std::_Exit(1);

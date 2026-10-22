@@ -120,6 +120,8 @@ struct VideoCapture::State {
     AVPacket* packet = nullptr;
     VideoOptions options;
     std::string colour_range;
+    VideoLayout raw = VideoLayout::Bgra;
+    bool bt709 = false, full_range = false;
     std::chrono::nanoseconds timeout{};
     std::atomic<bool> stopping{false};
     std::thread thread;
@@ -162,6 +164,9 @@ struct VideoCapture::State {
             frame->width = static_cast<int>(f.width);
             frame->height = static_cast<int>(f.height);
             frame->pixels.resize(static_cast<std::size_t>(f.width) * f.height * 4);
+            frame->layout = raw;
+            frame->bt709 = bt709;
+            frame->full_range = full_range;
         }
         auto deadline = std::chrono::steady_clock::now() + timeout;
         bool reported_timeout = false;
@@ -260,6 +265,31 @@ struct VideoCapture::State {
                     src[2] = src[1] + plane / 4;
                     stride[1] = stride[2] = stride[0] / 2;
                     if (f.pixelformat == V4L2_PIX_FMT_YVU420) std::swap(src[1], src[2]);
+                }
+                if (raw != VideoLayout::Bgra) {
+                    // Repack to tight rows; the GPU converts. YVU420 swaps planes to I420 order.
+                    auto* out = (*free)->pixels.data();
+                    const auto w = static_cast<std::size_t>(f.width), h = static_cast<std::size_t>(f.height);
+                    const auto rows = [&](const std::uint8_t* from, int from_stride,
+                                          std::size_t bytes, std::size_t count) {
+                        const auto step = static_cast<std::size_t>(from_stride);
+                        for (std::size_t y = 0; y < count; ++y, out += bytes)
+                            std::memcpy(out, from + y * step, bytes);
+                    };
+                    if (raw == VideoLayout::Yuyv)
+                        rows(src[0], stride[0], w * 2, h);
+                    else {
+                        rows(src[0], stride[0], w, h);
+                        if (raw == VideoLayout::Nv12)
+                            rows(src[1], stride[1], w, h / 2);
+                        else {
+                            rows(src[1], stride[1], w / 2, h / 2);
+                            rows(src[2], stride[2], w / 2, h / 2);
+                        }
+                    }
+                    callback(*free);
+                    if (call(fd, VIDIOC_QBUF, &buffer) < 0) break;
+                    continue;
                 }
                 std::uint8_t* dst[4] = {(*free)->pixels.data(), nullptr, nullptr, nullptr};
                 int dst_stride[4] = {static_cast<int>(f.width) * 4, 0, 0, 0};
@@ -392,6 +422,14 @@ std::unique_ptr<VideoCapture> VideoCapture::open(const std::string& path,
         int full = f.quantization == V4L2_QUANTIZATION_FULL_RANGE || f.colorspace == V4L2_COLORSPACE_JPEG;
         if (range == "Full") full = 1;
         else if (range == "Partial") full = 0;
+        state->bt709 = matrix == SWS_CS_ITU709;
+        state->full_range = full;
+        // Even sizes keep chroma planes whole; P010 and RGB stay on the CPU path.
+        if (options.raw_yuv && width % 2 == 0 && height % 2 == 0)
+            state->raw = f.pixelformat == V4L2_PIX_FMT_YUYV ? VideoLayout::Yuyv
+                       : f.pixelformat == V4L2_PIX_FMT_NV12 ? VideoLayout::Nv12
+                       : f.pixelformat == V4L2_PIX_FMT_YUV420 || f.pixelformat == V4L2_PIX_FMT_YVU420
+                           ? VideoLayout::I420 : VideoLayout::Bgra;
         const int* coefficients = sws_getCoefficients(matrix);
         if (sws_setColorspaceDetails(state->converter, coefficients, full, coefficients, 1, 0, 1 << 16, 1 << 16) < 0)
             return fail("unsupported capture colour conversion");

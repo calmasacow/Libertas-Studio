@@ -21,11 +21,18 @@ struct VideoOptions {
     bool buffering = true;
     bool auto_reset = false;
     int timeout_frames = 5;
+    /// Deliver YUYV/I420/NV12 untouched for the GPU to convert, instead of BGRA from swscale.
+    bool raw_yuv = false;
     friend bool operator==(const VideoOptions&, const VideoOptions&) = default;
 };
+/// Raw camera layouts the GPU compositor converts itself. Bgra is already converted.
+enum class VideoLayout : std::uint8_t { Bgra, Yuyv, I420, Nv12 };
 struct VideoFrame {
     int width = 0, height = 0;
-    std::vector<std::uint8_t> pixels; // Tightly packed BGRA8.
+    /// Tightly packed BGRA8, or for a YUV layout the tightly packed planes (Y, then U/V or UV).
+    std::vector<std::uint8_t> pixels;
+    VideoLayout layout = VideoLayout::Bgra;
+    bool bt709 = false, full_range = false;
 };
 class VideoCapture {
   public:
