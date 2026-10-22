@@ -166,6 +166,7 @@ struct Slot {
     lipc::Fd fd;
     std::int32_t width = 0;
     std::int32_t height = 0;
+    bool immutable = false;
 };
 
 [[nodiscard]] std::expected<void, std::string>
@@ -175,9 +176,12 @@ send_frame(lipc::Channel& channel, const ldoc::Id& canvas, const Picture& pictur
     if (id.size() != lc::kUlidLength)
         return std::unexpected(std::string{"a canvas id was not 26 characters"});
 
-    const bool have_pixels = picture.stride > 0 && !picture.pixels.empty() &&
-                             picture.pixels.size() == static_cast<std::size_t>(picture.stride) *
-                                                          static_cast<std::size_t>(picture.height);
+    const auto size = static_cast<std::size_t>(picture.stride) *
+                      static_cast<std::size_t>(std::max(0, picture.height));
+    const bool immutable = picture.borrowed && picture.owner;
+    const bool have_pixels =
+        picture.stride > 0 && picture.read_from() && (immutable || picture.pixels.size() == size);
+    const std::span<const std::uint8_t> pixels{picture.read_from(), have_pixels ? size : 0};
 
     bool fresh = false;
     Slot* slot = nullptr;
@@ -188,9 +192,10 @@ send_frame(lipc::Channel& channel, const ldoc::Id& canvas, const Picture& pictur
                 break;
             }
         }
-        if (slot == nullptr || slot->width != picture.width || slot->height != picture.height) {
+        if (immutable || slot == nullptr || slot->immutable || slot->width != picture.width ||
+            slot->height != picture.height) {
             const std::string name = "preview-" + id;
-            auto created = lipc::make_memfd(name.c_str(), picture.pixels.size());
+            auto created = lipc::make_memfd(name.c_str(), pixels.size());
             if (!created)
                 return std::unexpected(created.error());
             if (slot == nullptr) {
@@ -200,10 +205,13 @@ send_frame(lipc::Channel& channel, const ldoc::Id& canvas, const Picture& pictur
             slot->fd = std::move(*created);
             slot->width = picture.width;
             slot->height = picture.height;
+            slot->immutable = immutable;
             fresh = true;
         }
-        if (auto wrote = write_memfd(slot->fd, picture.pixels); !wrote)
+        if (auto wrote = write_memfd(slot->fd, pixels); !wrote)
             return std::unexpected(wrote.error());
+        if (immutable && ::fcntl(slot->fd.get(), F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_SEAL) != 0)
+            return std::unexpected(std::format("seal immutable frame: {}", std::strerror(errno)));
     }
 
     std::vector<std::byte> payload;
@@ -240,7 +248,8 @@ bool send_would_block(const std::string& error) {
            error.find("would block") != std::string::npos;
 }
 
-PreviewLink::PreviewLink(lipc::Channel channel) : channel_(std::move(channel)) {}
+PreviewLink::PreviewLink(lipc::Channel channel, bool borrow_immutable)
+    : channel_(std::move(channel)), borrow_immutable_(borrow_immutable) {}
 
 PreviewLink::~PreviewLink() = default;
 
@@ -476,6 +485,8 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
     if (stride < width * 4u || height > (std::numeric_limits<std::size_t>::max() / stride))
         return std::unexpected(std::string{"a frame's stride does not fit its width"});
     const std::size_t need = static_cast<std::size_t>(stride) * static_cast<std::size_t>(height);
+    if (borrow_immutable_ && need > 128ull * 1024 * 1024)
+        return std::unexpected(std::string{"worker frame exceeds image budget"});
 
     Mapping* mapping = nullptr;
     for (auto& [key, existing] : mappings_) {
@@ -494,10 +505,23 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
             return std::unexpected(std::format("fstat: {}", std::strerror(errno)));
         if (st.st_size < 0 || static_cast<std::uint64_t>(st.st_size) < need)
             return std::unexpected(std::string{"the frame buffer is shorter than the frame"});
-        fresh.view = ::mmap(nullptr, need, PROT_READ, MAP_SHARED, fresh.fd.get(), 0);
+        const int seals = ::fcntl(fresh.fd.get(), F_GET_SEALS);
+        constexpr int immutable_seals = F_SEAL_WRITE | F_SEAL_SHRINK | F_SEAL_GROW;
+        const bool borrow =
+            borrow_immutable_ && seals >= 0 && (seals & immutable_seals) == immutable_seals;
+        // Establish page tables on the receiver thread, before GPU upload reads
+        // the frame. Thousands of minor faults otherwise land on the render path.
+        fresh.view = ::mmap(nullptr, need, PROT_READ, MAP_SHARED | (borrow ? MAP_POPULATE : 0),
+                            fresh.fd.get(), 0);
         if (fresh.view == MAP_FAILED)
             return std::unexpected(std::format("mmap: {}", std::strerror(errno)));
         fresh.bytes = need;
+        if (borrow) {
+            auto lease = std::make_shared<Mapping>(std::move(fresh));
+            event.frame.mapped = {static_cast<const std::uint8_t*>(lease->view), need};
+            event.frame.storage = std::move(lease);
+            return event;
+        }
         if (mapping == nullptr) {
             mappings_.push_back({id, std::move(fresh)});
             mapping = &mappings_.back().second;

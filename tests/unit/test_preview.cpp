@@ -314,6 +314,43 @@ LTEST_CASE(text_source_crosses_worker_and_renderer_and_obeys_placement) {
     CHECK(ink);
 }
 
+LTEST_CASE(native_alpha_media_crosses_worker_and_keeps_authored_box_and_letterboxing) {
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends);
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child);
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000));
+    auto source = colour_source(0, 0, 0);
+    source.type = "source.media";
+    source.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/alpha.webm";
+    source.settings["width"] = std::int64_t{32};
+    source.settings["height"] = std::int64_t{32};
+    auto node = bound_to(source);
+    node.transform.position = {32, 0};
+    ldoc::Scene scene;
+    scene.id = ldoc::Id::generate();
+    scene.roots = {node};
+    auto project = show(scene, {source});
+    project.canvases[0].width = 64;
+    project.canvases[0].height = 32;
+    bool ink = false;
+    for (int attempt = 0; attempt < 100 && !ink; ++attempt) {
+        const auto frame = commit(link, project);
+        if (frame.status == lcomp::PictureStatus::Complete) {
+            CHECK_EQ(pixel(frame, 10, 10), std::make_tuple(0, 0, 0, 255));
+            CHECK_EQ(pixel(frame, 42, 0), std::make_tuple(0, 0, 0, 255));
+            const auto centre = pixel(frame, 42, 10);
+            ink = std::get<0>(centre) > 0 || std::get<1>(centre) > 0 || std::get<2>(centre) > 0;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    link.quit();
+    link.close();
+    CHECK_EQ(reap(*child, 2000), 0);
+    CHECK(ink);
+}
+
 LTEST_CASE(media_audio_crosses_worker_mixer_and_meter_transport) {
     auto ends = lipc::Channel::pair();
     REQUIRE(ends.has_value());
@@ -786,8 +823,10 @@ LTEST_CASE(measure_saved_scene_through_real_renderer) {
     lcomp::PreviewLink link{std::move(ends->first)};
     REQUIRE(link.take_hello(2000));
     REQUIRE(link.send_project(project, 960));
-    lcomp::PreviewFrame baseline, last;
-    for (int iteration = 0; iteration < 1920; ++iteration) {
+    lcomp::PreviewFrame baseline, last, checkpoint;
+    const auto* requested = std::getenv("LIBERTAS_BENCH_FRAMES");
+    const int iterations = requested ? std::clamp(std::atoi(requested), 240, 36000) : 1920;
+    for (int iteration = 0; iteration < iterations; ++iteration) {
         const auto start = std::chrono::steady_clock::now();
         bool ack = false;
         while (!ack) {
@@ -801,9 +840,21 @@ LTEST_CASE(measure_saved_scene_through_real_renderer) {
             ack = (**event).kind == lcomp::PreviewEvent::Kind::Ack;
         }
         if (iteration == 119)
-            baseline = last;
+            baseline = checkpoint = last;
+        if (iteration > 119 && (iteration - 119) % 600 == 0) {
+            const auto frames = last.rendered_frames - checkpoint.rendered_frames;
+            std::fprintf(stderr, "window %d: %.3f ms/frame, %llu rendered, %llu missed\n",
+                         iteration,
+                         frames ? static_cast<double>(last.render_ns - checkpoint.render_ns) /
+                                      static_cast<double>(frames) / 1e6
+                                : 0.0,
+                         static_cast<unsigned long long>(frames),
+                         static_cast<unsigned long long>(last.render_lag_frames -
+                                                         checkpoint.render_lag_frames));
+            checkpoint = last;
+        }
         std::this_thread::sleep_until(start + std::chrono::microseconds(16667));
-        if (iteration + 1 < 1920)
+        if (iteration + 1 < iterations)
             REQUIRE(link.refresh(960));
     }
     REQUIRE(last.rendered_frames > baseline.rendered_frames);

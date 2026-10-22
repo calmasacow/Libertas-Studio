@@ -10,7 +10,7 @@ vec3 linear_rgb(vec3 c) { return mix(pow((c+0.055)/1.055,vec3(2.4)),c/12.92,less
 vec3 srgb(vec3 c) { c=max(c,vec3(0)); return mix(1.055*pow(c,vec3(1./2.4))-0.055,c*12.92,lessThanEqual(c,vec3(0.0031308))); }
 vec4 read_pixel(ivec2 pos) {
     vec4 c=texelFetch(source,clamp(pos,ivec2(0),textureSize(source,0)-1),0);
-    c.rgb=srgb(c.a>0 ? c.rgb/c.a : vec3(0)); return c;
+    if(f.info.y==0)c.rgb=srgb(c.a>0 ? c.rgb/c.a : vec3(0)); return c;
 }
 float weight(float d,float ratio,int mode) {
     d=abs(d);
@@ -25,6 +25,20 @@ void main() {
     if(any(greaterThanEqual(pos,size)))return;
     int kind=f.info.x;
     vec4 a=f.p[0], b=f.p[1], mask=vec4(0);
+    // Bilinear has exactly four taps. Avoid the generic variable-radius loop
+    // and its zero-weight samples (each read converts linear pixels to sRGB).
+    if(kind==3 && int(a.x)==1) {
+        vec2 center=(vec2(pos)+.5)*vec2(textureSize(source,0))/vec2(size)-.5;
+        ivec2 lo=ivec2(floor(center));vec2 t=fract(center);
+        vec4 c00=read_pixel(lo),c10=read_pixel(lo+ivec2(1,0));
+        vec4 c01=read_pixel(lo+ivec2(0,1)),c11=read_pixel(lo+ivec2(1,1));
+        c00.rgb*=c00.a;c10.rgb*=c10.a;c01.rgb*=c01.a;c11.rgb*=c11.a;
+        vec4 c=mix(mix(c00,c10,t.x),mix(c01,c11,t.x),t.y);
+        if(c.a==0){imageStore(target,pos,vec4(0));return;}
+        c.rgb=linear_rgb(c.a>1e-6 ? c.rgb/c.a : vec3(0))*c.a;
+        imageStore(target,pos,c);
+        return;
+    }
     if(kind==8) {
         vec2 n=vec2(textureSize(auxiliary,0)),uv=(vec2(pos)+.5)/vec2(size);
         if(a.z==0){float scale=min(float(size.x)/n.x,float(size.y)/n.y);uv=(uv-.5)*vec2(size)/(n*scale)+.5;}

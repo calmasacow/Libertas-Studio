@@ -426,6 +426,17 @@ int main(int argc, char** argv) {
                "the real renderer reports per-canvas frame count and render time");
         report(render_stats.value(QStringLiteral("missed")).toULongLong() == 0,
                "idle time does not count as missed render frames");
+        // Startup layout can request a second preview size. Wait for actual idle
+        // render work to expire, without assuming which event-loop pass settles it.
+        auto expired_stats = render_stats;
+        for (int i = 0; i < 20 && expired_stats.value("renderMs").toDouble() > 0.0; ++i) {
+            pump(100);
+            expired_stats = preview.renderStats(QString{});
+        }
+        report(expired_stats.value(QStringLiteral("renderMs")).toDouble() == 0.0 &&
+                   expired_stats.value(QStringLiteral("frames")).toULongLong() >=
+                       render_stats.value(QStringLiteral("frames")).toULongLong(),
+               "render time expires after 500 ms while frame totals stay cumulative");
         preview.resetStats();
         report(preview.renderStats(QString{}).value(QStringLiteral("frames")).toULongLong() == 0,
                "reset clears the displayed per-canvas frame count");
@@ -1552,6 +1563,19 @@ int main(int argc, char** argv) {
         report(true, "every source type has settings the gear can show");
         report(document.sourceSettingsSchema(QStringLiteral("source.nonesuch")).isEmpty(),
                "and a type this build does not know reports none rather than guessing");
+        for (const auto* type : {"source.media", "source.playlist"}) {
+            const auto fields = document.sourceSettingsSchema(QString::fromLatin1(type));
+            report(std::ranges::any_of(fields,
+                                       [](const QVariant& value) {
+                                           const auto field = value.toMap();
+                                           return field.value("key").toString() ==
+                                                      QLatin1String("hardwareDecode") &&
+                                                  field.value("kind").toString() ==
+                                                      QLatin1String("bool") &&
+                                                  field.value("value").toBool();
+                                       }),
+                   "media settings expose hardware decoding enabled by default");
+        }
 
         {
             bool well_formed = true;

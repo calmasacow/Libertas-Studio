@@ -6,11 +6,13 @@
 #include <QApplication>
 #include <QAudioBuffer>
 #include <QAudioBufferOutput>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QFont>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QMediaMetaData>
 #include <QMediaPlayer>
 #include <QMovie>
 #include <QPainter>
@@ -36,6 +38,8 @@ class Content : public QObject {
     QImage image_;
     std::unique_ptr<QMediaPlayer> player_;
     std::unique_ptr<AlphaVideo> alpha_;
+    QElapsedTimer media_position_clock_;
+    qint64 media_position_ = 0;
     std::unique_ptr<QMovie> movie_;
     std::unique_ptr<QAudioBufferOutput> audio_;
     std::vector<float> audio_pending_;
@@ -87,6 +91,18 @@ class Content : public QObject {
 
     void publish(const QImage& image) {
         valid_ = !image.isNull();
+        if (valid_ &&
+            (image.width() > 8192 || image.height() > 8192 ||
+             static_cast<std::int64_t>(image.width()) * image.height() * 4 > 128 * 1024 * 1024)) {
+            qWarning("source frame exceeds image budget");
+            valid_ = false;
+        }
+        if (valid_ && (image.size() == size_ || source_.type == "source.media" ||
+                       source_.type == "source.playlist")) {
+            image_ = image.convertToFormat(QImage::Format_RGBA8888);
+            dirty = true;
+            return;
+        }
         image_ = QImage(size_, QImage::Format_RGBA8888);
         image_.fill(Qt::transparent);
         if (valid_) {
@@ -127,10 +143,28 @@ class Content : public QObject {
             publish({});
     }
 
+    qint64 media_position() {
+        const auto position = player_->position();
+        if (!player_->isPlaying()) {
+            media_position_clock_.invalidate();
+            return position;
+        }
+        // Qt publishes position in coarse steps. Interpolate between them so a
+        // 30/60 Hz alpha stream does not arrive in 50 ms bursts.
+        if (!media_position_clock_.isValid() || position != media_position_) {
+            media_position_ = position;
+            media_position_clock_.start();
+        }
+        return position + static_cast<qint64>(static_cast<double>(media_position_clock_.elapsed()) *
+                                              player_->playbackRate());
+    }
+
     void play_file() try {
+        media_position_clock_.invalidate();
         alpha_.reset();
         movie_.reset();
-        player_->stop();
+        if (player_)
+            player_->stop();
         if (files_.empty()) {
             publish({});
             return;
@@ -181,12 +215,27 @@ class Content : public QObject {
             if (alpha->open(path))
                 alpha_ = std::move(alpha);
         }
+        const double speed = std::clamp(number("speedPercent", 100), 25, 400) / 100.0;
+        if (alpha_ && !alpha_->has_audio()) {
+            // Silent alpha needs a clock, not a second media pipeline/device probe.
+            media_position_clock_.start();
+            alpha_->start(
+                speed,
+                [this, speed] {
+                    return static_cast<qint64>(
+                        static_cast<double>(media_position_clock_.elapsed()) * speed);
+                },
+                [this](const QImage& image) { publish(image); }, finished);
+            return;
+        }
+        ensure_player();
+        player_->setPlaybackRate(speed);
         player_->setVideoSink(alpha_ ? nullptr : video_.get());
         player_->setSource(QUrl::fromLocalFile(path));
         player_->play();
         if (alpha_)
             alpha_->start(
-                player_->playbackRate(), [this] { return player_->position(); },
+                player_->playbackRate(), [this] { return media_position(); },
                 [this](const QImage& image) { publish(image); }, finished);
     } catch (const std::exception& error) {
         qWarning("media source: %s", error.what());
@@ -198,6 +247,9 @@ class Content : public QObject {
     void ensure_player() {
         if (player_)
             return;
+        // Qt caches this policy per process; settings changes restart the worker.
+        if (!flag("hardwareDecode", true))
+            qputenv("QT_FFMPEG_DECODING_HW_DEVICE_TYPES", QByteArray{});
         // QMediaPlayer probes hardware decoders; text and still-image workers need none.
         player_ = std::make_unique<QMediaPlayer>();
         video_ = std::make_unique<QVideoSink>();
@@ -207,6 +259,9 @@ class Content : public QObject {
         format.setSampleFormat(QAudioFormat::Float);
         audio_ = std::make_unique<QAudioBufferOutput>(format);
         player_->setAudioBufferOutput(audio_.get());
+        connect(player_.get(), &QMediaPlayer::tracksChanged, this, [this] {
+            player_->setActiveVideoTrack(alpha_ || player_->videoTracks().isEmpty() ? -1 : 0);
+        });
         connect(
             audio_.get(), &QAudioBufferOutput::audioBufferReceived, this,
             [this](const QAudioBuffer& buffer) {
@@ -376,11 +431,9 @@ class Content : public QObject {
             show_slide();
             slides_.start(std::clamp(number("intervalMs", 5000), 100, 100000));
         } else if (source.type == "source.media" || source.type == "source.playlist") {
-            ensure_player();
             files_ = source.type == "source.media"
                          ? QStringList{QString::fromStdString(text("localFile"))}
                          : QString::fromStdString(text("files")).split('\n', Qt::SkipEmptyParts);
-            player_->setPlaybackRate(std::clamp(number("speedPercent", 100), 25, 400) / 100.0);
             play_file();
         } else
             throw std::runtime_error("unsupported source worker type");
@@ -395,15 +448,13 @@ class Content : public QObject {
 
     lcomp::Picture picture() const {
         lcomp::Picture out;
-        out.width = size_.width();
-        out.height = size_.height();
+        out.width = image_.width();
+        out.height = image_.height();
         out.stride = static_cast<std::uint32_t>(out.width) * 4;
         out.status = valid_ ? lcomp::PictureStatus::Complete : lcomp::PictureStatus::Partial;
-        out.pixels.resize(static_cast<std::size_t>(out.stride) *
-                          static_cast<std::size_t>(out.height));
-        for (int y = 0; y < out.height; ++y)
-            std::memcpy(out.pixels.data() + static_cast<std::size_t>(y) * out.stride,
-                        image_.constScanLine(y), out.stride);
+        auto lease = std::make_shared<QImage>(image_);
+        out.borrowed = lease->constBits();
+        out.owner = std::move(lease);
         return out;
     }
 };
@@ -417,6 +468,9 @@ int main(int argc, char** argv) {
     auto parsed = std::from_chars(spec, spec + std::strlen(spec), fd);
     if (parsed.ec != std::errc{} || *parsed.ptr || fd < 0)
         return 2;
+    // ponytail: Qt 6.12 image conversion uses a separate eight-thread GUI pool
+    // per worker. Media sources already have concurrent decoder threads.
+    qputenv("QT_NO_GUI_THREADPOOL", "1");
     qputenv("QT_QPA_PLATFORM", "offscreen");
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS",
             qgetenv("QTWEBENGINE_CHROMIUM_FLAGS") +

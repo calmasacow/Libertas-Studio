@@ -165,6 +165,10 @@ class AlphaVideo {
         return true;
     }
 
+    bool has_audio() const {
+        return av_find_best_stream(input_, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0) >= 0;
+    }
+
     void start(double speed, std::function<qint64()> position,
                std::function<void(const QImage&)> publish, std::function<void()> finished) {
         speed_ = speed;

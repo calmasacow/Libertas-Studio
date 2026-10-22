@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "source_worker.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <lcore/log.hpp>
@@ -22,7 +23,7 @@ SourceWorker::SourceWorker(const ldoc::Source& source, Callback callback,
                   if (!spawned)
                       throw std::runtime_error(spawned.error());
                   child = *spawned;
-                  lcomp::PreviewLink link(std::move(ends->first));
+                  lcomp::PreviewLink link(std::move(ends->first), true);
                   auto hello = link.take_hello(5000);
                   if (!hello)
                       throw std::runtime_error(hello.error());
@@ -31,7 +32,10 @@ SourceWorker::SourceWorker(const ldoc::Source& source, Callback callback,
                   auto sent = link.send_project(project);
                   if (!sent)
                       throw std::runtime_error(sent.error());
-                  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                  // Concurrent media opens probe codecs/devices before their first ack.
+                  // Keep the shorter watchdog once configuration has completed.
+                  auto next_refresh = std::chrono::steady_clock::now();
+                  auto deadline = next_refresh + std::chrono::seconds(30);
                   while (!stop.stop_requested()) {
                       auto event = link.receive(100);
                       if (!event)
@@ -56,7 +60,9 @@ SourceWorker::SourceWorker(const ldoc::Source& source, Callback callback,
                               callback({});
                       }
                       if (value.kind == lcomp::PreviewEvent::Kind::Ack) {
-                          std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                          next_refresh = std::max(next_refresh + std::chrono::milliseconds(16),
+                                                  std::chrono::steady_clock::now());
+                          std::this_thread::sleep_until(next_refresh);
                           auto refresh = link.refresh();
                           if (!refresh)
                               throw std::runtime_error(refresh.error());

@@ -163,6 +163,12 @@ Item {
                     required property string name
                     required property double fps
                     property var stats: Preview.renderStats(canvasId)
+                    Timer {
+                        interval: 250
+                        repeat: true
+                        running: panel.visible
+                        onTriggered: canvasStats.stats = Preview.renderStats(canvasStats.canvasId)
+                    }
                     Connections {
                         target: Preview
                         function onChanged() {
@@ -188,7 +194,7 @@ Item {
                     StatRow {
                         objectName: "canvasRenderTime"
                         width: parent.width
-                        label: qsTr("Average time to render frame")
+                        label: qsTr("Average time to render frame (500 ms)")
                         value: stats.available
                             ? stats.renderMs.toFixed(2) + " ms" : panel.unavailable
                     }

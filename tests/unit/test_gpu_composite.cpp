@@ -55,6 +55,52 @@ libertas::rhi::VkCtxPtr device() {
 }
 } // namespace
 
+LTEST_CASE(native_media_frames_preserve_output_box_letterboxing_crop_and_filters) {
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE(gpu);
+    for (int height : {4, 8}) {
+        auto p = show(8, 8);
+        p.sources[0].type = "source.media";
+        p.sources[0].settings["width"] = std::int64_t{8};
+        p.sources[0].settings["height"] = static_cast<std::int64_t>(height);
+        auto pixels = std::make_shared<std::vector<std::uint8_t>>(
+            std::initializer_list<std::uint8_t>{255, 0, 0, 128, 255, 0, 0, 128});
+        auto frames = [&](const auto&) {
+            return lcomp::CapturedPicture{2,       1,     pixels->data(), pixels->size(),
+                                          nullptr, false, pixels};
+        };
+        auto render = [&] {
+            const auto plan = lcomp::plan_canvas(p, p.canvases[0].id, frames);
+            const auto cpu = lcomp::execute_cpu(plan);
+            const auto result = gpu->render(plan, 0, error);
+            REQUIRE_MSG(result, "{}", error);
+            compare(cpu, *result);
+            return cpu;
+        };
+        const auto plain = render();
+        if (height == 8)
+            CHECK_EQ(plain.pixels[0], 0);
+        CHECK(plain.pixels[(3 * 8 + 3) * 4] > 180);
+        render(); // Same immutable frame reuses its GPU resize.
+        pixels = std::make_shared<std::vector<std::uint8_t>>(
+            std::initializer_list<std::uint8_t>{0, 0, 255, 128, 0, 0, 255, 128});
+        const auto changed = render();
+        CHECK(changed.pixels[(3 * 8 + 3) * 4 + 2] > 180);
+        auto& node = p.scenes[0].roots[0];
+        node.layout.crop.top = 1;
+        node.layout.crop.bottom = 1;
+        render();
+        ldoc::Effect effect;
+        effect.id = ldoc::Id::generate();
+        effect.type = "filter.color-correction";
+        effect.params["brightness"] = 0.2;
+        p.sources[0].effects = {effect};
+        render();
+    }
+}
+
 LTEST_CASE(stock_video_filters_execute_on_cpu_and_gpu_from_the_same_scene) {
     auto d = device();
     std::string error;

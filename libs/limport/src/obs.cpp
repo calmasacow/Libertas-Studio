@@ -477,6 +477,7 @@ struct Converter {
                 p["localFile"] =
                     path(e, str(s, flag(s, "is_local_file", true) ? "local_file" : "input"));
                 p["loop"] = flag(s, "looping");
+                p["hardwareDecode"] = flag(s, "hw_decode", true);
             } else {
                 const auto& files = s[e.type == "slideshow" ? "files" : "playlist"];
                 if (!files.isNull() && !files.isArray())

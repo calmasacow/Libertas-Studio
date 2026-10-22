@@ -128,6 +128,16 @@ struct GpuCompositor::Impl {
     std::vector<std::unique_ptr<Image>> retired, recycled;
     std::vector<lcomp::Gap> runtime_gaps;
 
+    struct MediaImage {
+        ldoc::Id source;
+        std::vector<ldoc::Effect> filters;
+        std::shared_ptr<const void> frame;
+        std::unique_ptr<Image> image;
+    };
+
+    std::vector<MediaImage> media_images;
+    std::uint64_t media_bytes = 0;
+
     Image& delayed(Image& input, const lcomp::VideoFilter& op) {
         auto& h = histories[op.id];
         if (h.width != input.width || h.height != input.height || h.delay != op.values[0] ||
@@ -196,6 +206,7 @@ struct GpuCompositor::Impl {
             return;
         foreign.clear();
         auxiliaries.clear();
+        media_images.clear();
         images.clear();
         uploads.clear();
         readback.reset();
@@ -328,6 +339,16 @@ struct GpuCompositor::Impl {
             throw std::runtime_error("composite exceeds 512 MiB target budget");
         if (image_at == images.size())
             images.emplace_back();
+        // Cached video frames change which scratch images are needed per tick.
+        // Match unused resources by shape rather than rebuilding positional slots.
+        const auto match = std::find_if(images.begin() + static_cast<std::ptrdiff_t>(image_at),
+                                        images.end(), [&](const auto& image) {
+                                            return image && image->width == width &&
+                                                   image->height == height &&
+                                                   image->format == format;
+                                        });
+        if (match != images.end())
+            std::iter_swap(images.begin() + static_cast<std::ptrdiff_t>(image_at), match);
         auto& entry = images[image_at++];
         if (entry && entry->width == width && entry->height == height && entry->format == format)
             return *entry;
@@ -532,7 +553,40 @@ struct GpuCompositor::Impl {
             push.opacity[0] = static_cast<float>(std::clamp(op.opacity, 0.0, 1.0));
             push.opacity[1] = static_cast<float>(op.blend);
             Image* input = &dest;
-            if (!op.filters.empty()) {
+            if (op.filters.size() == 1 && op.filters.front().enabled &&
+                op.filters.front().type == "filter.scale" && !op.nested && !op.colour) {
+                // Scale uploaded sRGB directly: avoid a linear intermediate and
+                // converting every interpolation tap back to sRGB.
+                const auto resolved = lcomp::resolve_filter(op.filters.front(), op.image.width,
+                                                            op.image.height, plan.time_ns);
+                auto cached = std::ranges::find_if(media_images, [&](const auto& entry) {
+                    return entry.source == op.source_key && entry.filters == op.filters;
+                });
+                const auto bytes = static_cast<std::uint64_t>(resolved.width) *
+                                   static_cast<std::uint64_t>(resolved.height) * 8;
+                if (cached == media_images.end() && op.frame_owner && media_images.size() < 8 &&
+                    media_bytes + bytes <= 128ull * 1024 * 1024) {
+                    target(resolved.width, resolved.height, VK_FORMAT_R16G16B16A16_SFLOAT);
+                    media_images.push_back(
+                        {op.source_key, op.filters, {}, std::move(images[--image_at])});
+                    media_bytes += bytes;
+                    cached = std::prev(media_images.end());
+                }
+                const bool hit = cached != media_images.end() && cached->frame == op.frame_owner;
+                input = cached != media_images.end() ? cached->image.get()
+                                                     : &target(resolved.width, resolved.height,
+                                                               VK_FORMAT_R16G16B16A16_SFLOAT);
+                if (!hit) {
+                    barrier(*input, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+                    Push packed;
+                    packed.rect = {resolved.kind, 1, 0, 0};
+                    std::memcpy(reinterpret_cast<char*>(&packed) + 16, resolved.values.data(),
+                                sizeof(resolved.values));
+                    dispatch(*input, source(op), filter, packed, resolved.width, resolved.height);
+                    if (cached != media_images.end())
+                        cached->frame = op.frame_owner;
+                }
+            } else if (!op.filters.empty()) {
                 auto raw = op;
                 raw.filters.clear();
                 raw.opacity = 1;
@@ -629,6 +683,25 @@ struct GpuCompositor::Impl {
         out.gaps = plan.gaps;
         if (plan.status == lcomp::PictureStatus::Unsupported)
             return out;
+        std::vector<const lcomp::DrawOp*> media;
+        const auto visit = [&](auto&& self, const lcomp::DrawPlan& current) -> void {
+            for (const auto& op : current.ops) {
+                if (op.frame_owner)
+                    media.push_back(&op);
+                if (op.nested)
+                    self(self, *op.nested);
+            }
+        };
+        visit(visit, plan);
+        std::erase_if(media_images, [&](const auto& entry) {
+            return std::ranges::none_of(media, [&](const auto* op) {
+                return op->source_key == entry.source && op->filters == entry.filters;
+            });
+        });
+        media_bytes = 0;
+        for (const auto& entry : media_images)
+            media_bytes += static_cast<std::uint64_t>(entry.image->width) *
+                           static_cast<std::uint64_t>(entry.image->height) * 8;
         checked(vkResetCommandPool(c->device, pool, 0), "reset composite commands");
         checked(vkResetDescriptorPool(c->device, descriptors, 0), "reset composite descriptors");
         checked(vkResetFences(c->device, 1, &fence), "reset composite fence");
@@ -638,7 +711,7 @@ struct GpuCompositor::Impl {
         for (const auto& item : auxiliaries)
             auxiliary_bytes += static_cast<std::uint64_t>(item.image->width) *
                                static_cast<std::uint64_t>(item.image->height) * 8;
-        allocated = auxiliary_bytes;
+        allocated = media_bytes + auxiliary_bytes;
         acquired.clear();
         recycled = std::move(retired);
         retired.clear();
@@ -702,8 +775,27 @@ struct GpuCompositor::Impl {
                              .count());
         out.pixels.resize(bytes);
         std::memcpy(out.pixels.data(), readback->mapped, bytes);
-        images.resize(image_at);
-        uploads.resize(upload_at);
+        std::uint64_t spare_bytes = 0;
+        for (std::size_t i = image_at; i < images.size(); ++i)
+            if (images[i])
+                spare_bytes += static_cast<std::uint64_t>(images[i]->width) *
+                               static_cast<std::uint64_t>(images[i]->height) * 8;
+        while (images.size() > image_at && allocated + spare_bytes > 512ull * 1024 * 1024) {
+            if (images.back())
+                spare_bytes -= static_cast<std::uint64_t>(images.back()->width) *
+                               static_cast<std::uint64_t>(images.back()->height) * 8;
+            images.pop_back();
+        }
+        // Keep idle upload buffers for the next decoded frame; cache hits must
+        // not free/reallocate mapped Vulkan memory on alternate ticks.
+        VkDeviceSize staging_bytes = 0;
+        for (const auto& stage : uploads)
+            if (stage)
+                staging_bytes += stage->size;
+        while (uploads.size() > upload_at && staging_bytes > 128ull * 1024 * 1024) {
+            staging_bytes -= uploads.back()->size;
+            uploads.pop_back();
+        }
         foreign.clear();
         acquired.clear();
         return out;

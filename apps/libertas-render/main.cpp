@@ -203,7 +203,8 @@ class Renderer {
         }
         const auto& image = worker_held_.at(id).first;
         if (!image) return {};
-        return {image->width, image->height, image->pixels.data(), image->pixels.size(), nullptr, false};
+        return {image->width, image->height, image->bytes().data(), image->bytes().size(), nullptr,
+                false,        image};
     }
 
     struct VideoSession {

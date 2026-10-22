@@ -87,6 +87,8 @@ struct Picture {
     /// else for the length of one call. Used for a captured frame, which is 33 MB at 4K and must
     /// not be copied into the walk just to be sampled down to a canvas.
     const std::uint8_t* borrowed = nullptr;
+    /// Retains an immutable borrowed source image through transport.
+    std::shared_ptr<const void> owner{};
 
     /// Where to read from: the borrowed buffer when there is one, otherwise our own.
     [[nodiscard]] const std::uint8_t* read_from() const {
@@ -172,6 +174,8 @@ struct CapturedPicture {
     const void* device_image = nullptr;
 
     bool bgra = true;
+    /// Immutable worker frame identity; retains pixels across GPU cache hits.
+    std::shared_ptr<const void> owner{};
 
     [[nodiscard]] bool empty() const { return (pixels == nullptr || size == 0) && !device_image; }
 };
@@ -212,6 +216,8 @@ struct DrawOp {
     const void* device_image = nullptr;
     std::shared_ptr<DrawPlan> nested;
     std::vector<ldoc::Effect> filters;
+    ldoc::Id source_key{};
+    std::shared_ptr<const void> frame_owner{};
 };
 
 struct DrawPlan {

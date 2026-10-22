@@ -53,7 +53,7 @@ struct AudioLevel {
 };
 struct AudioPacket { ldoc::Id source; std::vector<float> samples; };
 
-/// One frame, with the pixels already copied out of the shared buffer.
+/// One frame: owned pixels, or a retained read-only immutable mapping.
 struct PreviewFrame {
     ldoc::Id canvas;
     std::int32_t width = 0;
@@ -67,6 +67,12 @@ struct PreviewFrame {
     std::uint32_t fps_num = 0;
     std::uint32_t fps_den = 0;
     std::vector<std::uint8_t> pixels;
+    std::span<const std::uint8_t> mapped{};
+    std::shared_ptr<const void> storage{};
+
+    [[nodiscard]] std::span<const std::uint8_t> bytes() const {
+        return mapped.empty() ? std::span<const std::uint8_t>(pixels) : mapped;
+    }
 };
 
 /// What `poll` produced. `fault` is set for Fault; `frame` is set for Frame.
@@ -87,7 +93,7 @@ struct PreviewEvent {
 /// socket with projects the renderer will throw away.
 class PreviewLink {
   public:
-    explicit PreviewLink(lipc::Channel channel);
+    explicit PreviewLink(lipc::Channel channel, bool borrow_immutable = false);
     ~PreviewLink();
 
     PreviewLink(const PreviewLink&) = delete;
@@ -157,6 +163,7 @@ class PreviewLink {
     };
 
     lipc::Channel channel_;
+    bool borrow_immutable_ = false;
     /// Keyed by the canvas id's text. A handful of canvases; the string is what the message
     /// carries, so nothing is re-encoded to look up.
     std::vector<std::pair<std::string, Mapping>> mappings_;

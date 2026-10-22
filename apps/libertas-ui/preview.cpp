@@ -13,6 +13,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -64,6 +65,13 @@ struct Preview::Held {
 struct Preview::State {
     std::mutex mu;
     std::map<QString, Held> frames;
+
+    struct Sample {
+        std::chrono::steady_clock::time_point at;
+        std::uint64_t ns, frames;
+    };
+
+    std::map<QString, std::deque<Sample>> recent;
     int generation = 0;
 };
 
@@ -161,19 +169,34 @@ QVariantMap Preview::renderStats(const QString& canvasId) const {
     const auto& start = base == render_baselines_.end() ? zero : base->second;
     const auto& frame = it->second;
     const std::uint64_t frames = frame.rendered_frames - start.frames;
-    const std::uint64_t ns = frame.render_ns - start.ns;
+    std::uint64_t recent_ns = 0, recent_frames = 0;
+    const auto cutoff = std::chrono::steady_clock::now() - std::chrono::milliseconds(500);
+    if (auto found = state_->recent.find(key); found != state_->recent.end()) {
+        auto& samples = found->second;
+        while (!samples.empty() && samples.front().at <= cutoff)
+            samples.pop_front();
+        for (const auto& sample : samples) {
+            recent_ns += sample.ns;
+            recent_frames += sample.frames;
+        }
+    }
     return {{QStringLiteral("available"), true},
             {QStringLiteral("frames"), QVariant::fromValue<qulonglong>(frames)},
             {QStringLiteral("renderMs"),
-             frames ? static_cast<double>(ns) / static_cast<double>(frames) / 1e6 : 0.0},
-            {QStringLiteral("missed"), QVariant::fromValue<qulonglong>(frame.render_lag_frames - start.missed)},
-            {QStringLiteral("fps"), frame.fps_den ? static_cast<double>(frame.fps_num) / frame.fps_den : 0.0}};
+             recent_frames
+                 ? static_cast<double>(recent_ns) / static_cast<double>(recent_frames) / 1e6
+                 : 0.0},
+            {QStringLiteral("missed"),
+             QVariant::fromValue<qulonglong>(frame.render_lag_frames - start.missed)},
+            {QStringLiteral("fps"),
+             frame.fps_den ? static_cast<double>(frame.fps_num) / frame.fps_den : 0.0}};
 }
 
 void Preview::resetStats() {
     {
         std::lock_guard lock(state_->mu);
         render_baselines_.clear();
+        state_->recent.clear();
         for (const auto& canvas : latest_.canvases) {
             const QString key = QString::fromStdString(canvas.id.to_string());
             const auto frame_it = state_->frames.find(key);
@@ -523,6 +546,25 @@ void Preview::on_readable() {
             if (!failed && !link_->incoming.empty()) {
                 {
                     std::lock_guard lock(state_->mu);
+                    const auto now = std::chrono::steady_clock::now();
+                    std::erase_if(state_->recent, [&](const auto& entry) {
+                        return !link_->incoming.contains(entry.first);
+                    });
+                    for (const auto& [key, held] : link_->incoming) {
+                        const auto old = state_->frames.find(key);
+                        const auto frames =
+                            old == state_->frames.end() ? 0 : old->second.rendered_frames;
+                        const auto ns = old == state_->frames.end() ? 0 : old->second.render_ns;
+                        auto& samples = state_->recent[key];
+                        if (held.rendered_frames < frames || held.render_ns < ns)
+                            samples.clear();
+                        else if (held.rendered_frames > frames)
+                            samples.push_back(
+                                {now, held.render_ns - ns, held.rendered_frames - frames});
+                        while (!samples.empty() &&
+                               samples.front().at <= now - std::chrono::milliseconds(500))
+                            samples.pop_front();
+                    }
                     state_->frames.clear();
                     for (auto& [key, held] : link_->incoming)
                         state_->frames.emplace(key, std::move(held));

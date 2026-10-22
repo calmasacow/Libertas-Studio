@@ -639,7 +639,7 @@ void paint_scene(const ldoc::Project& project, const ldoc::Scene& scene, double 
 
 void append_filtered(const ldoc::Node& node, DrawOp op, int width, int height, CanvasTarget& target,
                      std::span<const ldoc::Effect> shared = {}) {
-    op.filters.assign(shared.begin(), shared.end());
+    op.filters.insert(op.filters.end(), shared.begin(), shared.end());
     op.filters.insert(op.filters.end(), node.effects.begin(), node.effects.end());
     std::erase_if(op.filters, [](const auto& e) {
         const auto* info = filter_info(e.type);
@@ -764,9 +764,20 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
         refuse(target.picture, node, GapReason::NoFrame);
         return;
     }
+    int width = frame.width, height = frame.height;
+    if (src.type == "source.media" || src.type == "source.playlist") {
+        const auto w = setting_number(src.settings, "width").value_or(1920);
+        const auto h = setting_number(src.settings, "height").value_or(1080);
+        if (!std::isfinite(w) || !std::isfinite(h) || w < 1 || h < 1 || w > 4096 || h > 4096) {
+            refuse(target.picture, node, GapReason::NoSize);
+            return;
+        }
+        width = static_cast<int>(w);
+        height = static_cast<int>(h);
+    }
     GapReason why = GapReason::NoSize;
-    const std::optional<Px> rect = place(node, static_cast<double>(frame.width),
-                                         static_cast<double>(frame.height), true, why);
+    const std::optional<Px> rect =
+        place(node, static_cast<double>(width), static_cast<double>(height), true, why);
     if (!rect) {
         refuse(target.picture, node, why);
         return;
@@ -783,7 +794,46 @@ void paint_screen(const ldoc::Source& src, const ldoc::Node& node, double opacit
     op.image = std::move(sampled);
     op.bgra = frame.bgra;
     op.device_image = frame.device_image;
-    append_filtered(node, std::move(op), frame.width, frame.height, target, src.effects);
+    op.source_key = src.id;
+    op.frame_owner = frame.owner;
+    if (width != frame.width || height != frame.height) {
+        // Media keeps its authored output box, but uploads decoded pixels once.
+        // Both executors resize/pad before filters and placement use that box.
+        const int fit_w = std::min(width, height * frame.width / frame.height);
+        const int fit_h = std::min(height, width * frame.height / frame.width);
+        if (fit_w < 1 || fit_h < 1) {
+            refuse(target.picture, node, GapReason::NoSize);
+            return;
+        }
+        DrawOp image;
+        image.rect = {(width - fit_w) / 2, (height - fit_h) / 2, (width - fit_w) / 2 + fit_w,
+                      (height - fit_h) / 2 + fit_h};
+        image.image = std::move(op.image);
+        image.bgra = op.bgra;
+        image.device_image = op.device_image;
+        ldoc::Effect resize;
+        resize.type = "filter.scale";
+        resize.params["width"] = static_cast<std::int64_t>(fit_w);
+        resize.params["height"] = static_cast<std::int64_t>(fit_h);
+        resize.params["sampling"] = std::string("bilinear");
+        if (fit_w == width && fit_h == height) {
+            // No letterbox: resize directly before source/node filters instead
+            // of drawing another full-size isolated surface.
+            op.image = std::move(image.image);
+            op.filters.push_back(std::move(resize));
+            append_filtered(node, std::move(op), frame.width, frame.height, target, src.effects);
+            return;
+        }
+        image.filters.push_back(std::move(resize));
+        op.nested = std::make_shared<DrawPlan>();
+        op.nested->width = width;
+        op.nested->height = height;
+        op.nested->status = PictureStatus::Complete;
+        op.nested->ops.push_back(std::move(image));
+        op.device_image = nullptr;
+        op.bgra = false;
+    }
+    append_filtered(node, std::move(op), width, height, target, src.effects);
 }
 
 void paint_node(const ldoc::Project& project, const ldoc::Node& node, double parent_opacity,

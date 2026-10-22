@@ -107,6 +107,34 @@ LTEST_CASE(import_creates_reopenable_project_and_preserves_stack_and_identity) {
     CHECK_EQ(fs::file_size(scratch.input), fs::file_size(scratch.output / "obs-original.json"));
 }
 
+LTEST_CASE(media_hardware_decoding_policy_survives_obs_roundtrip) {
+    for (bool hardware : {false, true}) {
+        Scratch scratch;
+        auto root = collection();
+        auto media = source("Clip", "ffmpeg_source", "clip");
+        media["settings"]["hw_decode"] = hardware;
+        root["sources"].append(media);
+        scratch.write(root);
+        auto converted = scratch.convert();
+        REQUIRE(converted);
+        auto find_media = [](const auto& project) {
+            return std::ranges::find(project.sources, std::string("source.media"),
+                                     &ldoc::Source::type);
+        };
+        const auto imported = find_media(converted->project);
+        REQUIRE(imported != converted->project.sources.end());
+        CHECK_EQ(std::get<bool>(imported->settings.at("hardwareDecode")), hardware);
+        const auto output = fs::path(scratch.temp.path().toStdString()) / "export.json";
+        REQUIRE(limport::export_obs(converted->project, scratch.output, output));
+        const auto again =
+            limport::import_obs(output, output.string() + ".libertas", {4, 4, {60, 1}});
+        REQUIRE(again);
+        const auto reimported = find_media(again->project);
+        REQUIRE(reimported != again->project.sources.end());
+        CHECK_EQ(std::get<bool>(reimported->settings.at("hardwareDecode")), hardware);
+    }
+}
+
 LTEST_CASE(imported_color_filter_draws_and_exports_with_name_order_and_disabled_state) {
     Scratch scratch;
     auto root = collection();

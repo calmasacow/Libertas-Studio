@@ -4,6 +4,40 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Alpha media performance and recent render stats, 2026-10-22
+
+Render-time stats now average the previous **500 ms** and expire when idle;
+rendered/missed totals remain cumulative since reset. Media Source and playlists
+expose **Use hardware decoding when available**, enabled by default and translated
+from/to OBS `hw_decode`. Qt selects a usable decoder at runtime. Transparent
+VP8/VP9 WebM remains on libvpx software decoding to preserve alpha, matching OBS;
+GPU compositing/scaling is separate from hardware decoding. See ADR-0066.
+
+Silent alpha no longer constructs a second Qt playback pipeline. Audio-bearing
+alpha interpolates coarse player positions. Workers send immutable native-size
+frames rather than CPU-upscaled copies; sealed shared-memory leases retain frame
+ownership. Receiver mappings populate on the worker thread. CPU and GPU execute
+the same authored-size scene plan. GPU caches resized immutable frames and reuses
+bounded images/staging buffers; fully transparent pixels skip color conversion.
+
+Final real-worker/renderer measurements, Main 2560x1440@60, vertical canvas retained,
+using temporary copies of the operator's collection with capture devices active:
+
+- One `Starting.MS` plus actual H264 background: **6.652 ms/frame**, 1,222 rendered,
+  **zero missed budgets** after warmup. This is a short run, not a zero-drop guarantee.
+- Three independent alpha sources plus background: **10.313 ms/frame**, 3,555
+  rendered, **148 missed budgets (4.00%)**. Average meets 12-14 ms target; tail
+  latency and drops under this stress remain unresolved.
+- A preceding four-minute three-overlay run crossed the 210-second media loop:
+  10.785 ms/frame, 14,568 rendered, 1,016 missed (6.52%). No worsening timing trend
+  or unbounded memory growth observed across that loop: renderer roughly
+  354-378 MiB; alpha workers roughly 178-193 MiB each. Longer leak checks remain.
+
+Build is warning-free under `-Werror`; all **30/30** checks pass with real GPU and
+monitoring enabled. Checks cover immutable frame lifetime, alpha cadence/native
+size, CPU/GPU sizing/crop/cache invalidation, OBS hardware-policy roundtrip, and
+500 ms UI stats expiry. Saved operator collection remains untouched.
+
 ## Nested-scene render performance, 2026-10-21
 
 Measured before changing the renderer: a 10-second `perf` sample showed capture

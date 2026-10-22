@@ -48,6 +48,7 @@ void main() {
         if (p.flags.y != 0) uv.x = n.x-1-uv.x;
         if (p.flags.z != 0) uv.y = n.y-1-uv.y;
         s = texelFetch(source,uv+p.crop.xy,0);
+        if (s.a==0) return;
         if (p.flags.w == 1) s.rgb = linear_rgb(s.rgb);
     }
     if (p.flags.w != 2) s.rgb *= s.a;

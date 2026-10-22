@@ -1709,13 +1709,18 @@ constexpr FieldSpec kMedia[] = {
     // Looping by default is not a preference. `check_emergency_scene` reads this key by name
     // and warns when it is off, and a clip that plays once is a safety net that expires.
     {"loop", "Loop", "bool", "", true},
-    {"", "A media source in an emergency scene has to loop, or the safety net runs out part "
-         "way through the emergency (ADR-0025).", "note"},
+    {"",
+     "A media source in an emergency scene has to loop, or the safety net runs out part "
+     "way through the emergency (ADR-0025).",
+     "note"},
     {"clearOnEnd", "Show nothing when playback ends", "bool", "", true},
+    {"hardwareDecode", "Use hardware decoding when available", "bool", "", true},
+    {"", "Transparent VP8/VP9 WebM uses software decoding to preserve alpha.", "note"},
     {"speedPercent", "Speed", "int", "", false, 100, "", "%"},
     {"width", "Output width", "int", "", false, 1920, "", "px"},
     {"height", "Output height", "int", "", false, 1080, "", "px"},
-    {"", "Playback restarts when shown. Video keeps its aspect ratio inside the output box.", "note"},
+    {"", "Playback restarts when shown. Video keeps its aspect ratio inside the output box.",
+     "note"},
 };
 
 constexpr FieldSpec kSlideshow[] = {
@@ -1730,6 +1735,8 @@ constexpr FieldSpec kPlaylist[] = {
     {"files", "Media paths (one per line)", "multiline"},
     {"loop", "Loop", "bool", "", true},
     {"clearOnEnd", "Show nothing when playback ends", "bool", "", true},
+    {"hardwareDecode", "Use hardware decoding when available", "bool", "", true},
+    {"", "Transparent VP8/VP9 WebM uses software decoding to preserve alpha.", "note"},
     {"speedPercent", "Speed", "int", "", false, 100, "", "%"},
     {"width", "Output width", "int", "", false, 1920, "", "px"},
     {"height", "Output height", "int", "", false, 1080, "", "px"},

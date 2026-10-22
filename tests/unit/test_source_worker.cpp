@@ -29,8 +29,12 @@ std::vector<lcomp::PreviewFrame> capture(const ldoc::Source& src, int count = 1)
     {
         SourceWorker worker(src, [&](auto frame) {
             std::lock_guard lock(mu);
-            if (frame && (frames.empty() || frames.back().pixels != frame->pixels)) {
+            if (frame &&
+                (frames.empty() || !std::ranges::equal(frames.back().pixels, frame->bytes()))) {
                 frames.push_back(*frame);
+                frames.back().pixels.assign(frame->bytes().begin(), frame->bytes().end());
+                frames.back().mapped = {};
+                frames.back().storage.reset();
                 ready.notify_all();
             }
         });
@@ -72,8 +76,8 @@ LTEST_CASE(concurrent_text_workers_draw_without_settings_changes) {
             if (!frame)
                 return;
             std::lock_guard lock(mu);
-            for (std::size_t j = 3; j < frame->pixels.size(); j += 4)
-                drawn[i] = drawn[i] || frame->pixels[j] > 0;
+            for (std::size_t j = 3; j < frame->bytes().size(); j += 4)
+                drawn[i] = drawn[i] || frame->bytes()[j] > 0;
             ready.notify_all();
         }));
     }
@@ -126,9 +130,12 @@ LTEST_CASE(slideshow_worker_advances_between_real_images) {
 LTEST_CASE(media_worker_decodes_video_in_its_process) {
     auto src = source("source.media");
     src.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/motion.mkv";
-    auto frames = capture(src, 2);
-    REQUIRE(frames.size() >= 2);
-    CHECK(frames[0].pixels != frames[1].pixels);
+    for (bool hardware : {false, true}) {
+        src.settings["hardwareDecode"] = hardware;
+        auto frames = capture(src, 2);
+        REQUIRE(frames.size() >= 2);
+        CHECK(frames[0].pixels != frames[1].pixels);
+    }
 }
 
 LTEST_CASE(media_workers_preserve_webm_and_webp_alpha) {
@@ -145,6 +152,77 @@ LTEST_CASE(media_workers_preserve_webm_and_webp_alpha) {
             translucent = translucent || (pixels[i] > 100 && pixels[i] < 160);
         }
         CHECK_MSG(transparent && translucent, "{} retains transparent and half-alpha pixels", file);
+    }
+}
+
+LTEST_CASE(immutable_worker_frames_survive_later_frames_and_worker_shutdown) {
+    auto src = source("source.media");
+    src.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/alpha-60.webm";
+    std::mutex mu;
+    std::condition_variable ready;
+    std::shared_ptr<const lcomp::PreviewFrame> first;
+    std::vector<std::uint8_t> snapshot;
+    int count = 0;
+    {
+        SourceWorker worker(src, [&](auto frame) {
+            if (!frame)
+                return;
+            std::lock_guard lock(mu);
+            if (!first) {
+                first = frame;
+                snapshot.assign(frame->bytes().begin(), frame->bytes().end());
+            }
+            ++count;
+            ready.notify_all();
+        });
+        std::unique_lock lock(mu);
+        REQUIRE(ready.wait_for(lock, std::chrono::seconds(8), [&] { return count >= 8; }));
+    }
+    REQUIRE(first);
+    CHECK(!first->mapped.empty());
+    CHECK(first->storage != nullptr);
+    CHECK(std::ranges::equal(first->bytes(), snapshot));
+}
+
+LTEST_CASE(alpha_video_delivers_smooth_frames_between_player_position_updates) {
+    auto src = source("source.media");
+    src.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/alpha-60.webm";
+    std::mutex mu;
+    std::condition_variable ready;
+    std::vector<std::uint8_t> previous;
+    std::vector<std::chrono::steady_clock::time_point> times;
+    SourceWorker worker(src, [&](auto frame) {
+        if (!frame)
+            return;
+        std::lock_guard lock(mu);
+        if (!std::ranges::equal(frame->bytes(), previous)) {
+            previous.assign(frame->bytes().begin(), frame->bytes().end());
+            times.push_back(std::chrono::steady_clock::now());
+            ready.notify_all();
+        }
+    });
+    std::unique_lock lock(mu);
+    REQUIRE(ready.wait_for(lock, std::chrono::seconds(5), [&] { return times.size() >= 30; }));
+    const auto elapsed = times[29] - times[0];
+    CHECK(elapsed >= std::chrono::milliseconds(300));
+    CHECK(elapsed < std::chrono::milliseconds(1000));
+}
+
+LTEST_CASE(media_worker_retains_native_alpha_pixels_for_compositor_scaling) {
+    for (int height : {64, 128}) {
+        auto src = source("source.media");
+        src.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/alpha.webm";
+        src.settings["width"] = std::int64_t{128};
+        src.settings["height"] = static_cast<std::int64_t>(height);
+        auto frames = capture(src);
+        REQUIRE(!frames.empty());
+        const auto& frame = frames.front();
+        CHECK_EQ(frame.width, 32);
+        CHECK_EQ(frame.height, 24);
+        bool translucent = false;
+        for (std::size_t i = 3; i < frame.pixels.size(); i += 4)
+            translucent = translucent || (frame.pixels[i] > 100 && frame.pixels[i] < 160);
+        CHECK(translucent);
     }
 }
 
@@ -193,9 +271,9 @@ LTEST_CASE(alpha_webm_preserves_audio_alongside_transparency) {
             [&](auto frame) {
                 std::lock_guard lock(mu);
                 if (frame)
-                    for (std::size_t i = 3; i < frame->pixels.size(); i += 4)
+                    for (std::size_t i = 3; i < frame->bytes().size(); i += 4)
                         translucent =
-                            translucent || (frame->pixels[i] > 100 && frame->pixels[i] < 160);
+                            translucent || (frame->bytes()[i] > 100 && frame->bytes()[i] < 160);
                 ready.notify_all();
             },
             [&](auto samples) {

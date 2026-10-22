@@ -250,6 +250,7 @@ struct Exporter {
             settings[local ? "local_file" : "input"] =
                 local && url.isLocalFile() ? url.toLocalFile().toStdString() : file;
             settings["looping"] = flag("loop", false);
+            settings["hw_decode"] = flag("hardwareDecode", true);
             settings["clear_on_media_end"] = flag("clearOnEnd", true);
             settings["speed_percent"] = Json::Int64(number("speedPercent", 100));
             warn(src.name, "review media dimensions, playback and audio in OBS");
