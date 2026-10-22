@@ -4,6 +4,25 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Scene picker and unfinished plugin equivalents, 2026-10-21
+
+Switching Add Sources to Scene now queries scenes directly from the selected
+category. The category-change handler previously depended on a derived QML binding
+that could still hold the preceding category, yielding an empty source query.
+The UI self-check now switches categories and checks actual scene tiles.
+
+Source Clone and Countdown are **not implemented user workflows**. Countdown
+Timers in Tools is a placeholder. ReferenceData exists in the document model but
+the compositor rejects reference nodes; it is not a working source-clone port.
+The approved clone/countdown requirements below remain outstanding. Reference
+repositories inspected at `/tmp/libertas-clone-reference` and
+`/tmp/libertas-countdown-reference`. Do not describe these ports as complete.
+
+Nested-scene playback failure reported separately; exact affected scene and
+failure symptom are needed to reproduce the operator's case. Saved Marathon
+collection has 40 scenes with multiple valid precomp references; do not rewrite
+that collection while diagnosing.
+
 ## Separate audio and video filter panes, 2026-10-21
 
 Filter editing now follows source capabilities: audio-only sources have one audio

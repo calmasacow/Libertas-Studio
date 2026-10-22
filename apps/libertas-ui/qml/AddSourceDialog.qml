@@ -102,7 +102,7 @@ Item {
     function refreshSources() {
         dialog.shownSources = dialog.selectedType === ""
         ? Document.recentSources(24)
-        : dialog.pickingScene ? Document.scenesForPrecomp()
+        : dialog.selectedType === "scene" ? Document.scenesForPrecomp()
                               : Document.sourcesOfType(dialog.selectedType);
         if (!dialog.shownSources.some(source => source.id === dialog.selectedSource))
             dialog.selectedSource = "";

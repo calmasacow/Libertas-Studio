@@ -3048,6 +3048,27 @@ int main(int argc, char** argv) {
             for (const QVariant& v : document.scenesForPrecomp())
                 offered = offered || v.toMap().value("id").toString() == overlay;
             report(offered, "another scene is offered as something to add");
+            const auto sourceDialogs = collect(window->contentItem(), QStringLiteral("addSourceDialog"));
+            if (sourceDialogs.size() == 1) {
+                auto* picker = sourceDialogs.front();
+                QMetaObject::invokeMethod(picker, "open");
+                settle();
+                picker->setProperty("selectedType", QStringLiteral("source.image"));
+                settle();
+                picker->setProperty("selectedType", QStringLiteral("scene"));
+                settle();
+                bool visibleOverlay = false;
+                for (auto* tile : collect(picker, QStringLiteral("existingSourceTile"))) {
+                    auto data = tile->property("modelData");
+                    if (data.metaType() == QMetaType::fromType<QJSValue>())
+                        data = data.value<QJSValue>().toVariant();
+                    visibleOverlay = visibleOverlay || data.toMap().value("id") == overlay;
+                }
+                report(visibleOverlay, "switching source category to Scene immediately draws scene tiles");
+                QMetaObject::invokeMethod(picker, "close");
+                settle();
+            }
+
 
             bool offers_itself = false;
             for (const QVariant& v : document.scenesForPrecomp())
