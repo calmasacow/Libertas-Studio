@@ -183,6 +183,9 @@ VkCtxPtr vk_init(const std::string& prefer_drm_node, std::string& error) {
     };
     if (ctx->have_foreign_queue)
         dev_exts.push_back(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
+    ctx->have_memory_budget = device_has_ext(ctx->phys, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    if (ctx->have_memory_budget)
+        dev_exts.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 
     const float prio = 1.0f;
     VkDeviceQueueCreateInfo qci{};

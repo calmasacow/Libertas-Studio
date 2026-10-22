@@ -37,10 +37,104 @@ std::uint32_t memory_type(VkCtx& c, std::uint32_t bits, VkMemoryPropertyFlags fl
     throw std::runtime_error("no suitable GPU memory type");
 }
 
+// GPU memory the compositor suballocates from. vkAllocateMemory took 2-30 ms per call on the
+// render thread whenever a new image size first appeared mid-show (media becoming ready).
+// Blocks are reserved up front and kept; images and buffers take ranges out of them.
+struct Arena {
+    struct Range {
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0, size = 0;
+        void* mapped = nullptr;
+    };
+    struct Block {
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkDeviceSize size = 0;
+        void* mapped = nullptr;
+        std::map<VkDeviceSize, VkDeviceSize> free; // offset -> size
+    };
+    VkCtx& c;
+    std::uint32_t type = 0;
+    bool host = false;
+    VkDeviceSize block_size = 0;
+    std::vector<std::unique_ptr<Block>> blocks;
+
+    Arena(VkCtx& ctx, std::uint32_t memory_type, bool host_visible, VkDeviceSize block)
+        : c(ctx), type(memory_type), host(host_visible), block_size(block) {}
+    ~Arena() {
+        for (auto& b : blocks) {
+            if (b->mapped)
+                vkUnmapMemory(c.device, b->memory);
+            vkFreeMemory(c.device, b->memory, nullptr);
+        }
+    }
+    Block& grow(VkDeviceSize at_least) {
+        auto b = std::make_unique<Block>();
+        b->size = std::max(block_size, at_least);
+        VkMemoryAllocateInfo mi{};
+        mi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mi.allocationSize = b->size;
+        mi.memoryTypeIndex = type;
+        checked(vkAllocateMemory(c.device, &mi, nullptr, &b->memory), "allocate compositor block");
+        if (host)
+            checked(vkMapMemory(c.device, b->memory, 0, VK_WHOLE_SIZE, 0, &b->mapped),
+                    "map compositor block");
+        b->free[0] = b->size;
+        blocks.push_back(std::move(b));
+        return *blocks.back();
+    }
+    Range take(const VkMemoryRequirements& req) {
+        const auto align = std::max<VkDeviceSize>(req.alignment, 256);
+        const auto fit = [&](Block& b) -> std::optional<Range> {
+            for (auto it = b.free.begin(); it != b.free.end(); ++it) {
+                const auto start = (it->first + align - 1) / align * align;
+                const auto end = it->first + it->second;
+                if (start + req.size > end)
+                    continue;
+                const auto head = it->first, tail = start + req.size;
+                b.free.erase(it);
+                if (start > head)
+                    b.free[head] = start - head;
+                if (end > tail)
+                    b.free[tail] = end - tail;
+                return Range{b.memory, start, req.size,
+                             b.mapped ? static_cast<char*>(b.mapped) + start : nullptr};
+            }
+            return std::nullopt;
+        };
+        for (auto& b : blocks)
+            if (auto r = fit(*b))
+                return *r;
+        auto r = fit(grow(req.size + align));
+        if (!r)
+            throw std::runtime_error("compositor block cannot fit allocation");
+        return *r;
+    }
+    void give(const Range& r) {
+        for (auto& b : blocks) {
+            if (b->memory != r.memory)
+                continue;
+            auto [it, inserted] = b->free.emplace(r.offset, r.size);
+            if (const auto next = std::next(it);
+                next != b->free.end() && it->first + it->second == next->first) {
+                it->second += next->second;
+                b->free.erase(next);
+            }
+            if (it != b->free.begin())
+                if (const auto prev = std::prev(it); prev->first + prev->second == it->first) {
+                    prev->second += it->second;
+                    b->free.erase(it);
+                }
+            return;
+        }
+    }
+};
+
 struct Image {
     VkCtx& c;
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    Arena* arena = nullptr;
+    Arena::Range range;
     VkImageView view = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     int width = 0, height = 0;
@@ -51,7 +145,9 @@ struct Image {
             vkDestroyImageView(c.device, view, nullptr);
         if (owns && image)
             vkDestroyImage(c.device, image, nullptr);
-        if (memory)
+        if (arena)
+            arena->give(range);
+        else if (memory)
             vkFreeMemory(c.device, memory, nullptr);
     }
 };
@@ -59,17 +155,16 @@ struct Image {
 struct Buffer {
     VkCtx& c;
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
     VkDeviceSize size = 0;
+    Arena* arena = nullptr;
+    Arena::Range range;
 
     ~Buffer() {
-        if (mapped)
-            vkUnmapMemory(c.device, memory);
         if (buffer)
             vkDestroyBuffer(c.device, buffer, nullptr);
-        if (memory)
-            vkFreeMemory(c.device, memory, nullptr);
+        if (arena)
+            arena->give(range);
     }
 };
 
@@ -94,6 +189,9 @@ static_assert(static_cast<int>(ldoc::BlendMode::Normal) == 0 &&
 
 struct GpuCompositor::Impl {
     VkCtx* c = nullptr;
+    // One arena per memory type: device blocks 256 MiB, host staging 64 MiB. Declared first so
+    // it is destroyed last, after every image and buffer has returned its range.
+    std::map<std::uint32_t, std::unique_ptr<Arena>> arenas;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -121,6 +219,9 @@ struct GpuCompositor::Impl {
     std::vector<Image*> acquired;
     std::unique_ptr<Buffer> readback;
     std::size_t image_at = 0, upload_at = 0;
+    // Images the compositor may hold. Half of the device-local heap's budget at startup, which
+    // leaves room for the encoder, Qt and other programs; 512 MiB where the driver cannot say.
+    std::uint64_t budget = 512ull << 20;
     std::uint64_t allocated = 0;
 
     struct Auxiliary {
@@ -233,6 +334,10 @@ struct GpuCompositor::Impl {
         images.clear();
         uploads.clear();
         readback.reset();
+        histories.clear();
+        retired.clear();
+        recycled.clear();
+        arenas.clear();
         if (sampler)
             vkDestroySampler(c->device, sampler, nullptr);
         if (descriptors)
@@ -307,6 +412,40 @@ struct GpuCompositor::Impl {
         checked(vkCreateFence(c->device, &fi, nullptr, &fence), "create composite fence");
         VkPhysicalDeviceProperties device_props{};
         vkGetPhysicalDeviceProperties(c->phys, &device_props);
+        if (c->have_memory_budget) {
+            VkPhysicalDeviceMemoryBudgetPropertiesEXT heaps{};
+            heaps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+            VkPhysicalDeviceMemoryProperties2 memory{};
+            memory.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+            memory.pNext = &heaps;
+            vkGetPhysicalDeviceMemoryProperties2(c->phys, &memory);
+            std::uint64_t largest = 0;
+            for (std::uint32_t i = 0; i < memory.memoryProperties.memoryHeapCount; ++i)
+                if (memory.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+                    largest = std::max<std::uint64_t>(largest, heaps.heapBudget[i]);
+            if (largest)
+                budget = std::max(budget, largest / 2);
+        }
+        // Reserve the first device block now, at startup, not on the first frame that needs it.
+        {
+            VkImageCreateInfo probe{};
+            probe.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            probe.imageType = VK_IMAGE_TYPE_2D;
+            probe.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            probe.extent = {16, 16, 1};
+            probe.mipLevels = probe.arrayLayers = 1;
+            probe.samples = VK_SAMPLE_COUNT_1_BIT;
+            probe.tiling = VK_IMAGE_TILING_OPTIMAL;
+            probe.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            VkImage image = VK_NULL_HANDLE;
+            checked(vkCreateImage(c->device, &probe, nullptr, &image), "probe image memory");
+            VkMemoryRequirements req{};
+            vkGetImageMemoryRequirements(c->device, image, &req);
+            vkDestroyImage(c->device, image, nullptr);
+            arena(memory_type(*c, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT), false)
+                .grow(0);
+        }
         if (std::getenv("LIBERTAS_BENCHMARK") && device_props.limits.timestampComputeAndGraphics) {
             VkQueryPoolCreateInfo qi{};
             qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -376,8 +515,8 @@ struct GpuCompositor::Impl {
         const auto bytes =
             static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * 8;
         allocated += bytes;
-        if (allocated > 512ull * 1024 * 1024)
-            throw std::runtime_error("composite exceeds 512 MiB target budget");
+        if (allocated > budget)
+            throw std::runtime_error(std::format("composite exceeds {} MiB GPU budget", budget >> 20));
         if (image_at == images.size())
             images.emplace_back();
         // Cached video frames change which scratch images are needed per tick.
@@ -414,14 +553,11 @@ struct GpuCompositor::Impl {
         checked(vkCreateImage(c->device, &ci, nullptr, &entry->image), "create composite image");
         VkMemoryRequirements req{};
         vkGetImageMemoryRequirements(c->device, entry->image, &req);
-        VkMemoryAllocateInfo mi{};
-        mi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        mi.allocationSize = req.size;
-        mi.memoryTypeIndex =
-            memory_type(*c, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        checked(vkAllocateMemory(c->device, &mi, nullptr, &entry->memory),
-                "allocate composite image");
-        checked(vkBindImageMemory(c->device, entry->image, entry->memory, 0),
+        auto& memory = arena(memory_type(*c, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+                             false);
+        entry->range = memory.take(req);
+        entry->arena = &memory;
+        checked(vkBindImageMemory(c->device, entry->image, entry->range.memory, entry->range.offset),
                 "bind composite image");
         view(*entry);
         return *entry;
@@ -458,10 +594,19 @@ struct GpuCompositor::Impl {
                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         }
-        checked(vkAllocateMemory(c->device, &mi, nullptr, &b->memory), "allocate staging buffer");
-        checked(vkBindBufferMemory(c->device, b->buffer, b->memory, 0), "bind staging buffer");
-        checked(vkMapMemory(c->device, b->memory, 0, VK_WHOLE_SIZE, 0, &b->mapped),
-                "map staging buffer");
+        auto& memory = arena(mi.memoryTypeIndex, true);
+        b->range = memory.take(req);
+        b->arena = &memory;
+        b->mapped = b->range.mapped;
+        checked(vkBindBufferMemory(c->device, b->buffer, b->range.memory, b->range.offset),
+                "bind staging buffer");
+    }
+
+    Arena& arena(std::uint32_t type, bool host) {
+        auto& a = arenas[type];
+        if (!a)
+            a = std::make_unique<Arena>(*c, type, host, host ? 64ull << 20 : 256ull << 20);
+        return *a;
     }
 
     void barrier(Image& image, VkImageLayout old_layout, VkImageLayout next, bool acquire = false,
@@ -943,7 +1088,7 @@ struct GpuCompositor::Impl {
             if (images[i])
                 spare_bytes += static_cast<std::uint64_t>(images[i]->width) *
                                static_cast<std::uint64_t>(images[i]->height) * 8;
-        while (images.size() > image_at && allocated + spare_bytes > 512ull * 1024 * 1024) {
+        while (images.size() > image_at && allocated + spare_bytes > budget) {
             if (images.back())
                 spare_bytes -= static_cast<std::uint64_t>(images.back()->width) *
                                static_cast<std::uint64_t>(images.back()->height) * 8;

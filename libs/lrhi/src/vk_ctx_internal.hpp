@@ -42,6 +42,7 @@ struct VkCtx {
     VkCommandPool pool = VK_NULL_HANDLE;
     std::string device_name;
     bool have_foreign_queue = false;
+    bool have_memory_budget = false;
 
     PFN_vkGetMemoryFdPropertiesKHR get_memory_fd_properties = nullptr;
     PFN_vkGetImageDrmFormatModifierPropertiesEXT get_image_modifier_properties = nullptr;
