@@ -4,6 +4,35 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Still-image compositing overhead, 2026-10-22
+
+The operator's MaraTalk scene reproduced 16.503 ms/frame and 374 missed budgets
+across 840 rendered frames after warmup (30.8%). Hiding only the camera-overlay PNG
+in a temporary collection copy reduced this to 12.465 ms and 87 missed (9.4%).
+The saved operator collection was not changed by these measurements.
+
+Decoded stills previously used a one-entry cache returning full pixel copies, and
+GPU uploads repeated every composite. Stills now share immutable decoded pixels,
+with an LRU bounded to 16 entries / 128 MiB. Metadata changes replace the identity;
+existing plans retain their old pixels. GPU textures follow that identity, retain
+only images present in the current plan, and are bounded to 16 / 128 MiB within
+the existing compositor allocation budget. CPU and GPU still use the same plan.
+
+With the PNG visible, a 1,800-frame measured run after warmup averaged **12.369 ms**
+with **72 missed budgets (3.85%)**. A final 840-frame run matching baseline length
+measured **12.848 ms**, **112 missed budgets (11.76%)**. Other media was still
+preloading through 13.5 seconds in that run. Results remain variable; this is a
+short-run improvement, not a claim that live drops or latency are solved. The main-thread CPU profile now points at
+memory copying inside GPU drawing; capture conversion also consumes substantial
+CPU on separate threads. An experiment caching changing camera uploads allocated
+GPU images repeatedly and regressed timing; it was reverted. No camera lifetime
+or capture settings were changed. Remaining tail latency needs further work.
+
+A real CPU/GPU check covers multiple still identities, repeated rendering, file
+replacement and continued rendering of a retained old plan.
+Final build is warning-free under `-Werror`; all 30/30 checks pass with GPU and
+monitoring enabled (179 seconds).
+
 ## Native countdown dock and file-backed stingers, 2026-10-22
 
 **Docks → Countdown Timers** is now functional. Create timer text or bind an

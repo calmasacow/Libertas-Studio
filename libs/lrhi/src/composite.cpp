@@ -114,6 +114,14 @@ struct GpuCompositor::Impl {
         std::unique_ptr<Image> image;
     };
 
+    struct SourceImage {
+        std::shared_ptr<const void> pixels;
+        std::unique_ptr<Image> image;
+    };
+
+    std::vector<SourceImage> source_images;
+    std::uint64_t source_bytes = 0;
+
     std::vector<Auxiliary> auxiliaries;
     std::uint64_t auxiliary_bytes = 0;
 
@@ -205,6 +213,7 @@ struct GpuCompositor::Impl {
         if (!c)
             return;
         foreign.clear();
+        source_images.clear();
         auxiliaries.clear();
         media_images.clear();
         images.clear();
@@ -468,8 +477,16 @@ struct GpuCompositor::Impl {
             return *entry;
         }
         const auto& pic = op.image;
-        // ponytail: upload decoded stills each composite; add a texture cache if profiling
-        // an image-heavy show puts uploads on the critical path.
+        if (pic.owner) {
+            const auto cached = std::ranges::find_if(source_images, [&](const auto& entry) {
+                return entry.pixels == pic.owner && entry.image->width == pic.width &&
+                       entry.image->height == pic.height &&
+                       entry.image->format == (op.bgra ? VK_FORMAT_B8G8R8A8_UNORM
+                                                       : VK_FORMAT_R8G8B8A8_UNORM);
+            });
+            if (cached != source_images.end())
+                return *cached->image;
+        }
         if (!pic.read_from())
             throw std::runtime_error("draw has no source pixels");
         auto& image = target(pic.width, pic.height,
@@ -488,6 +505,10 @@ struct GpuCompositor::Impl {
                             static_cast<std::uint32_t>(pic.height), 1};
         vkCmdCopyBufferToImage(cmd, stage->buffer, image.image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
         barrier(image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+        if (pic.owner && source_images.size() < 16 && source_bytes + bytes <= 128ull * 1024 * 1024) {
+            source_images.push_back({pic.owner, std::move(images[--image_at])});
+            source_bytes += bytes;
+        }
         return image;
     }
 
@@ -684,10 +705,13 @@ struct GpuCompositor::Impl {
         if (plan.status == lcomp::PictureStatus::Unsupported)
             return out;
         std::vector<const lcomp::DrawOp*> media;
+        std::vector<std::shared_ptr<const void>> source_owners;
         const auto visit = [&](auto&& self, const lcomp::DrawPlan& current) -> void {
             for (const auto& op : current.ops) {
                 if (op.frame_owner)
                     media.push_back(&op);
+                if (op.image.owner)
+                    source_owners.push_back(op.image.owner);
                 if (op.nested)
                     self(self, *op.nested);
             }
@@ -711,7 +735,14 @@ struct GpuCompositor::Impl {
         for (const auto& item : auxiliaries)
             auxiliary_bytes += static_cast<std::uint64_t>(item.image->width) *
                                static_cast<std::uint64_t>(item.image->height) * 8;
-        allocated = media_bytes + auxiliary_bytes;
+        std::erase_if(source_images, [&](const auto& entry) {
+            return std::ranges::find(source_owners, entry.pixels) == source_owners.end();
+        });
+        source_bytes = 0;
+        for (const auto& entry : source_images)
+            source_bytes += static_cast<std::uint64_t>(entry.image->width) *
+                           static_cast<std::uint64_t>(entry.image->height) * 4;
+        allocated = media_bytes + auxiliary_bytes + source_bytes;
         acquired.clear();
         recycled = std::move(retired);
         retired.clear();

@@ -158,6 +158,52 @@ LTEST_CASE(stock_video_filters_execute_on_cpu_and_gpu_from_the_same_scene) {
     }
 }
 
+LTEST_CASE(still_images_share_pixels_and_cached_uploads_follow_replacement) {
+    namespace fs = std::filesystem;
+    const auto path = fs::temp_directory_path() / (ldoc::Id::generate().to_string() + ".png");
+    fs::copy_file(fs::path(LIBERTAS_IMAGE_FIXTURES) / "two.png", path);
+    auto project = show(32, 24);
+    project.sources[0].type = "source.image";
+    project.sources[0].settings["file"] = path.string();
+    auto second = project.sources[0];
+    second.id = ldoc::Id::generate();
+    second.settings["file"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/alpha.webp";
+    project.sources.push_back(second);
+    auto placed = project.scenes[0].roots[0];
+    placed.id = ldoc::Id::generate();
+    placed.transform.position = {16, 0};
+    std::get<ldoc::SourceData>(placed.data).source = second.id;
+    project.scenes[0].roots.push_back(placed);
+    const auto original = lcomp::plan_canvas(project, project.canvases[0].id);
+    REQUIRE(original.ops.size() == 2);
+    REQUIRE(original.ops[0].image.owner);
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE(gpu);
+    const auto before = lcomp::execute_cpu(original);
+    for (int tick = 0; tick < 3; ++tick) {
+        const auto plan = lcomp::plan_canvas(project, project.canvases[0].id);
+        CHECK(plan.ops[0].image.owner == original.ops[0].image.owner);
+        CHECK(plan.ops[1].image.owner == original.ops[1].image.owner);
+        const auto result = gpu->render(plan, 0, error);
+        REQUIRE_MSG(result, "{}", error);
+        compare(before, *result);
+    }
+    fs::copy_file(fs::path(LIBERTAS_IMAGE_FIXTURES) / "red.webp", path,
+                  fs::copy_options::overwrite_existing);
+    const auto changed = lcomp::plan_canvas(project, project.canvases[0].id);
+    CHECK(changed.ops[1].image.owner != original.ops[1].image.owner);
+    const auto result = gpu->render(changed, 0, error);
+    REQUIRE_MSG(result, "{}", error);
+    compare(lcomp::execute_cpu(changed), *result);
+    CHECK(result->pixels != before.pixels);
+    const auto retained = gpu->render(original, 0, error);
+    REQUIRE_MSG(retained, "{}", error);
+    compare(before, *retained);
+    fs::remove(path);
+}
+
 LTEST_CASE(cached_masks_follow_file_replacement) {
     namespace fs = std::filesystem;
     const auto path = fs::temp_directory_path() / (ldoc::Id::generate().to_string() + ".webp");

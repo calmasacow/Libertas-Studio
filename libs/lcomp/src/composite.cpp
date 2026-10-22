@@ -661,47 +661,45 @@ void append_filtered(const ldoc::Node& node, DrawOp op, int width, int height, C
     target.picture.ops.push_back(std::move(op));
 }
 
-/// The most recently decoded image, kept so a still is not decoded again every composite.
-///
-/// "Nothing is kept between pictures" was true and cheap while a composite only happened when
-/// the document changed. A live source makes the preview recomposite at the canvas rate, and
-/// re-decoding a PNG sixty times a second was 36 ms of a 37 ms frame -- the whole of the
-/// choppiness, in the one source that was not even moving.
-///
-/// Keyed on the path *and* the file's modification time and size, so replacing the file on disk
-/// shows the new one. One entry: a scene usually has few stills, and the cost being avoided is
-/// per composite rather than per source.
+// Immutable decoded stills share pixels across plans. Bound retention by count and bytes;
+// metadata changes create a new identity, invalidating GPU uploads without changing old plans.
 struct ImageCache {
     std::string path;
     std::filesystem::file_time_type written{};
     std::uintmax_t size = 0;
-    DecodedImage image;
-    bool valid = false;
+    std::shared_ptr<const DecodedImage> image;
 };
 
-std::optional<DecodedImage> decode_image_cached(const std::string& path) {
-    static ImageCache cache;
+std::shared_ptr<const DecodedImage> decode_image_cached(const std::string& path) {
+    static std::vector<ImageCache> cache;
     std::error_code ec;
     const std::filesystem::path fs_path{path};
     const auto written = std::filesystem::last_write_time(fs_path, ec);
     const auto size = ec ? 0u : std::filesystem::file_size(fs_path, ec);
-    // An unreadable file falls through to the decoder, which reports the gap. Not cached as a
-    // failure: a file that appears between composites should start drawing.
-    if (!ec && cache.valid && cache.path == path && cache.written == written &&
-        cache.size == size)
-        return cache.image;
-
-    std::optional<DecodedImage> decoded = decode_image(path);
-    if (!decoded)
-        return std::nullopt;
-    if (!ec) {
-        cache.path = path;
-        cache.written = written;
-        cache.size = size;
-        cache.image = *decoded;
-        cache.valid = true;
+    const auto found = std::ranges::find(cache, path, &ImageCache::path);
+    if (!ec && found != cache.end() && found->written == written && found->size == size) {
+        const auto image = found->image;
+        std::rotate(found, std::next(found), cache.end());
+        return image;
     }
-    return decoded;
+    if (found != cache.end())
+        cache.erase(found);
+    auto decoded = decode_image(path);
+    if (!decoded)
+        return {};
+    auto image = std::make_shared<const DecodedImage>(std::move(*decoded));
+    if (!ec) {
+        std::size_t bytes = image->pixels.size();
+        for (const auto& entry : cache)
+            bytes += entry.image->pixels.size();
+        while (!cache.empty() && (cache.size() >= 16 || bytes > 128ull * 1024 * 1024)) {
+            bytes -= cache.front().image->pixels.size();
+            cache.erase(cache.begin());
+        }
+        if (bytes <= 128ull * 1024 * 1024)
+            cache.push_back({path, written, size, image});
+    }
+    return image;
 }
 
 /// The file named by the image source, at its decoded size. A missing or unreadable file is a
@@ -714,7 +712,7 @@ void paint_image(const ldoc::Source& src, const ldoc::Node& node, double opacity
         refuse(target.picture, node, GapReason::Unreadable);
         return;
     }
-    std::optional<DecodedImage> image = decode_image_cached(*path);
+    const auto image = decode_image_cached(*path);
     if (!image) {
         refuse(target.picture, node, GapReason::Unreadable);
         return;
@@ -730,7 +728,8 @@ void paint_image(const ldoc::Source& src, const ldoc::Node& node, double opacity
     sampled.width = image->width;
     sampled.height = image->height;
     sampled.stride = static_cast<std::uint32_t>(image->width) * 4u;
-    sampled.pixels = std::move(image->pixels);
+    sampled.borrowed = image->pixels.data();
+    sampled.owner = image;
     target.drew = true;
     DrawOp op = operation(node, *rect, opacity);
     op.image = std::move(sampled);
