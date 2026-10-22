@@ -1715,11 +1715,13 @@ constexpr FieldSpec kMedia[] = {
      "note"},
     {"clearOnEnd", "Show nothing when playback ends", "bool", "", true},
     {"hardwareDecode", "Use hardware decoding when available", "bool", "", true},
+    {"restartOnActivate", "Restart playback when source becomes active", "bool", "", true},
+    {"closeWhenInactive", "Close file when inactive (slower scene switches)", "bool", "", false},
     {"", "Transparent VP8/VP9 WebM uses software decoding to preserve alpha.", "note"},
     {"speedPercent", "Speed", "int", "", false, 100, "", "%"},
     {"width", "Output width", "int", "", false, 1920, "", "px"},
     {"height", "Output height", "int", "", false, 1080, "", "px"},
-    {"", "Playback restarts when shown. Video keeps its aspect ratio inside the output box.",
+    {"", "Inactive media stays loaded by default. Video keeps its aspect ratio inside the output box.",
      "note"},
 };
 
@@ -1736,6 +1738,8 @@ constexpr FieldSpec kPlaylist[] = {
     {"loop", "Loop", "bool", "", true},
     {"clearOnEnd", "Show nothing when playback ends", "bool", "", true},
     {"hardwareDecode", "Use hardware decoding when available", "bool", "", true},
+    {"restartOnActivate", "Restart playback when source becomes active", "bool", "", true},
+    {"closeWhenInactive", "Close file when inactive (slower scene switches)", "bool", "", false},
     {"", "Transparent VP8/VP9 WebM uses software decoding to preserve alpha.", "note"},
     {"speedPercent", "Speed", "int", "", false, 100, "", "%"},
     {"width", "Output width", "int", "", false, 1920, "", "px"},

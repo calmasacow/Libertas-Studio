@@ -124,6 +124,8 @@ LTEST_CASE(media_hardware_decoding_policy_survives_obs_roundtrip) {
         const auto imported = find_media(converted->project);
         REQUIRE(imported != converted->project.sources.end());
         CHECK_EQ(std::get<bool>(imported->settings.at("hardwareDecode")), hardware);
+        CHECK_EQ(std::get<bool>(imported->settings.at("restartOnActivate")), true);
+        CHECK_EQ(std::get<bool>(imported->settings.at("closeWhenInactive")), false);
         const auto output = fs::path(scratch.temp.path().toStdString()) / "export.json";
         REQUIRE(limport::export_obs(converted->project, scratch.output, output));
         const auto again =

@@ -4,6 +4,22 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Media activation and fast scene cuts, 2026-10-22
+
+Unseen media workers were destroyed after every scene change. Opening the actual
+background MP4 through a new Qt worker measured 2.04 seconds, including teardown.
+OBS retains/preloads media unless close_when_inactive is enabled; the imported
+background explicitly disables closing and restarting, but both flags were lost.
+ADR-0067 separates activation from worker lifetime, preloads retained media, pauses
+restarting clips after their first frame, and gates hidden-source audio/refresh.
+Existing imported settings recover from retained OBS metadata. Explicit close-on-hide
+remains available and incurs startup latency. Sources are released on deletion/edit.
+
+Real background cuts after preload measured 10.82, 4.48 and 5.69 ms through the
+renderer (small preview, actual decoded asset); first collection warmup remains.
+Warning-free build, all 30/30 checks pass, including actual worker activation and
+first-cut availability. This trades retained decoder memory for fast switching.
+
 ## Alpha media performance and recent render stats, 2026-10-22
 
 Render-time stats now average the previous **500 ms** and expire when idle;

@@ -64,6 +64,14 @@ class Renderer {
         for (const auto& source : project.sources)
             if (source.type == "source.v4l2" && !deactivate_video_when_hidden(source))
                 video_session(source);
+        std::erase_if(workers_, [&](const auto& item) {
+            const auto* source = project.source(item.second->source.id);
+            return !source || source->settings != item.second->source.settings ||
+                   source->type != item.second->source.type;
+        });
+        for (const auto& source : project.sources)
+            if (retained_media(source))
+                worker_session(source);
         std::erase_if(gpus_, [&](const auto& entry) { return !project.canvas(entry.first); });
         auto& gpu = gpus_[canvas];
         if (gpu_failed_)
@@ -108,6 +116,7 @@ class Renderer {
         if (animated_)
             return true;
         for (const auto& [id, session] : workers_) {
+            if (!session->visible) continue;
             std::lock_guard lock(session->mu);
             if (session->sequence != session->drawn) return true;
         }
@@ -137,7 +146,13 @@ class Renderer {
             session.drawn = snapshot.second;
         }
         worker_held_.clear();
-        std::erase_if(workers_, [this](const auto& item) { return !worker_wanted_.contains(item.first); });
+        std::erase_if(workers_, [this](const auto& item) {
+            auto& session = *item.second;
+            session.visible = worker_wanted_.contains(item.first);
+            session.active.store(session.visible);
+            session.worker->set_active(session.visible);
+            return !session.visible && !retained_media(session.source);
+        });
         worker_wanted_.clear();
         for (const auto& [id, snapshot] : video_held_) {
             auto& session = *videos_.at(id);
@@ -169,6 +184,8 @@ class Renderer {
         std::mutex mu;
         std::shared_ptr<const lcomp::PreviewFrame> last;
         std::uint64_t sequence = 0, drawn = 0;
+        bool visible = false;
+        std::atomic<bool> active{false};
         std::unique_ptr<SourceWorker> worker;
         ~WorkerSession() { worker.reset(); }
     };
@@ -176,9 +193,15 @@ class Renderer {
     std::map<std::string, std::pair<std::shared_ptr<const lcomp::PreviewFrame>, std::uint64_t>> worker_held_;
     std::set<std::string> worker_wanted_;
 
-    lcomp::CapturedPicture worker_frame(const ldoc::Source& source) {
+    static bool retained_media(const ldoc::Source& source) {
+        const auto it = source.settings.find("closeWhenInactive");
+        const auto* close = it == source.settings.end() ? nullptr : std::get_if<bool>(&it->second);
+        return (source.type == "source.media" || source.type == "source.playlist") &&
+               !(close && *close);
+    }
+
+    WorkerSession& worker_session(const ldoc::Source& source) {
         const auto id = source.id.to_string();
-        worker_wanted_.insert(id);
         auto existing = workers_.find(id);
         if (existing != workers_.end() &&
             (existing->second->source.settings != source.settings || existing->second->source.type != source.type)) {
@@ -193,9 +216,21 @@ class Renderer {
                 std::lock_guard lock(ptr->mu);
                 ptr->last = std::move(frame);
                 ++ptr->sequence;
-            }, [this, id = source.id](auto pcm) { audio_.ingest(id, pcm); });
+            }, [this, ptr, id = source.id](auto pcm) {
+                if (ptr->active.load()) audio_.ingest(id, pcm);
+            });
+            session->worker->set_active(false);
             workers_.emplace(id, std::move(session));
         }
+        return *workers_.at(id);
+    }
+
+    lcomp::CapturedPicture worker_frame(const ldoc::Source& source) {
+        const auto id = source.id.to_string();
+        auto& current = worker_session(source);
+        current.active.store(true);
+        current.worker->set_active(true);
+        worker_wanted_.insert(id);
         if (!worker_held_.contains(id)) {
             auto& session = *workers_.at(id);
             std::lock_guard lock(session.mu);

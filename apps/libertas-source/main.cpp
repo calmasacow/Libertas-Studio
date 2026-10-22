@@ -40,6 +40,7 @@ class Content : public QObject {
     std::unique_ptr<AlphaVideo> alpha_;
     QElapsedTimer media_position_clock_;
     qint64 media_position_ = 0;
+    bool active_ = true;
     std::unique_ptr<QMovie> movie_;
     std::unique_ptr<QAudioBufferOutput> audio_;
     std::vector<float> audio_pending_;
@@ -91,6 +92,11 @@ class Content : public QObject {
 
     void publish(const QImage& image) {
         valid_ = !image.isNull();
+        if (valid_ && !active_ && flag("restartOnActivate", true)) {
+            if (player_) player_->pause();
+            if (alpha_) alpha_->pause();
+            if (movie_) movie_->setPaused(true);
+        }
         if (valid_ &&
             (image.width() > 8192 || image.height() > 8192 ||
              static_cast<std::int64_t>(image.width()) * image.height() * 4 > 128 * 1024 * 1024)) {
@@ -314,10 +320,35 @@ class Content : public QObject {
         browser_sink_.reset();
     }
 
-    void configure(const ldoc::Source& source) {
+    void activate(bool active) {
+        if (active_ == active) return;
+        active_ = active;
+        if (!flag("restartOnActivate", true)) return;
+        if (active) {
+            media_position_clock_.start();
+            if (player_) player_->play();
+            if (alpha_) alpha_->resume();
+            if (movie_) movie_->setPaused(false);
+        } else {
+            media_position_clock_.start();
+            if (player_) { player_->pause(); player_->setPosition(0); }
+            if (alpha_) alpha_->rewind();
+            if (movie_) { movie_->jumpToFrame(0); movie_->setPaused(true); }
+        }
+    }
+
+    void configure(ldoc::Source source) {
+        bool active = true;
+        if (auto it = source.settings.find("worker.active"); it != source.settings.end()) {
+            if (const auto* value = std::get_if<bool>(&it->second)) active = *value;
+            source.settings.erase(it);
+        }
         if (source_.id == source.id && source_.type == source.type &&
-            source_.settings == source.settings)
+            source_.settings == source.settings) {
+            activate(active);
             return;
+        }
+        active_ = active;
         slides_.stop();
         alpha_.reset();
         movie_.reset();

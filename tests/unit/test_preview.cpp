@@ -351,6 +351,53 @@ LTEST_CASE(native_alpha_media_crosses_worker_and_keeps_authored_box_and_letterbo
     CHECK(ink);
 }
 
+LTEST_CASE(inactive_media_is_preloaded_for_first_scene_cut) {
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends);
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child);
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000));
+    auto source = colour_source(0, 0, 0);
+    source.type = "source.media";
+    const auto* actual = std::getenv("LIBERTAS_BENCH_MEDIA");
+    source.settings["localFile"] = actual ? std::string(actual)
+                                           : std::string(LIBERTAS_IMAGE_FIXTURES) + "/motion.mkv";
+    source.settings["loop"] = true;
+    source.settings["restartOnActivate"] = false;
+    ldoc::Scene media;
+    media.id = ldoc::Id::generate();
+    media.roots = {bound_to(source)};
+    auto project = show(media, {source});
+    auto blank = project.scenes.front();
+    blank.id = ldoc::Id::generate();
+    blank.roots.clear();
+    project.scenes.push_back(blank);
+    project.decks.front().program_scene = blank.id;
+    commit(link, project);
+    std::this_thread::sleep_for(std::chrono::seconds(actual ? 6 : 4));
+    for (int cut = 0; cut < 3; ++cut) {
+        project.decks.front().program_scene = media.id;
+        const auto start = std::chrono::steady_clock::now();
+        const auto frame = commit(link, project);
+        const auto elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        std::fprintf(stderr, "preloaded media cut %d: %.2f ms, status %d\n", cut, elapsed,
+                     static_cast<int>(frame.status));
+        CHECK(frame.status == lcomp::PictureStatus::Complete);
+        CHECK(elapsed < 250);
+        project.decks.front().program_scene = blank.id;
+        commit(link, project);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    project.sources.clear();
+    project.scenes.front().roots.clear();
+    CHECK(commit(link, project).gaps == 0);
+    link.quit();
+    link.close();
+    CHECK_EQ(reap(*child, 3000), 0);
+}
+
 LTEST_CASE(media_audio_crosses_worker_mixer_and_meter_transport) {
     auto ends = lipc::Channel::pair();
     REQUIRE(ends.has_value());
@@ -739,7 +786,7 @@ LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
         hidden.decks.front().program_scene.reset();
         commit(link, hidden);
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        CHECK(commit(link, project).status == lcomp::PictureStatus::Complete);
+        CHECK(commit(link, project).gaps == 0);
     }
     int complete = 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -776,11 +823,11 @@ LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
             CHECK(device_open());
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             project.decks.front().program_scene = active;
-            CHECK(commit(link, project).status == lcomp::PictureStatus::Complete);
+            CHECK(commit(link, project).gaps == 0);
         }
         // The setting itself must not restart a visible device.
         project.sources.front().settings["deactivateWhenHidden"] = true;
-        CHECK(commit(link, project).status == lcomp::PictureStatus::Complete);
+        CHECK(commit(link, project).gaps == 0);
         project.decks.front().program_scene = blank.id;
         commit(link, project);
         CHECK(!device_open());

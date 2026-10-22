@@ -307,4 +307,48 @@ LTEST_CASE(browser_audio_reaches_pcm_transport) {
     CHECK(tone);
 }
 
+LTEST_CASE(preloaded_media_reactivates_without_restarting_worker) {
+    for (const char* file : {"motion.mkv", "alpha-60.webm"}) {
+        auto src = source("source.media");
+        src.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/" + file;
+        src.settings["loop"] = true;
+        std::mutex mu;
+        std::condition_variable ready;
+        std::shared_ptr<const lcomp::PreviewFrame> latest;
+        int count = 0;
+        SourceWorker worker(src, [&](auto frame) {
+            if (!frame) return;
+            std::lock_guard lock(mu);
+            latest = std::move(frame);
+            ++count;
+            ready.notify_all();
+        });
+        worker.set_active(false);
+        std::unique_lock lock(mu);
+        REQUIRE(ready.wait_for(lock, std::chrono::seconds(8), [&] { return count > 0; }));
+        lock.unlock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        lock.lock();
+        const auto retained = latest;
+        const int before = count;
+        worker.set_active(true);
+        REQUIRE(ready.wait_for(lock, std::chrono::milliseconds(350), [&] { return count > before; }));
+        CHECK(latest);
+        CHECK(retained && !retained->bytes().empty());
+        lock.unlock();
+    }
+}
+
+LTEST_CASE(measure_media_first_frame) {
+    const auto* path = std::getenv("LIBERTAS_BENCH_MEDIA");
+    if (!path) return;
+    auto src = source("source.media");
+    src.settings["localFile"] = std::string(path);
+    const auto start = std::chrono::steady_clock::now();
+    auto frames = capture(src);
+    REQUIRE(!frames.empty());
+    std::fprintf(stderr, "media first frame including worker teardown: %.1f ms\n",
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+}
+
 LTEST_MAIN("source workers")

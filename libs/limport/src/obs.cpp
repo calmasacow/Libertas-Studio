@@ -478,6 +478,8 @@ struct Converter {
                     path(e, str(s, flag(s, "is_local_file", true) ? "local_file" : "input"));
                 p["loop"] = flag(s, "looping");
                 p["hardwareDecode"] = flag(s, "hw_decode", true);
+                p["restartOnActivate"] = flag(s, "restart_on_activate", true);
+                p["closeWhenInactive"] = flag(s, "close_when_inactive", false);
             } else {
                 const auto& files = s[e.type == "slideshow" ? "files" : "playlist"];
                 if (!files.isNull() && !files.isArray())
@@ -505,7 +507,7 @@ struct Converter {
                 static_cast<std::int64_t>(integer(s, "speed_percent", 100, 25, 400));
             p["intervalMs"] =
                 static_cast<std::int64_t>(integer(s, "slide_time", 8000, 100, 100000));
-            warn(e, "check output dimensions and aspect fit; playback restarts when shown; "
+            warn(e, "check output dimensions and aspect fit; "
                     "shuffle/transitions are not imported");
         } else if (e.type == "pulse_input_capture" || e.type == "pulse_output_capture" ||
                    e.type == "wasapi_input_capture" || e.type == "wasapi_output_capture") {

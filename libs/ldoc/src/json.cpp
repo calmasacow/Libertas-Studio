@@ -951,6 +951,25 @@ Source dec_source(Rd& rd, const Jv& v, std::string_view path) {
     s.name = rd.text(v, "name", path);
     s.type = rd.text(v, "type", path);
     s.settings = dec_params(rd, v, "settings", path);
+    if (s.type == "source.media" || s.type == "source.playlist") {
+        const auto original = s.settings.find("obs.original");
+        const auto* text = original == s.settings.end() ? nullptr
+                                                       : std::get_if<std::string>(&original->second);
+        if (text) {
+            Jv metadata;
+            std::string error;
+            const auto parser = std::unique_ptr<Json::CharReader>(Json::CharReaderBuilder{}.newCharReader());
+            if (parser->parse(text->data(), text->data() + text->size(), &metadata, &error) &&
+                metadata.isObject()) {
+                for (const auto& [native, obs] : {std::pair{"restartOnActivate", "restart_on_activate"},
+                                                 std::pair{"closeWhenInactive", "close_when_inactive"}}) {
+                    const auto& settings = metadata["settings"];
+                    if (!s.settings.contains(native) && settings.isObject() && settings[obs].isBool())
+                        s.settings[native] = settings[obs].asBool();
+                }
+            }
+        }
+    }
     s.asset = rd.id_opt(v, "asset", path);
     s.effects = dec_effects(rd, v, "effects", path);
     return s;

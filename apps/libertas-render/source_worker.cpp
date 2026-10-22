@@ -10,7 +10,7 @@
 
 SourceWorker::SourceWorker(const ldoc::Source& source, Callback callback,
                            std::function<void(std::span<const float>)> audio)
-    : thread_([source, callback = std::move(callback),
+    : thread_([this, source, callback = std::move(callback),
                audio = std::move(audio)](std::stop_token stop) {
           while (!stop.stop_requested()) {
               pid_t child = -1;
@@ -29,6 +29,8 @@ SourceWorker::SourceWorker(const ldoc::Source& source, Callback callback,
                       throw std::runtime_error(hello.error());
                   auto project = ldoc::make_default_project("Source worker");
                   project.sources = {source};
+                  bool active = active_.load();
+                  project.sources.front().settings["worker.active"] = active;
                   auto sent = link.send_project(project);
                   if (!sent)
                       throw std::runtime_error(sent.error());
@@ -63,7 +65,11 @@ SourceWorker::SourceWorker(const ldoc::Source& source, Callback callback,
                           next_refresh = std::max(next_refresh + std::chrono::milliseconds(16),
                                                   std::chrono::steady_clock::now());
                           std::this_thread::sleep_until(next_refresh);
-                          auto refresh = link.refresh();
+                          const bool next_active = active_.load();
+                          project.sources.front().settings["worker.active"] = next_active;
+                          auto refresh = next_active == active ? link.refresh()
+                                                              : link.send_project(project);
+                          active = next_active;
                           if (!refresh)
                               throw std::runtime_error(refresh.error());
                           deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);

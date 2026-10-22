@@ -22,7 +22,7 @@ class AlphaVideo {
     AVFrame* frame_ = nullptr;
     SwsContext* convert_ = nullptr;
     int stream_ = -1;
-    bool draining_ = false;
+    bool draining_ = false, paused_ = false;
     QTimer timer_;
     std::function<qint64()> position_;
     double speed_ = 1;
@@ -45,6 +45,7 @@ class AlphaVideo {
                 }
                 publish_(pending_);
                 pending_ = {};
+                if (paused_) return;
             }
             for (int tries = 0; tries < 64; ++tries) {
                 const int received = avcodec_receive_frame(decoder_, frame_);
@@ -163,6 +164,22 @@ class AlphaVideo {
         if (!packet_ || !frame_)
             throw std::runtime_error("alpha video frame allocation failed");
         return true;
+    }
+
+    void pause() { paused_ = true; timer_.stop(); }
+    void resume() { paused_ = false; timer_.start(0); }
+    void rewind() {
+        paused_ = false;
+        timer_.stop();
+        const auto* stream = input_->streams[stream_];
+        const auto start = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
+        if (av_seek_frame(input_, stream_, start, AVSEEK_FLAG_BACKWARD) < 0)
+            throw std::runtime_error("alpha video seek failed");
+        avcodec_flush_buffers(decoder_);
+        pending_ = {};
+        draining_ = false;
+        due_ = end_ = 0;
+        timer_.start(0);
     }
 
     bool has_audio() const {
