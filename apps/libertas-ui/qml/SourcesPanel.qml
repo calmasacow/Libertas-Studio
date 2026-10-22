@@ -91,9 +91,13 @@ Item {
     /// Which row the pointer is over, and which third of it -- the three zones a layers panel
     /// has: above, into, below. A row that is not a group has no middle third, because there
     /// is nothing to go inside; its whole height splits in two (ADR-0038).
+    /// Rows are not all one height: one naming its source is taller than one that does not.
+    /// Both the row index and the zone come from the view's own geometry, because assuming a
+    /// fixed height drifted further down the list with every tall row, landing drops and the
+    /// line inside the wrong row.
     function updateDrop(yInList) {
         const y = yInList + list.contentY;
-        const at = Math.floor(y / 26);
+        const at = list.indexAt(1, y);
         if (at < 0 || at >= list.count) {
             panel.dropTarget = "";
             return;
@@ -105,12 +109,14 @@ Item {
         }
         const target = hit.id;
         const isGroup = hit.isGroup;
-        const within = y - at * 26;
+        const item = list.itemAtIndex(at);
+        const height = item ? item.height : 26;
+        const within = y - (item ? item.y : at * 26);
         let zone;
         if (isGroup)
-            zone = within < 7 ? "above" : within > 19 ? "below" : "into";
+            zone = within < height * 0.27 ? "above" : within > height * 0.73 ? "below" : "into";
         else
-            zone = within < 13 ? "above" : "below";
+            zone = within < height / 2 ? "above" : "below";
 
         if (!Document.canDropAt(target, zone)) {
             panel.dropTarget = "";
@@ -183,6 +189,18 @@ Item {
             // "inside this" cannot be mistaken for "selected".
             border.width: row.dropInto ? 1 : 0
             border.color: Theme.c.text
+
+            // The box's own surface, inset at the bottom so neighbouring rows are separated
+            // by a visible gap and the drop line lands on an edge, never through a name.
+            // Skipped when the row is coloured, which already shows where it begins and ends.
+            Rectangle {
+                anchors.fill: parent
+                anchors.bottomMargin: 1
+                visible: row.color.toString() === "#00000000" && !row.dropInto
+                color: Theme.c.panelHeader
+                radius: 3
+                z: -1
+            }
             // The rows being carried fade, which is what says they are in flight rather than
             // still where they were.
             opacity: panel.dragging && Document.selectedNodes.indexOf(row.nodeId) >= 0 ? 0.4
@@ -521,11 +539,17 @@ Item {
         y: {
             if (!visible)
                 return 0;
+            // Reads contentY so the line follows a scroll while the drag is held.
+            const scrolled = list.contentY;
             const at = Document.rowOfNode(panel.dropTarget);
             if (at < 0)
                 return 0;
-            const top = at * 26 - list.contentY;
-            return panel.dropZone === "below" ? top + 26 - 1 : top - 1;
+            const item = list.itemAtIndex(at);
+            if (!item)
+                return 0;
+            // On the row's own edge, so it reads as the gap between two boxes.
+            return panel.dropZone === "below" ? item.y + item.height - scrolled - 1
+                                             : item.y - scrolled - 1;
         }
     }
 

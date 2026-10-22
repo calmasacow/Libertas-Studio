@@ -2377,6 +2377,52 @@ int main(int argc, char** argv) {
                 settle();
             }
 
+            // A locked source is not clickable in the viewport: the pointer passes through it
+            // to whatever is behind, which is the point of locking an overlay that covers the
+            // canvas. It stays selectable in the Sources list, which is the only way back.
+            if (frame != nullptr) {
+                // The new source is drawn in front, so it is the one to lock; `card` is behind
+                // it and is what the click must reach instead.
+                document.addNewSourceToScene(QStringLiteral("Over"),
+                                             QStringLiteral("source.color"), true);
+                settle();
+                const QString over = document.selectedNode();
+                const auto order = document.placedNodes(QString{});
+                const bool over_in_front =
+                    !order.isEmpty() &&
+                    order.front().toMap().value(QStringLiteral("id")).toString() == over;
+                report(over_in_front, "the newest canvas source is the one a click would hit");
+                document.setNodeLocked(over, true);
+                settle();
+                const QPointF middle =
+                    frame->mapToScene(QPointF(frame->width() / 2.0, frame->height() / 2.0));
+                const auto click_middle = [&] {
+                    document.selectNode(QString{});
+                    settle();
+                    post(QEvent::MouseButtonPress, middle, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, middle, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                };
+                click_middle();
+                report(document.selectedNode() != over,
+                       "a click in the viewport does not select a locked source");
+                report(document.selectedNode() == card,
+                       "and reaches the source behind it instead");
+                document.selectNode(over);
+                settle();
+                report(document.selectedNode() == over,
+                       "while the Sources list still selects it, so its lock can be lifted");
+                document.setNodeLocked(over, false);
+                settle();
+                click_middle();
+                report(document.selectedNode() == over, "unlocked, the same click selects it");
+                for (int step = 0; step < 8 && document.canUndo() &&
+                                    document.undoDescription() != after_add;
+                     ++step)
+                    document.undo();
+                settle();
+            }
+
             if (document.sourcesModel()->rowCount() == card_count + 1)
                 document.undo();
             report(document.sourcesModel()->rowCount() == card_count &&
@@ -2975,6 +3021,66 @@ int main(int argc, char** argv) {
                     document.undo();
                     settle();
                 }
+
+                // Rows are not all one height: one naming its source is taller than one that
+                // does not. A drop used to be worked out from a fixed row height, so every
+                // tall row above the pointer pushed the answer further down the list and the
+                // drop landed in the wrong row. Dropping onto the last row's lower half, with
+                // taller rows above it, is the case that caught it.
+                document.addSource(QStringLiteral("Tall row input"),
+                                   QStringLiteral("source.image"));
+                settle();
+                const QString tall_source =
+                    document.sourcesModel()
+                        ->index(document.sourcesModel()->rowCount() - 1, 0)
+                        .data(role_of(document.sourcesModel(), "sourceId"))
+                        .toString();
+                document.addExistingSourceToScene(tall_source, true);
+                settle();
+                document.addExistingSourceToScene(tall_source, true);
+                settle();
+                document.addSourceNode(QStringLiteral("Plain last row"));
+                settle();
+                QQuickItem* first_row = row_of(pick_c);
+                // The bottom row on screen, found by geometry: the list draws the topmost
+                // layer first, so this is the furthest point a fixed-height guess can miss by.
+                QQuickItem* bottom_row = nullptr;
+                bool mixed = false;
+                for (QQuickItem* r : collect(window->contentItem(), QStringLiteral("sourceRow"))) {
+                    if (bottom_row == nullptr || r->y() > bottom_row->y())
+                        bottom_row = r;
+                    mixed = mixed || std::abs(r->height() - 26.0) > 1.0;
+                }
+                report(mixed && bottom_row != nullptr && first_row != nullptr,
+                       "a list of mixed row heights is on screen to drag in");
+                if (bottom_row != nullptr && first_row != nullptr) {
+                    document.selectNode(pick_c);
+                    settle();
+                    const QPointF lift = first_row->mapToScene(
+                        QPointF(first_row->width() / 2.0, first_row->height() / 2.0));
+                    // The bottom row's lower half: "below it", the end of the list.
+                    const QPointF under = bottom_row->mapToScene(
+                        QPointF(bottom_row->width() / 2.0, bottom_row->height() - 2.0));
+                    post(QEvent::MouseButtonPress, lift, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseMove, lift + QPointF(0, 6), Qt::NoButton, Qt::LeftButton);
+                    settle();
+                    post(QEvent::MouseMove, under, Qt::NoButton, Qt::LeftButton);
+                    settle();
+                    post(QEvent::MouseButtonRelease, under, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    report(document.rowOfNode(pick_c) == document.nodesModel()->rowCount() - 1,
+                           "a drop past taller rows lands under the row the pointer is on");
+                    document.undo();
+                    settle();
+                }
+                document.undo();
+                settle();
+                document.undo();
+                settle();
+                document.undo();
+                settle();
+                                document.removeSourceAndUses(tall_source);
+                settle();
             }
 
             document.undo();

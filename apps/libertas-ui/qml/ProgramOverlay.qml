@@ -126,14 +126,18 @@ Item {
                point.y >= rect.y && point.y < rect.y + rect.height;
     }
 
+    /// A locked node is not here to be clicked: the pointer passes through it to whatever is
+    /// behind, which is the point of locking an overlay that covers the canvas. It stays
+    /// selectable in the Sources list, so its lock can be lifted and its properties edited.
     function hitNode(x, y) {
         const point = overlay.toCanvas(x, y);
         const nodes = Document.placedNodes(overlay.canvasId);
         for (let i = 0; i < nodes.length; ++i) {
-            if (overlay.contains(nodes[i], point))
+            if (nodes[i].locked !== true && overlay.contains(nodes[i], point))
                 return nodes[i];
         }
-        if (overlay.placement && overlay.handleAt(x, y) !== "")
+        if (overlay.placement && overlay.placement.locked !== true &&
+            overlay.handleAt(x, y) !== "")
             return overlay.placement;
         return null;
     }
