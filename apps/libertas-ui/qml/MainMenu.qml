@@ -29,6 +29,8 @@ Controls.MenuBar {
         Workspace.activate(id);
     }
 
+    PreferencesDialog { id: preferences }
+
     implicitHeight: 28
     background: Rectangle { color: Theme.c.panelHeader }
     delegate: Controls.MenuBarItem {
@@ -123,6 +125,8 @@ Controls.MenuBar {
         Pending { text: qsTr("Copy Filters") }
         Pending { text: qsTr("Paste Filters") }
         Divider {}
+        Entry { objectName: "menuPreferences"; text: qsTr("Preferences…"); onTriggered: preferences.open() }
+        Divider {}
         Menu {
             title: qsTr("Transform")
             enabled: bar.editable
@@ -177,6 +181,7 @@ Controls.MenuBar {
         id: docks
         title: qsTr("&Docks")
         Pending { text: qsTr("Lock Docks") }
+        Entry { objectName: "menuSaveLayout"; text: qsTr("Save Layout"); onTriggered: Workspace.saveLayoutNow() }
         Entry { text: qsTr("Reset Docks"); onTriggered: Workspace.resetLayout() }
         Divider {}
         Pending { text: qsTr("Custom Browser Docks") }
@@ -190,7 +195,7 @@ Controls.MenuBar {
                 checked: { const revision = Workspace.revision; return Workspace.layoutHasPanel(modelData); }
                 onTriggered: checked ? bar.showPanel(modelData) : Workspace.closePanel(modelData)
             }
-            onObjectAdded: (index, object) => docks.insertItem(index + 4, object)
+            onObjectAdded: (index, object) => docks.insertItem(index + 5, object)
             onObjectRemoved: (index, object) => docks.removeItem(object)
         }
         Divider {}

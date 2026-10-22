@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "document.hpp"
+#include "preferences.hpp"
 #include "preview.hpp"
 #include "shortcuts.hpp"
 #include "telemetry.hpp"
@@ -173,6 +174,11 @@ int main(int argc, char** argv) {
     const auto preset_path = (check ? std::filesystem::path(checkPresets.path().toStdString())
                                    : config_dir()) / "encoder-presets.json";
     libertas::ui::Document::configurePresets(preset_path);
+    // Before Preview: the render process reads preferences from the environment it inherits.
+    QTemporaryDir checkPreferences;
+    libertas::ui::Preferences::configure(
+        (check ? std::filesystem::path(checkPreferences.path().toStdString()) : config_dir()) /
+        "preferences.json");
     libertas::ui::Preview::configure(LIBERTAS_RENDER_EXE);
     libertas::ui::Shortcuts::configure(config_dir() / "bindings.toml");
     // Free space is measured where recordings would land, which is beside the project. With no
@@ -212,6 +218,10 @@ int main(int argc, char** argv) {
     QObject::connect(&document, &libertas::ui::Document::notice, &app, say);
     QObject::connect(&preview, &libertas::ui::Preview::notice, &app, say);
     QObject::connect(&shortcuts, &libertas::ui::Shortcuts::notice, &app, say);
+    if (auto* preferences =
+            engine.singletonInstance<libertas::ui::Preferences*>("Libertas", "Preferences"))
+        QObject::connect(preferences, &libertas::ui::Preferences::restartRenderer, &preview,
+                         &libertas::ui::Preview::restart);
 
     // Each canvas has its own Scenes and Sources panels, so the workspace has to be told
     // which canvases exist -- to title them "Scenes: Vertical", to offer the closed ones in

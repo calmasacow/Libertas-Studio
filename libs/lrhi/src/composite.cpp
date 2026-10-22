@@ -221,6 +221,7 @@ struct GpuCompositor::Impl {
     std::size_t image_at = 0, upload_at = 0;
     // Images the compositor may hold. Half of the device-local heap's budget at startup, which
     // leaves room for the encoder, Qt and other programs; 512 MiB where the driver cannot say.
+    // LIBERTAS_GPU_BUDGET_MIB, set from Preferences, replaces it.
     std::uint64_t budget = 512ull << 20;
     std::uint64_t allocated = 0;
 
@@ -426,6 +427,10 @@ struct GpuCompositor::Impl {
             if (largest)
                 budget = std::max(budget, largest / 2);
         }
+        // Edit > Preferences: an explicit budget overrides the default (0 or unset keeps it).
+        if (const char* mib = std::getenv("LIBERTAS_GPU_BUDGET_MIB"))
+            if (const auto value = std::strtoull(mib, nullptr, 10); value >= 256)
+                budget = value << 20;
         // Reserve the first device block now, at startup, not on the first frame that needs it.
         {
             VkImageCreateInfo probe{};

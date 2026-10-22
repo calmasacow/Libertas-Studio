@@ -35,6 +35,8 @@ qt_add_executable(libertas-ui
     layoutmodels.hpp
     main.cpp
     preview.cpp
+    preferences.cpp
+    preferences.hpp
     preview.hpp
     rowmodel.hpp
     telemetry.cpp
@@ -91,6 +93,7 @@ qt_add_qml_module(libertas-ui
         qml/OutputsPanel.qml
         qml/PanelBody.qml
         qml/PanelFrame.qml
+        qml/PreferencesDialog.qml
         qml/ProgramOverlay.qml
         qml/PropertiesPanel.qml
         qml/SceneLinkDialog.qml

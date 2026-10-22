@@ -49,6 +49,9 @@ class Preview : public QObject {
     [[nodiscard]] bool rendererAttached() const;
     Q_INVOKABLE [[nodiscard]] QVariantMap renderStats(const QString& canvasId) const;
     Q_INVOKABLE void resetStats();
+    /// Stops the render process and starts a fresh one with the latest document, so settings
+    /// read at its start (Edit > Preferences) take effect.
+    void restart();
     Q_INVOKABLE [[nodiscard]] QVariantMap audioLevel(const QString& nodeId) const;
 
     /// Empty until a frame has arrived for this canvas, which is when the panel keeps its own

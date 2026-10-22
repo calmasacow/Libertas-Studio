@@ -205,6 +205,9 @@ public:
     Q_INVOKABLE void redo();
     Q_INVOKABLE void resetLayout();
     Q_INVOKABLE void saveNow();
+    /// Same save, but it says so when it worked: Docks > Save Layout is an explicit action, and
+    /// silence there cannot be told from a save that failed.
+    Q_INVOKABLE void saveLayoutNow();
 
 signals:
     void layoutChanged();

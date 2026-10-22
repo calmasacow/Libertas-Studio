@@ -407,6 +407,16 @@ void Workspace::saveNow() {
     }
 }
 
+void Workspace::saveLayoutNow() {
+    save_timer_.stop();
+    sync_active();
+    if (const auto r = llayout::save(workspaces_, config_path_); r)
+        emit notice(QStringLiteral("Layout saved."));
+    else
+        emit notice(QStringLiteral("Could not save the workspaces: %1")
+                        .arg(QString::fromStdString(r.error())));
+}
+
 // ---- exposure ------------------------------------------------------------------------------
 
 int Workspace::panelCount() const {

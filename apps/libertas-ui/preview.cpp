@@ -632,6 +632,19 @@ void Preview::lose(const QString& why) {
     report(why);
 }
 
+void Preview::restart() {
+    if (link_ && link_->channel) {
+        link_->channel->quit();
+        link_->channel->close();
+        link_->channel.reset();
+    }
+    lose(QStringLiteral("Render process restarted for new preferences."));
+    reap(true);
+    link_ = std::make_unique<Link>();
+    start();
+    publish(latest_);
+}
+
 void Preview::reap(bool patient) {
     if (!link_ || link_->child <= 0)
         return;
