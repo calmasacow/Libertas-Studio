@@ -673,6 +673,54 @@ int main(int argc, char** argv) {
             document.undo();
         }
 
+        {
+            QTemporaryDir slides;
+            QImage red(16, 16, QImage::Format_RGB32), blue(16, 16, QImage::Format_RGB32);
+            red.fill(Qt::red);
+            blue.fill(Qt::blue);
+            const auto redPath = slides.filePath("red.png");
+            const auto bluePath = slides.filePath("blue.png");
+            report(red.save(redPath) && blue.save(bluePath), "nested playback fixtures saved");
+            const auto original = document.selectedScene();
+            document.addScene(QStringLiteral("Nested live leaf"));
+            const auto leaf = document.selectedScene();
+            document.addNewSourceToScene(QStringLiteral("Moving slides"), QStringLiteral("source.slideshow"));
+            const auto source = document.nodeProperties().value("sourceId").toString();
+            document.applySourceSettings(source, QStringLiteral("Moving slides"),
+                {{"files", redPath + "\n" + bluePath}, {"intervalMs", 100}, {"loop", true}});
+            document.addScene(QStringLiteral("Nested live middle"));
+            const auto middle = document.selectedScene();
+            document.addSceneToScene(leaf, true);
+            document.addScene(QStringLiteral("Nested live parent"));
+            const auto parent = document.selectedScene();
+            document.addSceneToScene(middle, true);
+            document.activateScene(parent);
+            settle();
+            auto* provider = static_cast<QQuickImageProvider*>(engine.imageProvider("program"));
+            const auto key = preview.canvasKey(QString{});
+            bool sawRed = false, sawBlue = false;
+            const auto generation = preview.generation();
+            for (int i = 0; i < 100; ++i) {
+                pump(20);
+                const auto frame = provider->requestImage(key, nullptr, {});
+                if (!frame.isNull()) {
+                    const auto pixel = frame.pixel(frame.width() / 2, frame.height() / 2);
+                    sawRed = sawRed || (qRed(pixel) > 240 && qBlue(pixel) < 20);
+                    sawBlue = sawBlue || (qBlue(pixel) > 240 && qRed(pixel) < 20);
+                }
+                if (sawRed && sawBlue && preview.generation() > generation + 2) break;
+            }
+            report(sawRed && sawBlue && preview.generation() > generation + 2,
+                   "nested-only program keeps delivering changing frames through two scene references");
+            document.activateScene(original);
+            document.removeScene(parent);
+            document.removeScene(middle);
+            document.removeScene(leaf);
+            document.removeSourceAndUses(source);
+            document.selectScene(original);
+            settle();
+        }
+
         report(workspace.canUndo(), "the dock is undoable");
         const int panels_after_dock = workspace.panelCount();
         workspace.undo();

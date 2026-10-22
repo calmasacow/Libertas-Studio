@@ -4,6 +4,15 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Nested live scene refresh, 2026-10-21
+
+`FS.W.CAM` froze because the UI's live-source detection visited groups and direct
+sources but never followed precomp scene references. A program containing only
+nested scenes therefore stopped its refresh timer after the first frame.
+Live-source detection now follows visible nested scenes with a visited-scene set
+for cycle protection. A real UI/renderer self-check runs an alternating slideshow
+through two nested scenes and verifies changing delivered pixels and generations.
+
 ## Scene picker and unfinished plugin equivalents, 2026-10-21
 
 Switching Add Sources to Scene now queries scenes directly from the selected
@@ -18,10 +27,9 @@ The approved clone/countdown requirements below remain outstanding. Reference
 repositories inspected at `/tmp/libertas-clone-reference` and
 `/tmp/libertas-countdown-reference`. Do not describe these ports as complete.
 
-Nested-scene playback failure reported separately; exact affected scene and
-failure symptom are needed to reproduce the operator's case. Saved Marathon
-collection has 40 scenes with multiple valid precomp references; do not rewrite
-that collection while diagnosing.
+Nested-scene failure was subsequently identified as frozen playback in
+`FS.W.CAM`; see the live-refresh fix above. Saved Marathon collection remains
+untouched.
 
 ## Separate audio and video filter panes, 2026-10-21
 

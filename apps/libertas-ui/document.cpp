@@ -2277,12 +2277,20 @@ bool Document::hasLiveSource() const {
         if (scene == nullptr)
             continue;
         bool live = false;
+        std::unordered_set<ldoc::Id> visited{scene->id};
         const auto walk = [&](const auto& self, const ldoc::Node& node) -> void {
             if (live || !node.visible)
                 return;
             if (const auto* kids = node.children()) {
                 for (const ldoc::Node& child : *kids)
                     self(self, child);
+                return;
+            }
+            if (const auto* pre = std::get_if<ldoc::PrecompData>(&node.data)) {
+                if (visited.insert(pre->scene).second)
+                    if (const auto* nested = project.scene(pre->scene))
+                        for (const auto& child : nested->roots)
+                            self(self, child);
                 return;
             }
             const auto* source = std::get_if<ldoc::SourceData>(&node.data);
