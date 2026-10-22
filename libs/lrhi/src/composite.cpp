@@ -390,6 +390,10 @@ struct GpuCompositor::Impl {
                                         });
         if (match != images.end())
             std::iter_swap(images.begin() + static_cast<std::ptrdiff_t>(image_at), match);
+        // No spare of this shape: add a slot rather than overwrite a spare of another shape,
+        // which the next frame would have to allocate again.
+        if (match == images.end() && images[image_at])
+            images.insert(images.begin() + static_cast<std::ptrdiff_t>(image_at), nullptr);
         auto& entry = images[image_at++];
         if (entry && entry->width == width && entry->height == height && entry->format == format)
             return *entry;

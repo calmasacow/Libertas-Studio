@@ -665,19 +665,15 @@ void append_filtered(const ldoc::Node& node, DrawOp op, int width, int height, C
 // metadata changes create a new identity, invalidating GPU uploads without changing old plans.
 struct ImageCache {
     std::string path;
-    std::filesystem::file_time_type written{};
-    std::uintmax_t size = 0;
+    FileStamp stamp;
     std::shared_ptr<const DecodedImage> image;
 };
 
 std::shared_ptr<const DecodedImage> decode_image_cached(const std::string& path) {
     static std::vector<ImageCache> cache;
-    std::error_code ec;
-    const std::filesystem::path fs_path{path};
-    const auto written = std::filesystem::last_write_time(fs_path, ec);
-    const auto size = ec ? 0u : std::filesystem::file_size(fs_path, ec);
+    const auto stamp = file_stamp(path);
     const auto found = std::ranges::find(cache, path, &ImageCache::path);
-    if (!ec && found != cache.end() && found->written == written && found->size == size) {
+    if (stamp && found != cache.end() && found->stamp == *stamp) {
         const auto image = found->image;
         std::rotate(found, std::next(found), cache.end());
         return image;
@@ -688,7 +684,7 @@ std::shared_ptr<const DecodedImage> decode_image_cached(const std::string& path)
     if (!decoded)
         return {};
     auto image = std::make_shared<const DecodedImage>(std::move(*decoded));
-    if (!ec) {
+    if (stamp) {
         std::size_t bytes = image->pixels.size();
         for (const auto& entry : cache)
             bytes += entry.image->pixels.size();
@@ -697,7 +693,7 @@ std::shared_ptr<const DecodedImage> decode_image_cached(const std::string& path)
             cache.erase(cache.begin());
         }
         if (bytes <= 128ull * 1024 * 1024)
-            cache.push_back({path, written, size, image});
+            cache.push_back({path, *stamp, image});
     }
     return image;
 }

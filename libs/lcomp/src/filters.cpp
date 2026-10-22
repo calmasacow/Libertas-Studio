@@ -42,21 +42,15 @@ float clamp(float v) {
 
 std::shared_ptr<Picture> mask_image(const std::string& path) {
     struct Entry {
-        std::filesystem::file_time_type time;
-        std::uintmax_t bytes;
+        FileStamp stamp;
         std::shared_ptr<Picture> image;
     };
 
     static thread_local std::map<std::string, Entry> cache;
-    std::error_code ec;
-    const auto time = std::filesystem::last_write_time(path, ec);
-    if (ec)
+    const auto stamp = file_stamp(path);
+    if (!stamp)
         return {};
-    const auto bytes = std::filesystem::file_size(path, ec);
-    if (ec)
-        return {};
-    if (auto it = cache.find(path);
-        it != cache.end() && it->second.time == time && it->second.bytes == bytes)
+    if (auto it = cache.find(path); it != cache.end() && it->second.stamp == *stamp)
         return it->second.image;
     auto decoded = decode_image(path);
     if (!decoded)
@@ -70,7 +64,7 @@ std::shared_ptr<Picture> mask_image(const std::string& path) {
     // shows.
     if (cache.size() >= 8)
         cache.clear();
-    cache[path] = {time, bytes, image};
+    cache[path] = {*stamp, image};
     return image;
 }
 } // namespace

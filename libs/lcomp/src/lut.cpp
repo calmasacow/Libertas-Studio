@@ -14,21 +14,15 @@
 namespace lcomp {
 std::shared_ptr<const Lut> load_lut(const std::string& path) {
     struct Cached {
-        std::filesystem::file_time_type time;
-        std::uintmax_t bytes;
+        FileStamp stamp;
         std::shared_ptr<Lut> lut;
     };
 
     static thread_local std::map<std::string, Cached> cache;
-    std::error_code ec;
-    const auto time = std::filesystem::last_write_time(path, ec);
-    if (ec)
+    const auto stamp = file_stamp(path);
+    if (!stamp || stamp->size > 64 * 1024 * 1024)
         return {};
-    const auto bytes = std::filesystem::file_size(path, ec);
-    if (ec || bytes > 64 * 1024 * 1024)
-        return {};
-    if (const auto it = cache.find(path);
-        it != cache.end() && it->second.time == time && it->second.bytes == bytes)
+    if (const auto it = cache.find(path); it != cache.end() && it->second.stamp == *stamp)
         return it->second.lut;
     auto lut = std::make_shared<Lut>();
     lut->image = std::make_shared<Picture>();
@@ -115,7 +109,7 @@ std::shared_ptr<const Lut> load_lut(const std::string& path) {
             }
     if (cache.size() >= 8)
         cache.clear();
-    cache[path] = {time, bytes, lut};
+    cache[path] = {*stamp, lut};
     return lut;
 }
 } // namespace lcomp

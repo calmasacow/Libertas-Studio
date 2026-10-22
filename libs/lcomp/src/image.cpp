@@ -10,6 +10,10 @@
 #include <exception>
 #include <fstream>
 #include <limits>
+#include <condition_variable>
+#include <map>
+#include <mutex>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -230,6 +234,66 @@ std::optional<DecodedImage> decode_image(const std::string& path) {
     if (got >= 12 && std::memcmp(magic, "RIFF", 4) == 0 && std::memcmp(magic + 8, "WEBP", 4) == 0)
         return decode_webp(path);
     return std::nullopt;
+}
+
+namespace {
+std::optional<FileStamp> stat_file(const std::string& path) {
+    std::error_code ec;
+    FileStamp stamp;
+    stamp.written = std::filesystem::last_write_time(path, ec);
+    if (ec)
+        return std::nullopt;
+    stamp.size = std::filesystem::file_size(path, ec);
+    if (ec)
+        return std::nullopt;
+    return stamp;
+}
+
+struct Watched {
+    std::optional<FileStamp> stamp;
+    bool slow = false; // A stat took long enough to cost a frame; only the watcher stats it.
+};
+
+struct StampWatcher {
+    std::mutex mu;
+    std::map<std::string, Watched> paths;
+    std::jthread thread{[this](std::stop_token stop) {
+        std::mutex sleep_mu;
+        std::condition_variable_any sleep;
+        while (!stop.stop_requested()) {
+            std::vector<std::string> slow;
+            {
+                std::lock_guard lock(mu);
+                for (const auto& [path, watched] : paths)
+                    if (watched.slow)
+                        slow.push_back(path);
+            }
+            for (const auto& path : slow) {
+                auto stamp = stat_file(path);
+                std::lock_guard lock(mu);
+                paths[path].stamp = stamp;
+            }
+            std::unique_lock sleep_lock(sleep_mu);
+            sleep.wait_for(sleep_lock, stop, std::chrono::milliseconds(500), [] { return false; });
+        }
+    }};
+};
+} // namespace
+
+std::optional<FileStamp> file_stamp(const std::string& path) {
+    // ponytail: watched paths are never forgotten; a show references a bounded set of files.
+    static StampWatcher watcher;
+    {
+        std::lock_guard lock(watcher.mu);
+        if (const auto it = watcher.paths.find(path); it != watcher.paths.end() && it->second.slow)
+            return it->second.stamp;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    auto stamp = stat_file(path);
+    const bool slow = std::chrono::steady_clock::now() - started > std::chrono::milliseconds(2);
+    std::lock_guard lock(watcher.mu);
+    watcher.paths[path] = {stamp, slow};
+    return stamp;
 }
 
 } // namespace lcomp
