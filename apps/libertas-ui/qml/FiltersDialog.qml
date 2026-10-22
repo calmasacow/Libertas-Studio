@@ -17,6 +17,8 @@ Item {
     property var current: ({})
     property var types: []
     property string addType: ""
+    property string audioAddType: ""
+    readonly property var domains: details.audioOnly ? [true] : details.hasAudio ? [true, false] : [false]
     property string previewCanvas: ""
     property string customKey: ""
     property bool refreshing: false
@@ -63,38 +65,70 @@ Item {
         color: Theme.c.panelBackground; border.color: Theme.c.accent
         Text { x: 16; y: 12; text: qsTr("Filters — %1").arg(dialog.details.name || ""); color: Theme.c.text; font.pixelSize: 16 }
         Text { x: 16; y: 38; text: qsTr("Changes apply to every use of this source. Undo restores edits."); color: Theme.c.textMuted; font.pixelSize: 11 }
-        Rectangle {
-            x: 12; y: 64; width: 240; height: frame.height - 124
-            color: Theme.c.window; border.color: Theme.c.border
-            Text { x: 8; y: 8; text: dialog.details.audioOnly ? qsTr("Audio Filters") : qsTr("Assigned Filters"); color: Theme.c.textMuted; font.pixelSize: 12 }
-            ListView {
-                id: list
-                objectName: "filterList"
-                x: 4; y: 32; width: parent.width - 8; height: parent.height - 76
-                clip: true; interactive: false
-                NoDragScroll {}
-                model: dialog.details.effects || []; spacing: 4
-                delegate: Rectangle {
-                    id: entry
-                    required property var modelData
-                    objectName: "assignedFilter"
-                    property string effectId: modelData.id
-                    width: list.width; height: 34
-                    color: dialog.selected === modelData.id ? Theme.c.panelHeaderActive : "transparent"
-                    MouseArea { anchors.fill: parent; onClicked: { dialog.selected = entry.modelData.id; dialog.refresh(); } }
-                    CheckLabel {
-                        x: 4; width: 24; height: parent.height; text: ""
-                        checked: entry.modelData.enabled
-                        onToggled: Document.editFilter(dialog.owner, entry.modelData.id, entry.modelData.name, !checked, entry.modelData.values)
+        Repeater {
+            model: dialog.domains
+            delegate: Rectangle {
+                id: pane
+                required property bool modelData
+                required property int index
+                objectName: modelData ? "audioFilterPane" : "videoFilterPane"
+                readonly property var entries: (dialog.details.effects || []).filter(e => !!e.audio === modelData)
+                readonly property var available: dialog.types.filter(t => !!t.audio === modelData)
+                readonly property int selectedIndex: entries.findIndex(e => e.id === dialog.selected)
+                readonly property string chosen: modelData ? dialog.audioAddType : dialog.addType
+                readonly property string addType: available.some(t => t.type === chosen) ? chosen : available.length ? available[0].type : ""
+                x: 12; y: 64 + index * (height + 12); width: 240
+                height: (frame.height - 124 - (dialog.domains.length - 1) * 12) / dialog.domains.length
+                color: Theme.c.window; border.color: Theme.c.border
+                Text { x: 8; y: 8; text: pane.modelData ? qsTr("Audio Filters") : qsTr("Video Filters"); color: Theme.c.textMuted; font.pixelSize: 12 }
+                ListView {
+                    id: list
+                    objectName: "filterList"
+                    x: 4; y: 32; width: parent.width - 8; height: parent.height - 112
+                    clip: true; interactive: false
+                    NoDragScroll {}
+                    model: pane.entries; spacing: 4
+                    delegate: Rectangle {
+                        id: entry
+                        required property var modelData
+                        objectName: "assignedFilter"
+                        property string effectId: modelData.id
+                        width: list.width; height: 34
+                        color: dialog.selected === modelData.id ? Theme.c.panelHeaderActive : "transparent"
+                        MouseArea { anchors.fill: parent; onClicked: { dialog.selected = entry.modelData.id; dialog.refresh(); } }
+                        CheckLabel {
+                            x: 4; width: 24; height: parent.height; text: ""
+                            checked: entry.modelData.enabled
+                            onToggled: Document.editFilter(dialog.owner, entry.modelData.id, entry.modelData.name, !checked, entry.modelData.values)
+                        }
+                        Text { x: 32; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 38; elide: Text.ElideRight; text: entry.modelData.name; color: Theme.c.text; font.pixelSize: 12 }
                     }
-                    Text { x: 32; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 38; elide: Text.ElideRight; text: entry.modelData.name; color: Theme.c.text; font.pixelSize: 12 }
                 }
-            }
-            Row {
-                x: 6; anchors.bottom: parent.bottom; anchors.bottomMargin: 6; spacing: 5
-                DialogButton { objectName: "filterUp"; minimumWidth: 64; text: qsTr("Up"); enabled: !!dialog.selected; onClicked: Document.moveFilter(dialog.owner, dialog.selected, -1) }
-                DialogButton { objectName: "filterDown"; minimumWidth: 64; text: qsTr("Down"); enabled: !!dialog.selected; onClicked: Document.moveFilter(dialog.owner, dialog.selected, 1) }
-                DialogButton { objectName: "filterRemove"; text: qsTr("Remove"); enabled: !!dialog.selected; onClicked: Document.removeFilter(dialog.owner, dialog.selected) }
+                ChoiceField {
+                    objectName: "filterType"
+                    x: 6; y: parent.height - 74; width: parent.width - 12
+                    label: ""; labelWidth: 0
+                    choices: pane.available.map(t => t.type)
+                    choiceLabels: { const labels = {}; for (const t of pane.available) labels[t.type] = t.name; return labels; }
+                    value: pane.addType
+                    onCommitted: value => { if (pane.modelData) dialog.audioAddType = value; else dialog.addType = value; }
+                }
+                Row {
+                    x: 6; anchors.bottom: parent.bottom; anchors.bottomMargin: 6; spacing: 4
+                    DialogButton {
+                        objectName: "filterAdd"; minimumWidth: 44; text: qsTr("Add"); enabled: pane.addType !== ""
+                        onClicked: {
+                            Document.addFilter(dialog.owner, pane.addType);
+                            dialog.refresh();
+                            const entries = dialog.details.effects;
+                            if (entries.length) dialog.selected = entries[entries.length - 1].id;
+                            dialog.refresh();
+                        }
+                    }
+                    DialogButton { objectName: "filterUp"; minimumWidth: 40; text: qsTr("Up"); enabled: pane.selectedIndex > 0; onClicked: Document.moveFilter(dialog.owner, dialog.selected, -1) }
+                    DialogButton { objectName: "filterDown"; minimumWidth: 48; text: qsTr("Down"); enabled: pane.selectedIndex >= 0 && pane.selectedIndex + 1 < pane.entries.length; onClicked: Document.moveFilter(dialog.owner, dialog.selected, 1) }
+                    DialogButton { objectName: "filterRemove"; minimumWidth: 66; text: qsTr("Remove"); enabled: pane.selectedIndex >= 0; onClicked: Document.removeFilter(dialog.owner, dialog.selected) }
+                }
             }
         }
         Rectangle {
@@ -201,28 +235,9 @@ Item {
             }
         }
         DialogButton { objectName: "filterDefaults"; x: 270; y: frame.height - 88; text: qsTr("Defaults"); enabled: !!dialog.selected; onClicked: dialog.defaults() }
-        ChoiceField {
-            objectName: "filterType"
-            x: 12; y: frame.height - 38; width: frame.width - 200
-            label: qsTr("Add filter"); labelWidth: 70
-            choices: dialog.types.map(t => t.type)
-            choiceLabels: { const labels = {}; for (const t of dialog.types) labels[t.type] = t.name; return labels; }
-            value: dialog.addType
-            onCommitted: value => dialog.addType = value
-        }
-        Row {
-            anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 12; spacing: 8
-            DialogButton {
-                objectName: "filterAdd"; text: qsTr("Add"); enabled: dialog.addType !== ""
-                onClicked: {
-                    Document.addFilter(dialog.owner, dialog.addType);
-                    dialog.refresh();
-                    const entries = dialog.details.effects;
-                    if (entries.length) dialog.selected = entries[entries.length - 1].id;
-                    dialog.refresh();
-                }
-            }
-            DialogButton { text: qsTr("Close"); onClicked: dialog.visible = false }
+        DialogButton {
+            anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 12
+            text: qsTr("Close"); onClicked: dialog.visible = false
         }
     }
 }

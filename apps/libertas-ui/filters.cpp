@@ -195,6 +195,7 @@ QVariantMap Document::filterDetails(const QString& target) const {
              QString::fromStdString(e.name.empty() ? (info ? info->name : e.type) : e.name)},
             {"type", QString::fromStdString(e.type)},
             {"enabled", e.enabled},
+            {"audio", info && info->audio},
             {"values", values},
             {"schema", schema},
             {"status", valid ? QString{} : QString::fromStdString(valid.error())}});
@@ -204,6 +205,7 @@ QVariantMap Document::filterDetails(const QString& target) const {
         p.bus(owner) ||
         (source && (source->type == "source.audio-input" || source->type == "source.audio-output"));
     return {{"audioOnly", audioOnly},
+            {"hasAudio", !source || ldoc::has_audio(*source)},
             {"owner", QString::fromStdString(owner.to_string())},
             {"name", QString::fromStdString(name)},
             {"effects", effects}};
@@ -229,7 +231,8 @@ QVariantList Document::filterTypes(const QString& owner) const {
         if ((info.audio && !audio) || (!info.audio && audioOnly))
             continue;
         result.push_back(QVariantMap{{"type", QString::fromStdString(info.type)},
-                                     {"name", QString::fromStdString(info.name)}});
+                                     {"name", QString::fromStdString(info.name)},
+                                     {"audio", info.audio}});
     }
     return result;
 }
@@ -319,10 +322,18 @@ void Document::moveFilter(const QString& owner, const QString& effect, int offse
     auto next = *stack;
     for (std::size_t i = 0; i < next.size(); ++i)
         if (next[i].id == *eid) {
-            if ((offset < 0 && i == 0) || (offset > 0 && i + 1 == next.size()))
+            const auto* info = lcomp::filter_info(next[i].type);
+            const bool audio = info && info->audio;
+            for (auto j = static_cast<std::ptrdiff_t>(i) + offset;
+                 j >= 0 && j < static_cast<std::ptrdiff_t>(next.size()); j += offset) {
+                const auto index = static_cast<std::size_t>(j);
+                const auto* other = lcomp::filter_info(next[index].type);
+                if ((other && other->audio) != audio)
+                    continue;
+                std::swap(next[i], next[index]);
+                run(ldoc::SetEffects{*id, std::move(next)});
                 return;
-            std::swap(next[i], next[offset < 0 ? i - 1 : i + 1]);
-            run(ldoc::SetEffects{*id, std::move(next)});
+            }
             return;
         }
 }

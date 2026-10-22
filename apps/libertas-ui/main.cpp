@@ -1378,6 +1378,61 @@ int main(int argc, char** argv) {
                        "audio source offers all ten audio filters only");
                 dialog->setVisible(false);
                 document.removeSourceAndUses(audioOwner);
+                document.addNewSourceToScene(QStringLiteral("Combined filter check"),
+                                             QStringLiteral("source.media"));
+                const auto combinedOwner =
+                    document.filterDetails(document.selectedNode()).value("owner").toString();
+                document.showFilters(combinedOwner);
+                settle();
+                const auto audioPanes = collect(dialog, QStringLiteral("audioFilterPane"));
+                const auto videoPanes = collect(dialog, QStringLiteral("videoFilterPane"));
+                report(audioPanes.size() == 1 && videoPanes.size() == 1,
+                       "combined source has separate audio and video filter panes");
+                if (audioPanes.size() == 1 && videoPanes.size() == 1) {
+                    for (auto* pane : {audioPanes.front(), videoPanes.front()}) {
+                        const bool audio = pane == audioPanes.front();
+                        const auto choices = collect(pane, QStringLiteral("filterType"));
+                        auto available = choices.front()->property("choices");
+                        if (available.metaType() == QMetaType::fromType<QJSValue>())
+                            available = available.value<QJSValue>().toVariant();
+                        const auto names = available.toStringList();
+                        report(names.size() == (audio ? 10 : 14) &&
+                                   names.contains(audio ? "filter.gain" : "filter.crop") &&
+                                   !names.contains(audio ? "filter.crop" : "filter.gain"),
+                               "each pane offers only its own filter domain");
+                        dialog->setProperty(audio ? "audioAddType" : "addType",
+                                            audio ? "filter.gain" : "filter.color-correction");
+                        settle();
+                        click(collect(pane, QStringLiteral("filterAdd")).front());
+                    }
+                    dialog->setProperty("audioAddType", QStringLiteral("filter.compressor"));
+                    settle();
+                    click(collect(audioPanes.front(), QStringLiteral("filterAdd")).front());
+                    const auto before =
+                        document.filterDetails(combinedOwner).value("effects").toList();
+                    click(collect(audioPanes.front(), QStringLiteral("filterUp")).front());
+                    const auto after =
+                        document.filterDetails(combinedOwner).value("effects").toList();
+                    report(before.size() == 3 && after.size() == 3 &&
+                               after[0].toMap().value("type") == "filter.compressor" &&
+                               after[1] == before[1] &&
+                               after[2].toMap().value("type") == "filter.gain",
+                           "audio reorder skips video filter and preserves its position");
+                    for (auto* pane : {videoPanes.front(), audioPanes.front()}) {
+                        const auto rows = collect(pane, QStringLiteral("assignedFilter"));
+                        if (!rows.isEmpty()) {
+                            click(rows.front());
+                            report(dialog->property("selected") ==
+                                       rows.front()->property("effectId"),
+                                   "clicking either pane selects shared filter settings");
+                        }
+                    }
+                    if (parser.isSet(shot_opt))
+                        grab().save(parser.value(shot_opt) +
+                                    QStringLiteral("/combined-filter-editor.png"));
+                }
+                dialog->setVisible(false);
+                document.removeSourceAndUses(combinedOwner);
             }
             document.removeSourceAndUses(owner);
             settle();

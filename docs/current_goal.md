@@ -4,6 +4,20 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Separate audio and video filter panes, 2026-10-21
+
+Filter editing now follows source capabilities: audio-only sources have one audio
+pane and no preview; silent visual sources have one video pane; combined sources
+have separate audio and video panes beside a shared preview/settings area. Each
+pane has its own domain-limited Add menu, Remove, Up, and Down controls. Selecting
+an entry in either pane selects its controls. Reordering skips the other domain
+without changing that domain's positions or order in the saved stack.
+
+Warning-free `-Werror` build; all 30 tests pass. Real UI checks cover both Add
+menus, cross-pane selection, and domain-local reordering. An initial monitoring
+assertion failed with the production app running; the full rerun passed after
+closing it.
+
 ## Filter editor interaction and source preview, 2026-10-21
 
 The editor follows the supplied OBS references: persistent assigned-filter list
