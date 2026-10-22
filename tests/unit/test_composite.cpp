@@ -357,6 +357,21 @@ LTEST_CASE(a_precomp_draws_the_other_scene_and_a_cycle_stops) {
     CHECK(picture.gaps.empty());
     CHECK_EQ(pixel(picture, 1, 1), std::tuple(0, 0, 255, 255));
 
+    CHECK(!lcomp::plan_canvas(project, project.canvases[0].id).ops.front().nested);
+    project.scenes[0].roots[0].blend.opacity = 0.5;
+    CHECK(lcomp::plan_canvas(project, project.canvases[0].id).ops.front().nested != nullptr);
+    project.scenes[0].roots[0].blend.opacity = 1;
+    project.scenes[1].roots[0].blend.mode = ldoc::BlendMode::Multiply;
+    CHECK(lcomp::plan_canvas(project, project.canvases[0].id).ops.front().nested != nullptr);
+    project.scenes[1].roots[0].blend.mode = ldoc::BlendMode::Normal;
+    ldoc::Effect correction;
+    correction.id = ldoc::Id::generate();
+    correction.type = "filter.color-correction";
+    project.scenes[1].effects = {correction};
+    CHECK(lcomp::plan_canvas(project, project.canvases[0].id).ops.front().nested != nullptr);
+    CHECK(lcomp::composite_canvas(project, project.canvases[0].id).pixels == picture.pixels);
+    project.scenes[1].effects.clear();
+
     // Point the inner scene back at the outer one. Drawing has to finish, and say why.
     ldoc::Node back = ldoc::make_node(ldoc::NodeKind::Precomp, "Back");
     std::get<ldoc::PrecompData>(back.data).scene = outer.id;

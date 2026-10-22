@@ -64,23 +64,29 @@ class Renderer {
         for (const auto& source : project.sources)
             if (source.type == "source.v4l2" && !deactivate_video_when_hidden(source))
                 video_session(source);
-        if (!cpu_ && !gpu_failed_ && !gpu_) {
+        std::erase_if(gpus_, [&](const auto& entry) { return !project.canvas(entry.first); });
+        auto& gpu = gpus_[canvas];
+        if (gpu_failed_)
+            gpu.reset();
+        if (!cpu_ && !gpu_failed_ && !gpu) {
             if (device()) {
                 std::string error;
-                gpu_ = libertas::rhi::GpuCompositor::create(*device_, error);
-                if (!gpu_)
+                gpu = libertas::rhi::GpuCompositor::create(*device_, error);
+                if (!gpu)
                     fail_gpu(error);
                 else
                     lc::info("GPU composite: {}", libertas::rhi::vk_device_name(*device_));
             } else
                 fail_gpu("no usable Vulkan device");
         }
-        auto frames = [this](const ldoc::Source& source) { return source_frame(source, bool(gpu_)); };
+        auto frames = [this, &gpu](const ldoc::Source& source) {
+            return source_frame(source, bool(gpu));
+        };
         auto plan = lcomp::plan_canvas(project, canvas, frames);
         next_animated_ = next_animated_ || lcomp::animated_plan(plan);
-        if (gpu_) {
+        if (gpu) {
             std::string error;
-            auto result = gpu_->render(plan, max_edge, error);
+            auto result = gpu->render(plan, max_edge, error);
             if (result)
                 return std::move(*result);
             // Work still in flight cannot have its resources or capture leases recycled.
@@ -90,7 +96,7 @@ class Renderer {
                 std::_Exit(1);
             }
             fail_gpu(error);
-            gpu_.reset();
+            gpu.reset();
             plan = lcomp::plan_canvas(project, canvas, [this](const ldoc::Source& source) {
                 return source_frame(source, false);
             });
@@ -314,7 +320,8 @@ class Renderer {
     std::map<std::string, Snapshot> held_;
     std::set<std::string> wanted_;
     // Destroy GPU views before capture images, and capture images before their device.
-    std::unique_ptr<libertas::rhi::GpuCompositor> gpu_;
+    // Each canvas keeps its own scratch images; alternating dimensions must not reallocate.
+    std::map<ldoc::Id, std::unique_ptr<libertas::rhi::GpuCompositor>> gpus_;
     bool cpu_ = false, require_gpu_ = false, device_failed_ = false, gpu_failed_ = false,
          capture_failed_ = false;
 

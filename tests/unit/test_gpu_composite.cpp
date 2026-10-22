@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <filesystem>
 #include <lcapture/screen.hpp>
 #include <lcomp/filters.hpp>
 #include <lrhi/composite.hpp>
@@ -109,6 +110,41 @@ LTEST_CASE(stock_video_filters_execute_on_cpu_and_gpu_from_the_same_scene) {
             compare(lcomp::execute_cpu(plan), *image);
         }
     }
+}
+
+LTEST_CASE(cached_masks_follow_file_replacement) {
+    namespace fs = std::filesystem;
+    const auto path = fs::temp_directory_path() / (ldoc::Id::generate().to_string() + ".webp");
+    fs::copy_file(fs::path(LIBERTAS_IMAGE_FIXTURES) / "alpha.webp", path);
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE(gpu);
+    auto project = show(32, 24);
+    ldoc::Effect mask;
+    mask.id = ldoc::Id::generate();
+    mask.type = "filter.mask";
+    mask.params["path"] = path.string();
+    mask.params["mode"] = std::string("alpha");
+    project.sources[0].effects = {mask};
+    std::vector<std::uint8_t> pixels(32 * 24 * 4, 255);
+    const auto plan = lcomp::plan_canvas(project, project.canvases[0].id, [&](const ldoc::Source&) {
+        return lcomp::CapturedPicture{32, 24, pixels.data(), pixels.size()};
+    });
+    std::vector<std::uint8_t> previous;
+    for (const auto* file : {"alpha.webp", "red.webp"}) {
+        fs::copy_file(fs::path(LIBERTAS_IMAGE_FIXTURES) / file, path,
+                      fs::copy_options::overwrite_existing);
+        for (int repeat = 0; repeat < 3; ++repeat) {
+            const auto image = gpu->render(plan, 0, error);
+            REQUIRE_MSG(image, "{}", error);
+            compare(lcomp::execute_cpu(plan), *image);
+            if (repeat == 0 && !previous.empty())
+                CHECK(image->pixels != previous);
+            previous = image->pixels;
+        }
+    }
+    fs::remove(path);
 }
 
 LTEST_CASE(sampling_modes_and_key_adjustments_match_on_both_backends) {
@@ -233,6 +269,7 @@ LTEST_CASE(a_4k_filter_chain_stays_within_the_compositor_memory_budget) {
         ldoc::Effect effect;
         effect.id = ldoc::Id::generate();
         effect.type = "filter.color-correction";
+        effect.params["brightness"] = 0.001;
         source.effects.push_back(effect);
     }
     const auto plan = lcomp::plan_canvas(p, p.canvases[0].id);
@@ -389,6 +426,45 @@ LTEST_CASE(host_video_uploads_to_a_4k_canvas) {
     if (std::getenv("LIBERTAS_BENCHMARK"))
         std::fprintf(stderr, "1440p host upload + 4K composite + 640 preview: %.3f ms/frame\n",
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() / count);
+}
+
+LTEST_CASE(nested_4k_capture_with_alternating_vertical_canvas) {
+    auto d = device();
+    std::string error;
+    auto gpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE_MSG(gpu, "{}", error);
+    auto project = show(3840, 2160);
+    auto inner = project.scenes.front();
+    inner.id = ldoc::Id::generate();
+    auto nested = ldoc::make_node(ldoc::NodeKind::Precomp, "nested capture");
+    std::get<ldoc::PrecompData>(nested.data).scene = inner.id;
+    project.scenes.front().roots = {nested};
+    project.scenes.push_back(inner);
+    std::vector<std::uint8_t> pixels(2560 * 1440 * 4, 255);
+    const auto plan = lcomp::plan_canvas(project, project.canvases[0].id, [&](const ldoc::Source&) {
+        return lcomp::CapturedPicture{2560, 1440, pixels.data(), pixels.size()};
+    });
+    auto verticalGpu = libertas::rhi::GpuCompositor::create(*d, error);
+    REQUIRE_MSG(verticalGpu, "{}", error);
+    lcomp::DrawPlan vertical;
+    vertical.width = 1080;
+    vertical.height = 1920;
+    for (const bool alternate : {false, true}) {
+        const int count = std::getenv("LIBERTAS_BENCHMARK") ? 120 : 3;
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < count; ++i) {
+            auto frame = gpu->render(plan, 960, error);
+            REQUIRE_MSG(frame, "{}", error);
+            CHECK_EQ(frame->pixels.front(), 255);
+            if (alternate)
+                REQUIRE_MSG(verticalGpu->render(vertical, 960, error), "{}", error);
+        }
+        std::fprintf(
+            stderr, "nested 4K capture%s: %.3f ms/frame\n", alternate ? " + vertical" : "",
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                    .count() /
+                count);
+    }
 }
 
 LTEST_CASE(a_real_capture_slot_stays_on_device_until_preview_readback) {

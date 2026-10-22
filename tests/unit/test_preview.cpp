@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <lcapture/audio.hpp>
+#include <ldoc/project_io.hpp>
 #include <mutex>
 #include <sys/wait.h>
 #include <thread>
@@ -763,7 +764,66 @@ LTEST_CASE(capture_reuses_one_snapshot_across_direct_and_nested_placements) {
     CHECK_EQ(complete, 20);
 }
 
+LTEST_CASE(measure_saved_scene_through_real_renderer) {
+    const auto* path = std::getenv("LIBERTAS_BENCH_PROJECT");
+    if (!path)
+        return;
+    auto opened = ldoc::open_project(path);
+    REQUIRE_MSG(opened, "{}", opened.error());
+    auto& project = opened->project;
+    const auto* name = std::getenv("LIBERTAS_BENCH_SCENE");
+    const auto scene = std::ranges::find_if(project.scenes, [&](const auto& entry) {
+        return entry.name == (name ? name : "FS.W.CAM");
+    });
+    REQUIRE(scene != project.scenes.end());
+    for (auto& deck : project.decks)
+        if (deck.canvas == scene->canvas)
+            deck.program_scene = scene->id;
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends);
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child);
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000));
+    REQUIRE(link.send_project(project, 960));
+    lcomp::PreviewFrame baseline, last;
+    for (int iteration = 0; iteration < 1920; ++iteration) {
+        const auto start = std::chrono::steady_clock::now();
+        bool ack = false;
+        while (!ack) {
+            const auto event = link.receive(3000);
+            REQUIRE(event && event->has_value());
+            REQUIRE((**event).kind != lcomp::PreviewEvent::Kind::Fault);
+            REQUIRE((**event).kind != lcomp::PreviewEvent::Kind::PeerGone);
+            if ((**event).kind == lcomp::PreviewEvent::Kind::Frame &&
+                (**event).frame.canvas == scene->canvas)
+                last = (**event).frame;
+            ack = (**event).kind == lcomp::PreviewEvent::Kind::Ack;
+        }
+        if (iteration == 119)
+            baseline = last;
+        std::this_thread::sleep_until(start + std::chrono::microseconds(16667));
+        if (iteration + 1 < 1920)
+            REQUIRE(link.refresh(960));
+    }
+    REQUIRE(last.rendered_frames > baseline.rendered_frames);
+    const auto count = last.rendered_frames - baseline.rendered_frames;
+    std::fprintf(
+        stderr, "%s live: %.3f ms/frame, %llu rendered, %llu missed after warmup\n",
+        scene->name.c_str(),
+        static_cast<double>(last.render_ns - baseline.render_ns) / static_cast<double>(count) / 1e6,
+        static_cast<unsigned long long>(count),
+        static_cast<unsigned long long>(last.render_lag_frames - baseline.render_lag_frames));
+    link.quit();
+    link.close();
+    CHECK_EQ(reap(*child, 3000), 0);
+}
+
 int main() {
+    if (std::getenv("LIBERTAS_BENCH_PROJECT"))
+        std::erase_if(ltest::registry(), [](const auto& test) {
+            return test.name != "measure_saved_scene_through_real_renderer";
+        });
     if (!std::getenv("LIBERTAS_TEST_CAPTURE") && !std::getenv("LIBERTAS_TEST_VIDEO") && !std::getenv("LIBERTAS_TEST_WINDOW"))
         std::erase_if(ltest::registry(), [](const auto& test) {
             return test.name == "capture_reuses_one_snapshot_across_direct_and_nested_placements";

@@ -430,6 +430,9 @@ VideoFilter resolve_filter(const ldoc::Effect& e, int w, int h, std::uint64_t ti
             p[9 + k] =
                 static_cast<float>((static_cast<unsigned>(n("color_add")) >> shift) & 255) / 255;
         }
+        if (p[0] == 1 && p[1] == 1 && p[2] == 0 && p[3] == 1 && p[4] == 0 && p[5] == 1 &&
+            p[6] == 1 && p[7] == 1 && p[8] == 1 && p[9] == 0 && p[10] == 0 && p[11] == 0)
+            out.kind = 0;
     } else if (e.type == "filter.crop") {
         out.kind = 2;
         p[0] = n("left");

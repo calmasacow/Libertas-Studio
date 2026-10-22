@@ -4,6 +4,37 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Nested-scene render performance, 2026-10-21
+
+Measured before changing the renderer: a 10-second `perf` sample showed capture
+conversion and GPU draw/allocation costs. Alternating a nested 4K canvas with a
+vertical canvas cost 28.1 ms in the GPU benchmark versus 11.4 ms for the nested
+canvas alone. One positional image pool was being rebuilt between canvas sizes.
+Each canvas now retains its own GPU compositor resources; deleted canvases release
+them. CPU fallback remains available.
+
+Unchanged normal-blend precomps can omit their isolation surface, provided opacity,
+geometry, filters and child blends make that equivalent. CPU and GPU share this
+plan optimization. Neutral color correction skips processing. GPU sampling avoids
+wide division where exact identity/32-bit arithmetic suffices. Alpha-only masks
+avoid redundant color conversions. Decoded mask/LUT images retain GPU uploads
+(maximum eight / 128 MiB, counted against target budget); file replacement creates
+a new decoded identity and invalidates the cached upload.
+
+Real `FS.W.CAM`, Main 2560x1440 plus 1080x1920 vertical, using actual capture devices:
+**9.417 ms/frame over 1,800 rendered frames after warmup**, 27 missed frames
+(1.48% of rendered + missed). This meets the requested 12-14 ms render target but
+is not a zero-drop claim or a 4K/live-encoding benchmark. Prior intermediate runs
+were 13.2-13.8 ms; mask upload caching delivered the largest final reduction.
+
+Reproduce without touching the operator's collection: copy it to a temporary
+folder, close the production app to release devices, then run
+`LIBERTAS_RENDER_BACKEND=gpu LIBERTAS_BENCH_PROJECT=/tmp/copy LIBERTAS_BENCH_SCENE=FS.W.CAM build-make/tests/unit/test_preview`.
+`LIBERTAS_BENCHMARK=1` additionally logs per-canvas cumulative render stats and GPU
+preparation/fence-wait samples. Full warning-free build and all 30 tests pass,
+including real monitoring, GPU/CPU equivalence, mask replacement, alpha animation,
+alpha audio, nested preview playback and the non-neutral eight-filter stress case.
+
 ## Transparent WebM and WebP media, 2026-10-21
 
 WebM with `alpha_mode=1` uses FFmpeg's libvpx VP8/VP9 decoder so block-side alpha

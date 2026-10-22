@@ -960,6 +960,19 @@ void paint_node(const ldoc::Project& project, const ldoc::Node& node, double par
         }
         target.drew = true;
         DrawOp op = operation(node, *rect, opacity);
+        // Normal source-over is associative. An unchanged, unfiltered scene needs
+        // no isolation surface unless one of its children blends with that surface.
+        if (node.effects.empty() && offscreen.filters.empty() && op.opacity == 1 &&
+            op.blend == ldoc::BlendMode::Normal && op.quarter == 0 && !op.flip_x && !op.flip_y &&
+            op.crop == std::array<int, 4>{} && rect->x0 == 0 && rect->y0 == 0 && rect->x1 == pw &&
+            rect->y1 == ph && pw == target.picture.width && ph == target.picture.height &&
+            std::ranges::all_of(offscreen.ops, [](const auto& child) {
+                return child.blend == ldoc::BlendMode::Normal;
+            })) {
+            for (auto& child : offscreen.ops)
+                target.picture.ops.push_back(std::move(child));
+            return;
+        }
         op.nested = std::make_shared<DrawPlan>(std::move(offscreen));
         append_filtered(node, std::move(op), pw, ph, target);
         return;
@@ -1158,9 +1171,11 @@ Picture execute_cpu(const DrawPlan& plan, bool transparent) {
         }
     }
     for (const auto& effect : plan.filters)
-        if (effect.enabled && (!filter_info(effect.type) || !filter_info(effect.type)->audio))
-            picture = filter_picture(
-                picture, resolve_filter(effect, picture.width, picture.height, plan.time_ns));
+        if (effect.enabled && (!filter_info(effect.type) || !filter_info(effect.type)->audio)) {
+            const auto filter = resolve_filter(effect, picture.width, picture.height, plan.time_ns);
+            if (filter.kind != 0)
+                picture = filter_picture(picture, filter);
+        }
     return picture;
 }
 

@@ -6,10 +6,12 @@
 #include "ldoc/json.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
-#include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <format>
@@ -672,6 +674,13 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
                     total.missed += static_cast<std::uint64_t>(budgets) - 1;
                 }
                 ++total.frames;
+                if (std::getenv("LIBERTAS_BENCHMARK") && total.frames % 120 == 0)
+                    std::fprintf(stderr, "render %s: %.3f ms average, %llu frames, %llu missed\n",
+                                 canvas.name.c_str(),
+                                 static_cast<double>(total.ns) / static_cast<double>(total.frames) /
+                                     1e6,
+                                 static_cast<unsigned long long>(total.frames),
+                                 static_cast<unsigned long long>(total.missed));
                 picture.render_ns = total.ns;
                 picture.rendered_frames = total.frames;
                 picture.render_lag_frames = total.missed;

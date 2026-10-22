@@ -7,6 +7,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <drm_fourcc.h>
@@ -106,6 +109,14 @@ struct GpuCompositor::Impl {
     std::size_t image_at = 0, upload_at = 0;
     std::uint64_t allocated = 0;
 
+    struct Auxiliary {
+        std::shared_ptr<lcomp::Picture> pixels;
+        std::unique_ptr<Image> image;
+    };
+
+    std::vector<Auxiliary> auxiliaries;
+    std::uint64_t auxiliary_bytes = 0;
+
     struct History {
         int width = 0, height = 0;
         float delay = 0;
@@ -184,6 +195,7 @@ struct GpuCompositor::Impl {
         if (!c)
             return;
         foreign.clear();
+        auxiliaries.clear();
         images.clear();
         uploads.clear();
         readback.reset();
@@ -555,6 +567,8 @@ struct GpuCompositor::Impl {
                 continue;
             const auto resolved =
                 lcomp::resolve_filter(effect, result->width, result->height, plan.time_ns);
+            if (resolved.kind == 0)
+                continue;
             if (resolved.kind == 13) {
                 if (resolved.values[0] > 0)
                     result = &delayed(*result, resolved);
@@ -577,9 +591,28 @@ struct GpuCompositor::Impl {
                         sizeof(resolved.values));
             Image* auxiliary = nullptr;
             if (resolved.auxiliary) {
-                lcomp::DrawOp mask;
-                mask.image = *resolved.auxiliary;
-                auxiliary = &source(mask);
+                const auto cached = std::ranges::find_if(auxiliaries, [&](const auto& item) {
+                    return item.pixels == resolved.auxiliary;
+                });
+                if (cached != auxiliaries.end()) {
+                    auxiliary = cached->image.get();
+                } else {
+                    lcomp::DrawOp mask;
+                    mask.image.width = resolved.auxiliary->width;
+                    mask.image.height = resolved.auxiliary->height;
+                    mask.image.stride = resolved.auxiliary->stride;
+                    mask.image.borrowed = resolved.auxiliary->read_from();
+                    auxiliary = &source(mask);
+                    const auto bytes = static_cast<std::uint64_t>(mask.image.width) *
+                                       static_cast<std::uint64_t>(mask.image.height) * 8;
+                    // Decode caches replace immutable pictures when files change. Keep at
+                    // most eight / 128 MiB of GPU copies, counted in the target budget.
+                    if (auxiliaries.size() < 8 && auxiliary_bytes + bytes <= 128ull * 1024 * 1024) {
+                        auxiliaries.push_back(
+                            {resolved.auxiliary, std::move(images[image_at - 1])});
+                        auxiliary_bytes += bytes;
+                    }
+                }
             }
             dispatch(output, *result, filter, packed, resolved.width, resolved.height, auxiliary);
             result = &output;
@@ -588,6 +621,7 @@ struct GpuCompositor::Impl {
     }
 
     lcomp::Picture render(const lcomp::DrawPlan& plan, std::uint32_t max_edge) {
+        const auto begin = std::chrono::steady_clock::now();
         lcomp::Picture out;
         out.width = plan.width;
         out.height = plan.height;
@@ -599,7 +633,12 @@ struct GpuCompositor::Impl {
         checked(vkResetDescriptorPool(c->device, descriptors, 0), "reset composite descriptors");
         checked(vkResetFences(c->device, 1, &fence), "reset composite fence");
         image_at = upload_at = 0;
-        allocated = 0;
+        std::erase_if(auxiliaries, [](const auto& item) { return item.pixels.use_count() == 1; });
+        auxiliary_bytes = 0;
+        for (const auto& item : auxiliaries)
+            auxiliary_bytes += static_cast<std::uint64_t>(item.image->width) *
+                               static_cast<std::uint64_t>(item.image->height) * 8;
+        allocated = auxiliary_bytes;
         acquired.clear();
         recycled = std::move(retired);
         retired.clear();
@@ -651,8 +690,16 @@ struct GpuCompositor::Impl {
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &cmd;
         checked(vkQueueSubmit(c->queue, 1, &submit, fence), "submit composite");
+        const auto submitted = std::chrono::steady_clock::now();
         checked(vkWaitForFences(c->device, 1, &fence, VK_TRUE, 2'000'000'000ULL),
                 "GPU fence failed");
+        if (std::getenv("LIBERTAS_BENCHMARK") && ++timing_frames_ % 120 == 0)
+            std::fprintf(stderr, "GPU %dx%d prepare %.3f ms, wait %.3f ms\n", plan.width,
+                         plan.height,
+                         std::chrono::duration<double, std::milli>(submitted - begin).count(),
+                         std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - submitted)
+                             .count());
         out.pixels.resize(bytes);
         std::memcpy(out.pixels.data(), readback->mapped, bytes);
         images.resize(image_at);
@@ -661,6 +708,8 @@ struct GpuCompositor::Impl {
         acquired.clear();
         return out;
     }
+
+    unsigned timing_frames_ = 0;
 };
 
 GpuCompositor::GpuCompositor() : impl_(std::make_unique<Impl>()) {}
