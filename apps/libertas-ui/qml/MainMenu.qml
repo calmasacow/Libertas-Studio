@@ -211,7 +211,12 @@ Controls.MenuBar {
                 onObjectRemoved: (index, object) => extraCanvases.removeItem(object)
             }
         }
-        Pending { text: qsTr("Countdown Timers") }
+        Entry {
+            text: qsTr("Countdown Timers")
+            checkable: true
+            checked: { const revision = Workspace.revision; return Workspace.layoutHasPanel("countdowns"); }
+            onTriggered: checked ? bar.showPanel("countdowns") : Workspace.closePanel("countdowns")
+        }
         Pending { text: qsTr("Chat") }
         Pending { text: qsTr("Activity") }
         Pending { text: qsTr("Stream Info") }

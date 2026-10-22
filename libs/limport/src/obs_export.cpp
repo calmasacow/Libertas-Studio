@@ -451,9 +451,27 @@ struct Exporter {
         root["sources"] = J(Json::arrayValue);
         root["groups"] = J(Json::arrayValue);
         root["scene_order"] = J(Json::arrayValue);
+        root["transitions"] = J(Json::arrayValue);
         for (const auto& scene : project.scenes)
             records.emplace(scene.id, record(scene.name, canvasSize(scene.canvas)));
         for (const auto& src : project.sources) {
+            if (setting(src, "transitionStinger", false)) {
+                J transition;
+                transition["name"] = src.name;
+                transition["id"] = "obs_stinger_transition";
+                auto& settings = transition["settings"];
+                settings["path"] = path(setting(src, "localFile", std::string{}));
+                settings["transition_point"] = Json::Int64(setting(src, "stingerCutMs", std::int64_t{500}));
+                settings["tp_type"] = 0;
+                settings["preload"] = true;
+                settings["hw_decode"] = setting(src, "hardwareDecode", true);
+                root["transitions"].append(transition);
+                for (const auto& deck : project.decks)
+                    if (!project.canvases.empty() && deck.canvas == project.canvases.front().id &&
+                        deck.transition == "transition.stinger:" + src.id.to_string())
+                        root["current_transition"] = src.name;
+                continue;
+            }
             const auto dimension = [&](const char* key, std::int64_t fallback) {
                 const double value =
                     setting(src, key, static_cast<double>(setting(src, key, fallback)));

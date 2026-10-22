@@ -5,6 +5,7 @@
 // Offscreen checks select CPU; normal runs try GPU and retain the CPU fallback (ADR-0042).
 
 #include "lcomp/preview.hpp"
+#include <lcomp/countdown.hpp>
 #include "lipc/fd.hpp"
 #include "source_worker.hpp"
 #include "audio_sources.hpp"
@@ -49,8 +50,88 @@ class Renderer {
                (!require_gpu_ && platform && std::strcmp(platform, "offscreen") == 0);
     }
 
-    lcomp::Picture render(const ldoc::Project& project, const ldoc::Id& canvas,
+    ~Renderer() {
+        for (const auto& [id, session] : workers_) session->worker->stop();
+        workers_.clear();
+    }
+
+    const ldoc::Project& prepare(const ldoc::Project& project) {
+        effective_.reset();
+        transition_dirty_ = false;
+        const auto now = std::chrono::steady_clock::now();
+        std::erase_if(transitions_, [&](const auto& entry) {
+            return std::ranges::none_of(project.decks, [&](const auto& deck) { return deck.id == entry.first; });
+        });
+        for (const auto& deck : project.decks) {
+            auto [it, inserted] = transitions_.try_emplace(deck.id);
+            auto& state = it->second;
+            if (inserted) { state.target = deck.program_scene; continue; }
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - state.start).count();
+            auto previous = state.playing && elapsed < state.cut_ms ? state.from : state.target;
+            if (state.target != deck.program_scene) {
+                transition_dirty_ = true;
+                state.target = deck.program_scene;
+                state.playing = false;
+                if (previous && state.target && project.scene(*previous) &&
+                    deck.transition.starts_with("transition.stinger:")) {
+                    const auto id = ldoc::Id::parse(deck.transition.substr(19));
+                    const auto* source = id ? project.source(*id) : nullptr;
+                    if (source && source->type == "source.media" &&
+                        lcomp::timer_flag(source->settings, "transitionStinger")) {
+                        auto& worker = worker_session(*source);
+                        std::lock_guard lock(worker.mu);
+                        if (worker.last) {
+                            state.source = *id;
+                            state.from = previous;
+                            state.start = now;
+                            state.cut_ms = std::clamp<std::int64_t>(
+                                lcomp::timer_number(source->settings, "stingerCutMs", 500), 0, 600000);
+                            state.duration_ms = std::clamp<std::int64_t>(
+                                lcomp::timer_number(source->settings, "stingerDurationMs", 1000), 1, 600000);
+                            state.playing = state.cut_ms <= state.duration_ms;
+                            if (state.playing) worker.worker->restart();
+                        } else lc::warn("stinger {} is not preloaded; using Cut", source->name);
+                    } else lc::warn("stinger source missing; using Cut");
+                }
+            }
+            if (!state.playing) continue;
+            const auto position = std::chrono::duration_cast<std::chrono::milliseconds>(now - state.start).count();
+            if (position >= state.duration_ms || !project.source(state.source)) {
+                state.playing = false;
+                transition_dirty_ = true;
+                continue;
+            }
+            if (!effective_) effective_ = project;
+            auto selected = std::ranges::find(effective_->decks, deck.id, &ldoc::Deck::id);
+            const auto scene_id = position < state.cut_ms ? state.from : state.target;
+            const auto* source = effective_->source(state.source);
+            const auto* canvas = effective_->canvas(deck.canvas);
+            if (!scene_id || !effective_->scene(*scene_id) || !source || !canvas) continue;
+            auto overlay = ldoc::make_node(ldoc::NodeKind::Source, source->name);
+            overlay.id = state.overlay;
+            auto& data = std::get<ldoc::SourceData>(overlay.data);
+            data.source = state.source;
+            if (!effective_->buses.empty()) data.audio.bus = effective_->buses.front().id;
+            overlay.transform.scale = {
+                static_cast<double>(canvas->width) / static_cast<double>(std::max<std::int64_t>(1, lcomp::timer_number(source->settings, "width", 1920))),
+                static_cast<double>(canvas->height) / static_cast<double>(std::max<std::int64_t>(1, lcomp::timer_number(source->settings, "height", 1080)))};
+            auto underlay = ldoc::make_node(ldoc::NodeKind::Precomp, "Transition scene");
+            underlay.id = state.underlay;
+            std::get<ldoc::PrecompData>(underlay.data).scene = *scene_id;
+            ldoc::Scene scene;
+            scene.id = state.scene;
+            scene.name = "Stinger transition";
+            scene.canvas = deck.canvas;
+            scene.roots = {std::move(overlay), std::move(underlay)};
+            selected->program_scene = scene.id;
+            effective_->scenes.push_back(std::move(scene));
+        }
+        return effective_ ? *effective_ : project;
+    }
+
+    lcomp::Picture render(const ldoc::Project& original, const ldoc::Id& canvas,
                           std::uint32_t max_edge) {
+        const auto& project = effective_ ? *effective_ : original;
         std::erase_if(videos_, [&](auto& item) {
             const auto* source = project.source(item.second->source.id);
             if (!source || source->type != "source.v4l2" ||
@@ -69,9 +150,12 @@ class Renderer {
             return !source || source->settings != item.second->source.settings ||
                    source->type != item.second->source.type;
         });
-        for (const auto& source : project.sources)
-            if (retained_media(source))
-                worker_session(source);
+        // Keep-running backgrounds get ready before paused standby clips.
+        for (bool restart : {false, true})
+            for (const auto& source : project.sources)
+                if (retained_media(source) &&
+                    lcomp::timer_flag(source.settings, "restartOnActivate", true) == restart)
+                    worker_session(source);
         std::erase_if(gpus_, [&](const auto& entry) { return !project.canvas(entry.first); });
         auto& gpu = gpus_[canvas];
         if (gpu_failed_)
@@ -113,6 +197,8 @@ class Renderer {
     }
 
     bool fresh() const {
+        if (transition_dirty_ || std::ranges::any_of(transitions_, [](const auto& entry) { return entry.second.playing; }))
+            return true;
         if (animated_)
             return true;
         for (const auto& [id, session] : workers_) {
@@ -178,6 +264,17 @@ class Renderer {
     }
 
   private:
+    struct Transition {
+        std::optional<ldoc::Id> target, from;
+        ldoc::Id source, overlay = ldoc::Id::generate(),
+                 underlay = ldoc::Id::generate(), scene = ldoc::Id::generate();
+        std::chrono::steady_clock::time_point start{};
+        std::int64_t cut_ms = 500, duration_ms = 1000;
+        bool playing = false;
+    };
+    std::map<ldoc::Id, Transition> transitions_;
+    std::optional<ldoc::Project> effective_;
+    bool transition_dirty_ = false;
     AudioSources& audio_;
     struct WorkerSession {
         ldoc::Source source;
@@ -196,7 +293,8 @@ class Renderer {
     static bool retained_media(const ldoc::Source& source) {
         const auto it = source.settings.find("closeWhenInactive");
         const auto* close = it == source.settings.end() ? nullptr : std::get_if<bool>(&it->second);
-        return (source.type == "source.media" || source.type == "source.playlist") &&
+        return (source.type == "source.media" || source.type == "source.playlist" ||
+                (source.type == "source.text" && lcomp::timer_flag(source.settings, "countdown.enabled"))) &&
                !(close && *close);
     }
 
@@ -218,8 +316,7 @@ class Renderer {
                 ++ptr->sequence;
             }, [this, ptr, id = source.id](auto pcm) {
                 if (ptr->active.load()) audio_.ingest(id, pcm);
-            });
-            session->worker->set_active(false);
+            }, false);
             workers_.emplace(id, std::move(session));
         }
         return *workers_.at(id);
@@ -463,7 +560,7 @@ int main() {
         [&renderer] { return renderer.fresh(); },
         [&renderer](const ldoc::Project& p, const ldoc::Id& id, std::uint32_t edge) {
             return renderer.render(p, id, edge);
-        }, [&audio](const ldoc::Project& p) { return audio.meters(p); });
+        }, [&audio, &renderer](const ldoc::Project& p) { return audio.meters(renderer.prepare(p)); });
     if (!served) {
         std::fprintf(stderr, "libertas-render: %s\n", served.error().c_str());
         return 1;

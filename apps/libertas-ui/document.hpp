@@ -96,10 +96,20 @@ class Document : public QObject {
     Q_PROPERTY(QStringList problems READ problems NOTIFY changed)
     Q_PROPERTY(QString monitoringOutput READ monitoringOutput NOTIFY changed)
     Q_PROPERTY(QStringList blendModes READ blendModes CONSTANT)
+    Q_PROPERTY(QVariantList countdowns READ countdowns NOTIFY changed)
 
 public:
     explicit Document(QObject* parent = nullptr);
     ~Document() override;
+    [[nodiscard]] QVariantList countdowns() const;
+    Q_INVOKABLE QVariantList countdownTextSources() const;
+    Q_INVOKABLE QVariantList countdownScenes() const;
+    Q_INVOKABLE QString addCountdown(const QString& sourceId);
+    Q_INVOKABLE void configureCountdown(const QString& sourceId, const QVariantMap& settings);
+    Q_INVOKABLE void controlCountdown(const QString& sourceId, const QString& action);
+    Q_INVOKABLE QVariantMap countdownStatus(const QString& sourceId) const;
+    Q_INVOKABLE void removeCountdown(const QString& sourceId);
+    Q_INVOKABLE bool importCountdowns(const QString& path);
 
     /// Where to open from. Empty means a new, unsaved document. Call before the QML engine
     /// instantiates the singleton.
@@ -464,8 +474,12 @@ public:
 
     /// Transitions this build can name, as {id, title}. One of them is a cut, which is the only
     /// one that needs no renderer to be honest about.
-    Q_PROPERTY(QVariantList transitions READ transitions CONSTANT)
+    Q_PROPERTY(QVariantList transitions READ transitions NOTIFY changed)
     [[nodiscard]] QVariantList transitions() const;
+    Q_INVOKABLE QVariantMap stingerSettings(const QString& deckId) const;
+    Q_INVOKABLE void setStingerTiming(const QString& deckId, int cutMs, int durationMs);
+    Q_INVOKABLE bool addStinger(const QString& deckId, const QString& name, const QString& path,
+                                int cutMs, int durationMs);
     Q_PROPERTY(QVariantList destinationKinds READ destinationKinds CONSTANT)
     [[nodiscard]] QVariantList destinationKinds() const;
     Q_PROPERTY(QVariantList codecs READ codecs CONSTANT)
@@ -709,6 +723,7 @@ private:
     /// that removing the current canvas cannot leave the shell pointing at nothing.
     QString current_canvas_;
     QTimer autosave_;
+    QTimer countdown_actions_;
 };
 
 } // namespace libertas::ui

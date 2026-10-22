@@ -4,10 +4,13 @@
 #include "document.hpp"
 
 #include "lcomp/composite.hpp"
+#include <lcomp/countdown.hpp>
 #include "ldoc/command.hpp"
 
 #include <QElapsedTimer>
+#include <QDateTime>
 #include <QFontDatabase>
+#include <QFileInfo>
 #include <QImageReader>
 #include <QProcess>
 #include <QStandardPaths>
@@ -120,6 +123,19 @@ Document::Document(QObject* parent) : QObject(parent) {
         if (session_->dirty() && !session_->path().empty())
             save();
     });
+
+    countdown_actions_.setInterval(100);
+    connect(&countdown_actions_, &QTimer::timeout, this, [this] {
+        QStringList ended;
+        for (const auto& source : session_->project().sources)
+            if (source.type == "source.text" &&
+                lcomp::timer_flag(source.settings, "countdown.enabled") &&
+                lcomp::timer_flag(source.settings, "countdown.running") &&
+                lcomp::countdown(source.settings, QDateTime::currentMSecsSinceEpoch()).ended)
+                ended << id_str(source.id);
+        for (const auto& id : ended) controlCountdown(id, "finish");
+    });
+    countdown_actions_.start();
 
     // Which scene each canvas starts on is settled by rebuild(), which does it per canvas and
     // has to anyway -- a canvas can gain its first scene at any time.
@@ -2281,6 +2297,8 @@ QVariantMap Document::screenDetails(const QString& connector) const {
 
 bool Document::hasLiveSource() const {
     const ldoc::Project& project = session_->project();
+    for (const auto& deck : project.decks)
+        if (deck.transition.starts_with("transition.stinger:")) return true;
     // Walks every canvas's program scene, because any canvas being live is enough to keep the
     // preview republishing -- the renderer composites all of them on one commit.
     for (const ldoc::Canvas& canvas : project.canvases) {
@@ -2307,7 +2325,8 @@ bool Document::hasLiveSource() const {
             const auto* source = std::get_if<ldoc::SourceData>(&node.data);
             const ldoc::Source* src =
                 source && source->source ? project.source(*source->source) : nullptr;
-            if (src && is_live_source(src->type))
+            if (src && (is_live_source(src->type) ||
+                        lcomp::timer_flag(src->settings, "countdown.enabled")))
                 live = true;
         };
         for (const ldoc::Node& root : scene->roots)
@@ -3093,6 +3112,11 @@ QVariantList Document::transitions() const {
         m["implemented"] = std::string_view{e.id} == "transition.cut";
         out.append(m);
     }
+    for (const auto& source : session_->project().sources) {
+        if (!lcomp::timer_flag(source.settings, "transitionStinger")) continue;
+        out.push_back(QVariantMap{{"id", QStringLiteral("transition.stinger:") + id_str(source.id)},
+                                  {"title", qstr(source.name)}, {"implemented", true}});
+    }
     return out;
 }
 
@@ -3137,6 +3161,70 @@ QVariantList Document::codecs() const {
         out.append(m);
     }
     return out;
+}
+
+QVariantMap Document::stingerSettings(const QString& deckId) const {
+    const auto id = parse_id(deckId);
+    for (const auto& deck : session_->project().decks) {
+        if (!id || deck.id != *id || !deck.transition.starts_with("transition.stinger:")) continue;
+        const auto source_id = ldoc::Id::parse(deck.transition.substr(19));
+        const auto* source = source_id ? session_->project().source(*source_id) : nullptr;
+        if (!source) return {};
+        return {{"sourceId", id_str(source->id)}, {"file", qstr(lcomp::timer_text(source->settings, "localFile"))},
+                {"cutMs", QVariant::fromValue(lcomp::timer_number(source->settings, "stingerCutMs", 500))},
+                {"durationMs", QVariant::fromValue(lcomp::timer_number(source->settings, "stingerDurationMs", 1000))}};
+    }
+    return {};
+}
+
+void Document::setStingerTiming(const QString& deckId, int cutMs, int durationMs) {
+    const auto details = stingerSettings(deckId);
+    const auto id = parse_id(details.value("sourceId").toString());
+    const auto* source = id ? session_->project().source(*id) : nullptr;
+    if (!source) return;
+    if (cutMs < 0 || durationMs < 1 || durationMs > 600000 || cutMs > durationMs) {
+        emit notice(QStringLiteral("Stinger cut point must be within its duration.")); return;
+    }
+    auto copy = *source;
+    copy.settings["stingerCutMs"] = static_cast<std::int64_t>(cutMs);
+    copy.settings["stingerDurationMs"] = static_cast<std::int64_t>(durationMs);
+    run(ldoc::SetSource{std::move(copy)});
+}
+
+bool Document::addStinger(const QString& deckId, const QString& name, const QString& path,
+                           int cutMs, int durationMs) {
+    const auto id = parse_id(deckId);
+    const auto& project = session_->project();
+    const auto deck = std::ranges::find(project.decks, id.value_or(ldoc::Id{}), &ldoc::Deck::id);
+    const QFileInfo file(path);
+    if (!id || deck == project.decks.end() || name.trimmed().isEmpty() || name.size() > 128 ||
+        !file.isAbsolute() || !file.isFile() || !file.isReadable() ||
+        durationMs <= 0 || durationMs > 600000 || cutMs < 0 || cutMs > durationMs) {
+        emit notice(QStringLiteral("Choose a readable media file and a cut point within its duration."));
+        return false;
+    }
+    ldoc::Source source;
+    source.id = ldoc::Id::generate();
+    source.name = to_std(name.trimmed());
+    source.type = "source.media";
+    source.settings["localFile"] = file.absoluteFilePath().toStdString();
+    source.settings["loop"] = false;
+    source.settings["clearOnEnd"] = true;
+    source.settings["restartOnActivate"] = true;
+    source.settings["closeWhenInactive"] = false;
+    source.settings["transitionStinger"] = true;
+    source.settings["stingerCutMs"] = static_cast<std::int64_t>(cutMs);
+    source.settings["stingerDurationMs"] = static_cast<std::int64_t>(durationMs);
+    if (const auto* canvas = project.canvas(deck->canvas)) {
+        source.settings["width"] = static_cast<std::int64_t>(canvas->width);
+        source.settings["height"] = static_cast<std::int64_t>(canvas->height);
+    }
+    auto next = *deck;
+    next.transition = "transition.stinger:" + source.id.to_string();
+    next.transition_ms = durationMs;
+    run(ldoc::make_batch({ldoc::AddSource{source, project.sources.size()}, ldoc::SetDeck{next}},
+                         "Add stinger transition"));
+    return true;
 }
 
 void Document::edit_deck(const QString& id, const std::function<void(ldoc::Deck&)>& change) {

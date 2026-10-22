@@ -1,5 +1,9 @@
 // SPDX-FileCopyrightText: Libertas-Studio contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
+extern "C" {
+#include <libavformat/avformat.h>
+}
+#include <chrono>
 #include <QFont>
 #include <QFontMetrics>
 #include <QImageReader>
@@ -744,6 +748,83 @@ struct Converter {
         return n;
     }
 
+    void stingers(const J& root) {
+        if (root.isMember("transitions") && !root["transitions"].isArray())
+            throw std::runtime_error("transitions must be an array");
+        for (const auto& item : root["transitions"]) {
+            const auto type = str(item, "id");
+            const auto name = str(item, "name");
+            if (type == "streamelements_transition_audio_wrapper_source") {
+                result.warnings.push_back(name + ": obsolete StreamElements transition ignored");
+                continue;
+            }
+            if (type != "obs_stinger_transition") {
+                result.warnings.push_back(name + ": transition type unavailable; uses Cut");
+                continue;
+            }
+            const auto& settings = item["settings"];
+            if (!settings.isObject()) throw std::runtime_error("stinger settings must be an object");
+            if (flag(settings, "track_matte_enabled")) {
+                result.warnings.push_back(name + ": track-matte stinger unsupported; uses Cut");
+                continue;
+            }
+            Entry entry; entry.name = name;
+            const auto file = path(entry, str(settings, "path"));
+            std::error_code file_error;
+            if (!fs::is_regular_file(file, file_error)) {
+                result.warnings.push_back(name + ": stinger file unavailable; uses Cut"); continue;
+            }
+            auto cut = static_cast<std::int64_t>(integer(settings, "transition_point", 0, 0, 600000));
+            const bool frame_timing = integer(settings, "tp_type", 0, 0, 1) == 1;
+            auto* input = avformat_alloc_context();
+            if (!input) throw std::runtime_error("stinger metadata allocation failed");
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            input->interrupt_callback = {[](void* data) {
+                return std::chrono::steady_clock::now() >
+                       *static_cast<std::chrono::steady_clock::time_point*>(data) ? 1 : 0;
+            }, &deadline};
+            input->protocol_whitelist = av_strdup("file");
+            const int opened = avformat_open_input(&input, file.c_str(), nullptr, nullptr);
+            const int stream = opened >= 0 && avformat_find_stream_info(input, nullptr) >= 0
+                ? av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0) : -1;
+            if (stream < 0 || input->duration <= 0 || input->duration > 600ll * AV_TIME_BASE) {
+                avformat_close_input(&input);
+                result.warnings.push_back(name + ": stinger duration unavailable; uses Cut"); continue;
+            }
+            const auto duration = input->duration / (AV_TIME_BASE / 1000);
+            const auto rate = av_guess_frame_rate(input, input->streams[stream], nullptr);
+            const auto width = input->streams[stream]->codecpar->width;
+            const auto height = input->streams[stream]->codecpar->height;
+            if (frame_timing && rate.num > 0 && rate.den > 0)
+                cut = av_rescale_q(cut, av_inv_q(rate), AVRational{1, 1000});
+            avformat_close_input(&input);
+            if (width < 1 || height < 1 || width > 8192 || height > 8192 || cut > duration ||
+                (frame_timing && (rate.num <= 0 || rate.den <= 0))) {
+                result.warnings.push_back(name + ": invalid stinger geometry/timing; uses Cut"); continue;
+            }
+            ldoc::Source source;
+            source.id = ldoc::Id::generate(); source.name = name; source.type = "source.media";
+            source.settings["localFile"] = file;
+            source.settings["loop"] = false;
+            source.settings["clearOnEnd"] = true;
+            source.settings["hardwareDecode"] = flag(settings, "hw_decode", true);
+            source.settings["restartOnActivate"] = true;
+            source.settings["closeWhenInactive"] = false;
+            source.settings["transitionStinger"] = true;
+            source.settings["stingerCutMs"] = cut;
+            source.settings["stingerDurationMs"] = static_cast<std::int64_t>(duration);
+            source.settings["width"] = static_cast<std::int64_t>(width);
+            source.settings["height"] = static_cast<std::int64_t>(height);
+            if (name == str(root, "current_transition")) {
+                auto& deck = result.project.decks.front();
+                deck.transition = "transition.stinger:" + source.id.to_string();
+                deck.transition_ms = static_cast<std::int32_t>(duration);
+            }
+            result.project.sources.push_back(std::move(source));
+            result.warnings.push_back(name + ": stinger imported; audio uses a cut at transition point (no crossfade)");
+        }
+    }
+
     void run(const J& root) {
         if (!root.isObject() || !root["sources"].isArray())
             throw std::runtime_error("OBS collection needs a sources array");
@@ -877,8 +958,9 @@ struct Converter {
                                   "track/mixer configuration are not imported.");
         result.warnings.push_back("Shared audio placements, including nested scenes, can sum more "
                                   "than once; review routes before use.");
+        stingers(root);
         result.warnings.push_back(
-            "Transitions use Cut. Hotkeys, outputs, plugins and unmapped source "
+            "Unavailable transitions use Cut. Hotkeys, outputs, plugins and unmapped source "
             "options are retained only in obs-original.json.");
     }
 };

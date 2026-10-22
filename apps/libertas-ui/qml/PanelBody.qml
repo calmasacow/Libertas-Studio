@@ -61,6 +61,8 @@ Item {
                 return logComponent;
             case "audio-mixer":
                 return mixerComponent;
+            case "countdowns":
+                return countdownsComponent;
             case "controls":
                 return controlsComponent;
             case "outputs":
@@ -73,6 +75,11 @@ Item {
                 return null;
             }
         }
+    }
+
+    Component {
+        id: countdownsComponent
+        CountdownsPanel {}
     }
 
     Component {

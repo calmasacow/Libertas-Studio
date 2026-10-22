@@ -4,6 +4,55 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Native countdown dock and file-backed stingers, 2026-10-22
+
+**Docks → Countdown Timers** is now functional. Create timer text or bind an
+existing text source; Start/Pause/Reset, remaining/elapsed/target modes, displayed
+time units, leading zeros, `%time%` formatting, end message and optional end scene
+are available. State/configuration lives on the text source; workers paint changing
+text without document writes per tick. Timers remain shared across placements.
+Import OBS timers selects a companion config explicitly and matches unique text
+source names. The operator's two bindings live in
+`~/.config/obs-studio/plugin_config/obs-plugin-countdown/config.json`.
+Color rules, hotkeys, stream triggers and smoothing are reported as unsupported;
+raw imported timer configuration is retained. This is not full plugin equivalence.
+
+**Controls → Add stinger…** creates/selects a file-backed transition for that deck.
+Duration and cut point are editable; Edit stinger media opens normal source
+properties. The renderer preloads media, overlays alpha through the shared CPU/GPU
+scene plan, switches underlying scenes at cut point and routes transition audio.
+Repeated transitions rewind existing decoders. Interrupted transitions start from
+the currently visible underlying scene. Initial project load does not play one.
+Missing/unready stingers fall back to Cut with a diagnostic. Track mattes and audio
+crossfade are not supported; underlying audio switches at cut point.
+
+OBS import/export preserves supported stingers. Actual collection reimport into a
+temporary directory recovered Glitchy (400 ms cut / 1080 ms clip) and MarathonGlitch
+(1500 ms cut / 3504 ms clip), selecting MarathonGlitch. Existing saved collection
+is not rewritten by that check. See ADR-0068.
+
+Full-collection GPU checks, Main 2560x1440, saved operator collection copied to a
+temporary directory, measured **22.96 ms to first frame/ack for FS.W.CAM → START**
+and **34.18 ms for FS.W.CAM → START.CD**, after all media had preloaded. One expected
+partial-picture gap remains for the audio-only media placement. Starting every Qt
+player together initially took 11-12 seconds. Workers now probe independently, then
+limit inactive QMediaPlayer starts to two at once, prioritizing keep-running media;
+foreground activation bypasses that queue. Silent alpha never waits for a Qt slot.
+A fresh full-collection run measured Starting.MS ready at 346 ms, the background
+at 4578 ms, and the cut at six seconds delivered its first frame/ack in 47.82 ms
+with only the expected audio-only picture gap. A second run measured background
+readiness at 2956 ms and FS.W.CAM → START.CD at 25.39 ms after six seconds.
+Initial warmup remains; these assets
+resolve through GVFS to an SMB share. Restricting Qt hardware selection to CUDA did
+not improve startup; automatic selection remains. CPU perf sampling did not isolate
+the elapsed startup wait. Worker shutdown requests all stops before joining,
+preventing serial teardown delays across retained media.
+
+Final build is warning-free under `-Werror`; all **30/30** checks pass with real
+GPU and monitoring enabled (179 seconds). Checks include real countdown UI/actions,
+worker text changes, stinger alpha/cut/audio, import mappings and foreground media
+activation while inactive startup slots are occupied.
+
 ## Media activation and fast scene cuts, 2026-10-22
 
 Unseen media workers were destroyed after every scene change. Opening the actual
@@ -112,12 +161,12 @@ category. The category-change handler previously depended on a derived QML bindi
 that could still hold the preceding category, yielding an empty source query.
 The UI self-check now switches categories and checks actual scene tiles.
 
-Source Clone and Countdown are **not implemented user workflows**. Countdown
-Timers in Tools is a placeholder. ReferenceData exists in the document model but
-the compositor rejects reference nodes; it is not a working source-clone port.
-The approved clone/countdown requirements below remain outstanding. Reference
-repositories inspected at `/tmp/libertas-clone-reference` and
-`/tmp/libertas-countdown-reference`. Do not describe these ports as complete.
+Source Clone remains **unimplemented as a user workflow**. ReferenceData exists
+in the document model but the compositor rejects reference nodes; it is not a
+working source-clone port. Countdown gained a native dock on 2026-10-22 (see above),
+with explicit limits rather than full plugin equivalence. Reference repositories
+were inspected at `/tmp/libertas-clone-reference` and
+`/tmp/libertas-countdown-reference`.
 
 Nested-scene failure was subsequently identified as frozen playback in
 `FS.W.CAM`; see the live-refresh fix above. Saved Marathon collection remains

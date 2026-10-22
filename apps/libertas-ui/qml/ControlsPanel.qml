@@ -6,19 +6,21 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Libertas
 
-/// Program, preview and the outputs — the controls an operator reaches for during a show.
-///
-/// Nothing here starts a broadcast, and the banner at the bottom says so: there is no render
-/// process yet. What every control does edit is the document, which is the state the renderer
-/// will read when it exists — which scene is on program, which is staged on preview, what each
-/// output would encode and where it would send it. So there is no fake "Go Live" button, and no
-/// output can be enabled into a destination it does not have.
-///
-/// Program and preview are set from the scene selected in the scenes panel rather than from a
-/// dropdown here. Two scenes may share a name, and a control that picks a scene by name would
-/// pick the wrong one; the selection is unambiguous.
+/// Program/preview controls and file-backed stinger setup for each canvas.
 Item {
     id: panel
+
+    StingerDialog { id: stingerSetup }
+    property string stingerSourceId: ""
+    Loader {
+        id: stingerMedia
+        parent: panel.Window.contentItem
+        anchors.fill: parent
+        active: false
+        function open(sourceId) { panel.stingerSourceId = sourceId; active = true; }
+        sourceComponent: Component { SourceSettingsDialog { onClosed: stingerMedia.active = false } }
+        onLoaded: item.open(panel.stingerSourceId)
+    }
 
     Flickable {
         id: scroll
@@ -59,6 +61,7 @@ Item {
                     required property bool studioMode
                     required property string transition
                     required property int transitionMs
+                    readonly property var stinger: { const revision = Document.revision; return Document.stingerSettings(deckId); }
                     required property bool hasEmergencyScene
 
                     objectName: "deckBlock"
@@ -235,6 +238,12 @@ Item {
                             }
                         }
 
+                        DialogButton {
+                            text: qsTr("Add stinger…")
+                            objectName: "addStinger"
+                            onClicked: stingerSetup.open(deck.deckId)
+                        }
+
                         ChoiceField {
                             width: parent.width
                             label: qsTr("Transition")
@@ -268,9 +277,28 @@ Item {
                             width: parent.width
                             label: qsTr("Duration")
                             decimals: 0
-                            value: deck.transitionMs
-                            onCommitted: (newValue) => Document.setDeckTransition(
-                                deck.deckId, "", Math.max(0, Math.round(newValue)))
+                            value: deck.stinger.durationMs === undefined ? deck.transitionMs : deck.stinger.durationMs
+                            onCommitted: (newValue) => {
+                                if (deck.stinger.sourceId) Document.setStingerTiming(deck.deckId, deck.stinger.cutMs, Math.round(newValue));
+                                else Document.setDeckTransition(deck.deckId, "", Math.max(0, Math.round(newValue)));
+                            }
+                        }
+
+                        DialogButton {
+                            visible: !!deck.stinger.sourceId
+                            text: qsTr("Edit stinger media…")
+                            onClicked: stingerMedia.open(deck.stinger.sourceId)
+                        }
+
+                        NumberField {
+                            width: parent.width
+                            visible: !!deck.stinger.sourceId
+                            label: qsTr("Cut point (ms)")
+                            labelWidth: 100
+                            decimals: 0
+                            minimum: 0
+                            value: deck.stinger.cutMs || 0
+                            onCommitted: value => Document.setStingerTiming(deck.deckId, Math.round(value), deck.stinger.durationMs)
                         }
 
                         // ADR-0025: a canvas with no safety net is not a broken document, it is
@@ -320,7 +348,7 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            text: qsTr("no render process — nothing is encoding")
+            text: qsTr("Transitions apply when selecting a scene or taking Preview")
             font.pixelSize: 9
             color: Theme.c.textMuted
             opacity: 0.6

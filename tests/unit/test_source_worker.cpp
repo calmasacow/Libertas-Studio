@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <fstream>
+#include <lcomp/countdown.hpp>
 #include <mutex>
 
 namespace {
@@ -307,6 +308,27 @@ LTEST_CASE(browser_audio_reaches_pcm_transport) {
     CHECK(tone);
 }
 
+LTEST_CASE(countdown_text_worker_draws_running_and_paused_timer) {
+    auto src = source("source.text");
+    src.settings["size"] = std::int64_t{20};
+    src.settings["countdown.enabled"] = true;
+    src.settings["countdown.durationMs"] = std::int64_t{2000};
+    src.settings["countdown.running"] = true;
+    src.settings["countdown.startedAtMs"] = static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    auto frames = capture(src, 3);
+    REQUIRE(frames.size() >= 3);
+    CHECK(frames.front().pixels != frames.back().pixels);
+    src.settings["countdown.running"] = false;
+    src.settings["countdown.elapsedMs"] = std::int64_t{1000};
+    const auto paused = lcomp::countdown(src.settings, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    CHECK_EQ(paused.text, std::string("00:01"));
+    CHECK_EQ(lcomp::countdown(src.settings, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() + 5000).text, paused.text);
+    REQUIRE(!capture(src).empty());
+    src.settings["countdown.elapsedMs"] = std::int64_t{0};
+    CHECK_EQ(lcomp::countdown(src.settings, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()).text, std::string("00:02"));
+    REQUIRE(!capture(src).empty());
+}
+
 LTEST_CASE(preloaded_media_reactivates_without_restarting_worker) {
     for (const char* file : {"motion.mkv", "alpha-60.webm"}) {
         auto src = source("source.media");
@@ -337,6 +359,31 @@ LTEST_CASE(preloaded_media_reactivates_without_restarting_worker) {
         CHECK(retained && !retained->bytes().empty());
         lock.unlock();
     }
+}
+
+LTEST_CASE(visible_media_bypasses_busy_inactive_preload_queue) {
+    auto invalid = source("source.media");
+    invalid.settings["localFile"] = std::string("/nonexistent/libertas-preload.mp4");
+    SourceWorker first(invalid, [](auto) {}, {}, false);
+    invalid.id = ldoc::Id::generate();
+    SourceWorker second(invalid, [](auto) {}, {}, false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    auto src = source("source.media");
+    src.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/motion.mkv";
+    std::mutex mu;
+    std::condition_variable ready;
+    bool received = false;
+    SourceWorker foreground(src, [&](auto frame) {
+        if (!frame) return;
+        std::lock_guard lock(mu);
+        received = true;
+        ready.notify_all();
+    }, {}, false);
+    foreground.set_active(true);
+    std::unique_lock lock(mu);
+    CHECK(ready.wait_for(lock, std::chrono::seconds(4), [&] { return received; }));
+    lock.unlock();
+    first.stop(); second.stop(); foreground.stop();
 }
 
 LTEST_CASE(measure_media_first_frame) {

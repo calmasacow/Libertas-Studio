@@ -5213,6 +5213,104 @@ int main(int argc, char** argv) {
                 if (row->property("sceneId").toString() == activeId)
                     favouriteSelected = row->property("selected").toBool();
             report(favouriteSelected, "Favourites selection also agrees with running Program after opening");
+            workspace.openPanel("countdowns");
+            workspace.activate("countdowns");
+            settle();
+            auto countdownButtons = collect(window->contentItem(), "newCountdown");
+            report(!countdownButtons.isEmpty(), "Countdown Timers dock has a working create control");
+            if (!countdownButtons.isEmpty()) {
+                const auto clickTimer = [&](QQuickItem* item) {
+                    const auto at = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                };
+                clickTimer(countdownButtons.front());
+                report(document.countdowns().size() == 1, "creating a countdown binds real scene text");
+                if (!document.countdowns().isEmpty()) {
+                    const auto timer = document.countdowns().front().toMap().value("id").toString();
+                    document.configureCountdown(timer, {{"durationMs", 5000}, {"format", "%time%"}});
+                    settle();
+                    auto buttons = collect(window->contentItem(), "countdownStartPause");
+                    report(!buttons.isEmpty(), "timer row exposes Start/Pause");
+                    if (!buttons.isEmpty()) clickTimer(buttons.front());
+                    report(document.countdownStatus(timer).value("running").toBool(),
+                           "dock Start starts the bound timer");
+                    buttons = collect(window->contentItem(), "countdownStartPause");
+                    if (!buttons.isEmpty()) clickTimer(buttons.front());
+                    const auto paused = document.countdownStatus(timer).value("text");
+                    pump(250);
+                    report(!document.countdownStatus(timer).value("running").toBool() &&
+                               paused == document.countdownStatus(timer).value("text"),
+                           "dock Pause freezes text without resetting elapsed time");
+                    document.controlCountdown(timer, "reset");
+                    report(document.countdownStatus(timer).value("text").toString() == "00:05",
+                           "Reset restores timer duration");
+                    document.configureCountdown(timer, {{"endScene", activeId}});
+                    document.removeCountdown(timer);
+                    report(document.countdowns().isEmpty(), "removing a timer binding updates the dock");
+                    QFile timerConfig(startup.path() + "/countdown.json");
+                    const bool configOpened = timerConfig.open(QIODevice::WriteOnly);
+                    const auto timerJson = QByteArray(R"({"timer_widgets":[{"selectedSource":"Countdown","periodMinutes":15,"showMinutes":true,"showSeconds":true,"showLeadingZero":true,"showEndMessage":true,"endMessage":"SOON","useFormattedOutput":true,"outputStringFormat":"IN: %time%"}]})");
+                    const bool configWritten = configOpened && timerConfig.write(timerJson) == timerJson.size();
+                    timerConfig.close();
+                    report(configWritten && document.importCountdowns(timerConfig.fileName()) &&
+                               document.countdowns().size() == 1 &&
+                               document.countdownStatus(timer).value("text").toString() == "IN: 15:00" &&
+                               document.countdowns().front().toMap().value("endScene").toString().isEmpty() &&
+                               !document.countdownStatus(timer).value("running").toBool(),
+                           "OBS companion timer import binds actual text, formatting and paused duration");
+                    document.removeCountdown(timer);
+                }
+            }
+            workspace.openPanel("controls");
+            workspace.activate("controls");
+            settle();
+            const auto stingerButtons = collect(window->contentItem(), "addStinger");
+            report(!stingerButtons.isEmpty(), "Controls provides Add stinger workflow");
+            if (!stingerButtons.isEmpty()) {
+                auto* button = stingerButtons.front();
+                for (auto* parent = button->parentItem(); parent; parent = parent->parentItem()) {
+                    if (!parent->property("contentY").isValid()) continue;
+                    const auto maximum = std::max(0.0, parent->property("contentHeight").toDouble() - parent->height());
+                    const auto desired = parent->property("contentY").toDouble() +
+                        button->mapToItem(parent, QPointF(0, 0)).y() - parent->height() / 2;
+                    parent->setProperty("contentY", std::clamp(desired, 0.0, maximum));
+                    break;
+                }
+                settle();
+                const auto at = button->mapToScene(QPointF(20, 12));
+                post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                settle();
+                QQuickWindow* dialog = nullptr;
+                for (auto* candidate : QGuiApplication::topLevelWindows())
+                    if (candidate->objectName() == "stingerDialog" && candidate->isVisible())
+                        dialog = qobject_cast<QQuickWindow*>(candidate);
+                report(dialog != nullptr, "Add stinger opens its settings window");
+                if (dialog) {
+                    const auto clip = (std::filesystem::path(__FILE__).parent_path() /
+                        "../../tests/unit/fixtures/images/alpha-tone.webm").lexically_normal();
+                    dialog->setProperty("filePath", QString::fromStdString(clip.string()));
+                    dialog->setProperty("stingerName", "UI stinger check");
+                    dialog->setProperty("cutMs", 400);
+                    dialog->setProperty("durationMs", 1000);
+                    const auto accept = collect(dialog->contentItem(), "acceptStinger");
+                    if (!accept.isEmpty()) {
+                        const auto point = accept.front()->mapToScene(QPointF(30, 12));
+                        QMouseEvent press(QEvent::MouseButtonPress, point, point, Qt::LeftButton,
+                                           Qt::LeftButton, Qt::NoModifier);
+                        QMouseEvent release(QEvent::MouseButtonRelease, point, point, Qt::LeftButton,
+                                             Qt::NoButton, Qt::NoModifier);
+                        QCoreApplication::sendEvent(dialog, &press);
+                        QCoreApplication::sendEvent(dialog, &release);
+                    }
+                    settle();
+                    report(!dialog->isVisible() && document.transitions().back().toMap().value("title").toString() == "UI stinger check",
+                           "stinger dialog creates selectable file-backed transition");
+                    dialog->close();
+                }
+            }
             report(document.openCollection(original), "startup alignment check returns to the prior collection");
         }
 

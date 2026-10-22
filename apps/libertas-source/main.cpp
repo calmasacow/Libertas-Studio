@@ -7,6 +7,8 @@
 #include <QAudioBuffer>
 #include <QAudioBufferOutput>
 #include <QElapsedTimer>
+#include <QDateTime>
+#include <lcomp/countdown.hpp>
 #include <QFileInfo>
 #include <QFont>
 #include <QImageReader>
@@ -41,6 +43,12 @@ class Content : public QObject {
     QElapsedTimer media_position_clock_;
     qint64 media_position_ = 0;
     bool active_ = true;
+    bool allow_player_ = true, waiting_for_player_ = false;
+    std::int64_t restart_generation_ = 0;
+    QTimer countdown_timer_;
+    QElapsedTimer countdown_clock_;
+    qint64 countdown_epoch_ = 0;
+    std::string countdown_last_;
     std::unique_ptr<QMovie> movie_;
     std::unique_ptr<QAudioBufferOutput> audio_;
     std::vector<float> audio_pending_;
@@ -234,6 +242,11 @@ class Content : public QObject {
                 [this](const QImage& image) { publish(image); }, finished);
             return;
         }
+        if (!allow_player_) {
+            waiting_for_player_ = true;
+            return;
+        }
+        waiting_for_player_ = false;
         ensure_player();
         player_->setPlaybackRate(speed);
         player_->setVideoSink(alpha_ ? nullptr : video_.get());
@@ -298,6 +311,7 @@ class Content : public QObject {
     std::atomic<bool> dirty{true};
 
     Content() {
+        connect(&countdown_timer_, &QTimer::timeout, this, [this] { draw_text(); });
         connect(&slides_, &QTimer::timeout, this, [this] {
             if (files_.empty())
                 return;
@@ -320,6 +334,38 @@ class Content : public QObject {
         browser_sink_.reset();
     }
 
+    void draw_text() {
+        auto label = text("text");
+        if (flag("countdown.enabled", false)) {
+            label = lcomp::countdown(source_.settings,
+                                     countdown_epoch_ + countdown_clock_.elapsed()).text;
+            if (label == countdown_last_) return;
+            countdown_last_ = label;
+        }
+        QImage image(size_, QImage::Format_RGBA8888);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        QFont font(QString::fromStdString(text("font", "Sans")));
+        font.setPixelSize(std::clamp(number("size", 48), 1, 1024));
+        painter.setFont(font);
+        QColor colour(Qt::white);
+        auto it = source_.settings.find("color");
+        if (it != source_.settings.end())
+            if (auto rgba = std::get_if<ldoc::Rgba>(&it->second)) {
+                auto bytes = rgba->to_srgb8();
+                colour = QColor(bytes[0], bytes[1], bytes[2], bytes[3]);
+            }
+        painter.setPen(colour);
+        const auto align = text("alignment", "Left");
+        const int flags = Qt::TextWordWrap | Qt::AlignTop |
+                          (align == "Right"    ? Qt::AlignRight
+                           : align == "Centre" ? Qt::AlignHCenter
+                                               : Qt::AlignLeft);
+        painter.drawText(image.rect(), flags, QString::fromStdString(label));
+        painter.end();
+        publish(image);
+    }
+
     void activate(bool active) {
         if (active_ == active) return;
         active_ = active;
@@ -338,6 +384,12 @@ class Content : public QObject {
     }
 
     void configure(ldoc::Source source) {
+        allow_player_ = lcomp::timer_flag(source.settings, "worker.allowPlayer", true);
+        source.settings.erase("worker.allowPlayer");
+        const auto restart = lcomp::timer_number(source.settings, "worker.restart");
+        source.settings.erase("worker.restart");
+        const bool restarted = restart != restart_generation_;
+        restart_generation_ = restart;
         bool active = true;
         if (auto it = source.settings.find("worker.active"); it != source.settings.end()) {
             if (const auto* value = std::get_if<bool>(&it->second)) active = *value;
@@ -346,10 +398,22 @@ class Content : public QObject {
         if (source_.id == source.id && source_.type == source.type &&
             source_.settings == source.settings) {
             activate(active);
+            if (waiting_for_player_ && allow_player_) play_file();
+            if (restarted) {
+                media_position_clock_.start();
+                if (player_) { player_->setPosition(0); if (active_) player_->play(); }
+                if (alpha_) alpha_->rewind();
+                if (movie_) { movie_->jumpToFrame(0); movie_->setPaused(!active_); }
+            }
             return;
         }
         active_ = active;
+        waiting_for_player_ = false;
         slides_.stop();
+        countdown_timer_.stop();
+        countdown_last_.assign(1, '\0');
+        countdown_epoch_ = QDateTime::currentMSecsSinceEpoch();
+        countdown_clock_.start();
         alpha_.reset();
         movie_.reset();
         decklink_.reset();
@@ -372,28 +436,8 @@ class Content : public QObject {
         index_ = 0;
         publish({});
         if (source.type == "source.text") {
-            QImage image(size_, QImage::Format_RGBA8888);
-            image.fill(Qt::transparent);
-            QPainter painter(&image);
-            QFont font(QString::fromStdString(text("font", "Sans")));
-            font.setPixelSize(std::clamp(number("size", 48), 1, 1024));
-            painter.setFont(font);
-            QColor colour(Qt::white);
-            auto it = source.settings.find("color");
-            if (it != source.settings.end())
-                if (auto rgba = std::get_if<ldoc::Rgba>(&it->second)) {
-                    auto bytes = rgba->to_srgb8();
-                    colour = QColor(bytes[0], bytes[1], bytes[2], bytes[3]);
-                }
-            painter.setPen(colour);
-            const auto align = text("alignment", "Left");
-            const int flags = Qt::TextWordWrap | Qt::AlignTop |
-                              (align == "Right"    ? Qt::AlignRight
-                               : align == "Centre" ? Qt::AlignHCenter
-                                                   : Qt::AlignLeft);
-            painter.drawText(image.rect(), flags, QString::fromStdString(text("text")));
-            painter.end();
-            publish(image);
+            draw_text();
+            if (flag("countdown.enabled", false)) countdown_timer_.start(100);
         } else if (source.type == "source.blackmagic") {
             std::string error;
             const auto generation = generation_;
@@ -482,7 +526,8 @@ class Content : public QObject {
         out.width = image_.width();
         out.height = image_.height();
         out.stride = static_cast<std::uint32_t>(out.width) * 4;
-        out.status = valid_ ? lcomp::PictureStatus::Complete : lcomp::PictureStatus::Partial;
+        out.status = waiting_for_player_ ? lcomp::PictureStatus::NoProgram
+                      : valid_ ? lcomp::PictureStatus::Complete : lcomp::PictureStatus::Partial;
         auto lease = std::make_shared<QImage>(image_);
         out.borrowed = lease->constBits();
         out.owner = std::move(lease);

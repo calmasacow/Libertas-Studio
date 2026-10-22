@@ -107,6 +107,33 @@ LTEST_CASE(import_creates_reopenable_project_and_preserves_stack_and_identity) {
     CHECK_EQ(fs::file_size(scratch.input), fs::file_size(scratch.output / "obs-original.json"));
 }
 
+LTEST_CASE(file_backed_stinger_imports_timing_and_roundtrips_to_obs) {
+    Scratch scratch;
+    auto root = collection();
+    auto transition = source("Stinger", "obs_stinger_transition", "stinger");
+    transition["settings"]["path"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/alpha-tone.webm";
+    transition["settings"]["transition_point"] = 400;
+    root["transitions"].append(transition);
+    root["current_transition"] = "Stinger";
+    scratch.write(root);
+    auto converted = scratch.convert();
+    REQUIRE(converted);
+    const auto find = [](const auto& project) {
+        return std::ranges::find(project.sources, std::string("Stinger"), &ldoc::Source::name);
+    };
+    const auto imported = find(converted->project);
+    REQUIRE(imported != converted->project.sources.end());
+    CHECK_EQ(std::get<std::int64_t>(imported->settings.at("stingerCutMs")), 400);
+    CHECK_EQ(converted->project.decks.front().transition, "transition.stinger:" + imported->id.to_string());
+    const auto output = fs::path(scratch.temp.path().toStdString()) / "stinger.json";
+    REQUIRE(limport::export_obs(converted->project, scratch.output, output));
+    const auto again = limport::import_obs(output, output.string() + ".libertas", {4, 4, {60, 1}});
+    REQUIRE(again);
+    const auto saved = find(again->project);
+    REQUIRE(saved != again->project.sources.end());
+    CHECK_EQ(std::get<std::int64_t>(saved->settings.at("stingerCutMs")), 400);
+}
+
 LTEST_CASE(media_hardware_decoding_policy_survives_obs_roundtrip) {
     for (bool hardware : {false, true}) {
         Scratch scratch;

@@ -351,6 +351,71 @@ LTEST_CASE(native_alpha_media_crosses_worker_and_keeps_authored_box_and_letterbo
     CHECK(ink);
 }
 
+LTEST_CASE(stinger_overlays_alpha_switches_at_cut_and_routes_audio) {
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends);
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child);
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(2000));
+    auto blue = colour_source(0, 0, 255), green = colour_source(0, 255, 0);
+    for (auto* source : {&blue, &green}) {
+        source->settings["width"] = std::int64_t{32};
+        source->settings["height"] = std::int64_t{24};
+    }
+    auto stinger = blue;
+    stinger.id = ldoc::Id::generate();
+    stinger.type = "source.media";
+    stinger.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/alpha-tone.webm";
+    stinger.settings["transitionStinger"] = true;
+    stinger.settings["loop"] = false;
+    stinger.settings["stingerCutMs"] = std::int64_t{500};
+    stinger.settings["stingerDurationMs"] = std::int64_t{1000};
+    ldoc::Scene before;
+    before.id = ldoc::Id::generate(); before.roots = {bound_to(blue)};
+    auto project = show(before, {blue, green, stinger});
+    project.canvases.front().width = 32; project.canvases.front().height = 24;
+    auto after = project.scenes.front();
+    after.id = ldoc::Id::generate(); after.roots = {bound_to(green)};
+    project.scenes.push_back(after);
+    project.decks.front().transition = "transition.stinger:" + stinger.id.to_string();
+    commit(link, project);
+    std::this_thread::sleep_for(std::chrono::seconds(4));
+    project.decks.front().program_scene = after.id;
+    const auto first = commit(link, project);
+    CHECK_EQ(pixel(first, 0, 0), std::make_tuple(0, 0, 255, 255));
+    const auto overlay = pixel(first, 12, 8);
+    CHECK(std::get<0>(overlay) > 50 && std::get<2>(overlay) > 50);
+    const auto start = std::chrono::steady_clock::now();
+    bool audio = false, switched = false;
+    lcomp::PreviewFrame last;
+    for (int tick = 0; tick < 50; ++tick) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        REQUIRE(link.send_project(project));
+        for (;;) {
+            const auto event = link.receive(2000);
+            REQUIRE(event && event->has_value());
+            const auto& value = **event;
+            REQUIRE(value.kind != lcomp::PreviewEvent::Kind::Fault);
+            if (value.kind == lcomp::PreviewEvent::Kind::Frame) last = value.frame;
+            if (value.kind == lcomp::PreviewEvent::Kind::Audio)
+                for (const auto& level : value.audio)
+                    audio = audio || (level.available && std::max(level.left, level.right) > 0.001f);
+            if (value.kind == lcomp::PreviewEvent::Kind::Ack) break;
+        }
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        if (elapsed < std::chrono::milliseconds(300))
+            CHECK_EQ(pixel(last, 0, 0), std::make_tuple(0, 0, 255, 255));
+        if (elapsed > std::chrono::milliseconds(650))
+            switched = pixel(last, 0, 0) == std::make_tuple(0, 255, 0, 255);
+    }
+    CHECK(switched);
+    CHECK(audio);
+    CHECK_EQ(pixel(last, 12, 8), std::make_tuple(0, 255, 0, 255));
+    link.quit(); link.close();
+    CHECK_EQ(reap(*child, 3000), 0);
+}
+
 LTEST_CASE(inactive_media_is_preloaded_for_first_scene_cut) {
     auto ends = lipc::Channel::pair();
     REQUIRE(ends);
@@ -871,6 +936,10 @@ LTEST_CASE(measure_saved_scene_through_real_renderer) {
     REQUIRE(link.take_hello(2000));
     REQUIRE(link.send_project(project, 960));
     lcomp::PreviewFrame baseline, last, checkpoint;
+    const auto* switch_name = std::getenv("LIBERTAS_BENCH_SWITCH");
+    const auto* warmup = std::getenv("LIBERTAS_BENCH_WARMUP");
+    const int cut_at = warmup ? std::clamp(std::atoi(warmup), 120, 35000) : 360;
+    auto switch_started = std::chrono::steady_clock::time_point{};
     const auto* requested = std::getenv("LIBERTAS_BENCH_FRAMES");
     const int iterations = requested ? std::clamp(std::atoi(requested), 240, 36000) : 1920;
     for (int iteration = 0; iteration < iterations; ++iteration) {
@@ -886,6 +955,11 @@ LTEST_CASE(measure_saved_scene_through_real_renderer) {
                 last = (**event).frame;
             ack = (**event).kind == lcomp::PreviewEvent::Kind::Ack;
         }
+        if (iteration == cut_at && switch_name)
+            std::fprintf(stderr, "scene cut to %s: %.3f ms to first frame/ack, status %d, %u gaps\n",
+                         switch_name, std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - switch_started).count(),
+                         static_cast<int>(last.status), last.gaps);
         if (iteration == 119)
             baseline = checkpoint = last;
         if (iteration > 119 && (iteration - 119) % 600 == 0) {
@@ -901,7 +975,14 @@ LTEST_CASE(measure_saved_scene_through_real_renderer) {
             checkpoint = last;
         }
         std::this_thread::sleep_until(start + std::chrono::microseconds(16667));
-        if (iteration + 1 < iterations)
+        if (iteration == cut_at - 1 && switch_name) {
+            const auto target = std::ranges::find(project.scenes, std::string(switch_name), &ldoc::Scene::name);
+            REQUIRE(target != project.scenes.end());
+            for (auto& deck : project.decks)
+                if (deck.canvas == target->canvas) deck.program_scene = target->id;
+            switch_started = std::chrono::steady_clock::now();
+            REQUIRE(link.send_project(project, 960));
+        } else if (iteration + 1 < iterations)
             REQUIRE(link.refresh(960));
     }
     REQUIRE(last.rendered_frames > baseline.rendered_frames);
