@@ -1,15 +1,18 @@
 // SPDX-FileCopyrightText: Libertas-Studio contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "alpha_video.hpp"
 #include "decklink.hpp"
 
 #include <QApplication>
 #include <QAudioBuffer>
 #include <QAudioBufferOutput>
+#include <QFileInfo>
 #include <QFont>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMediaPlayer>
+#include <QMovie>
 #include <QPainter>
 #include <QTimer>
 #include <QVideoFrame>
@@ -32,6 +35,8 @@ class Content : public QObject {
     QSize size_;
     QImage image_;
     std::unique_ptr<QMediaPlayer> player_;
+    std::unique_ptr<AlphaVideo> alpha_;
+    std::unique_ptr<QMovie> movie_;
     std::unique_ptr<QAudioBufferOutput> audio_;
     std::vector<float> audio_pending_;
     std::mutex audio_mu_;
@@ -111,13 +116,83 @@ class Content : public QObject {
         publish(reader.read());
     }
 
-    void play_file() {
+    void media_finished() {
+        if (index_ + 1 < files_.size()) {
+            ++index_;
+            play_file();
+        } else if (flag("loop", true)) {
+            index_ = 0;
+            play_file();
+        } else if (flag("clearOnEnd", true))
+            publish({});
+    }
+
+    void play_file() try {
+        alpha_.reset();
+        movie_.reset();
+        player_->stop();
         if (files_.empty()) {
             publish({});
             return;
         }
-        player_->setSource(QUrl::fromLocalFile(files_[index_]));
+        const auto path = files_[index_];
+        const auto suffix = QFileInfo(path).suffix().toLower();
+        const auto generation = generation_;
+        const auto finished = [this, generation] {
+            QTimer::singleShot(0, this, [this, generation] {
+                if (generation == generation_)
+                    media_finished();
+            });
+        };
+        if (suffix == "webp") {
+            QImageReader reader(path);
+            if (!reader.supportsAnimation() || reader.imageCount() == 1) {
+                publish(reader.read());
+                return;
+            }
+            movie_ = std::make_unique<QMovie>(path);
+            if (!movie_->isValid()) {
+                qWarning("media source: cannot decode WebP");
+                publish({});
+                return;
+            }
+            movie_->setSpeed(std::clamp(number("speedPercent", 100), 25, 400));
+            connect(movie_.get(), &QMovie::frameChanged, this,
+                    [this, first = true, finished](int frame) mutable {
+                        if (!first && frame == 0 && !flag("loop", true)) {
+                            movie_->stop();
+                            finished();
+                            return;
+                        }
+                        first = false;
+                        publish(movie_->currentImage());
+                    });
+            connect(movie_.get(), &QMovie::finished, this, finished);
+            connect(movie_.get(), &QMovie::error, this, [this](auto) {
+                qWarning("media source: %s", qPrintable(movie_->lastErrorString()));
+                movie_->stop();
+                publish({});
+            });
+            movie_->start();
+            return;
+        }
+        if (suffix == "webm") {
+            auto alpha = std::make_unique<AlphaVideo>();
+            if (alpha->open(path))
+                alpha_ = std::move(alpha);
+        }
+        player_->setVideoSink(alpha_ ? nullptr : video_.get());
+        player_->setSource(QUrl::fromLocalFile(path));
         player_->play();
+        if (alpha_)
+            alpha_->start(
+                player_->playbackRate(), [this] { return player_->position(); },
+                [this](const QImage& image) { publish(image); }, finished);
+    } catch (const std::exception& error) {
+        qWarning("media source: %s", error.what());
+        alpha_.reset();
+        movie_.reset();
+        publish({});
     }
 
     void ensure_player() {
@@ -153,16 +228,8 @@ class Content : public QObject {
                     publish({});
                 });
         connect(player_.get(), &QMediaPlayer::mediaStatusChanged, this, [this](auto status) {
-            if (status != QMediaPlayer::EndOfMedia)
-                return;
-            if (index_ + 1 < files_.size()) {
-                ++index_;
-                play_file();
-            } else if (flag("loop", true)) {
-                index_ = 0;
-                play_file();
-            } else if (flag("clearOnEnd", true))
-                publish({});
+            if (status == QMediaPlayer::EndOfMedia && !alpha_ && !movie_)
+                media_finished();
         });
     }
 
@@ -197,6 +264,8 @@ class Content : public QObject {
             source_.settings == source.settings)
             return;
         slides_.stop();
+        alpha_.reset();
+        movie_.reset();
         decklink_.reset();
         ++generation_;
         web_frames_.stop();

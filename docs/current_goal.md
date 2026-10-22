@@ -4,6 +4,17 @@ SPDX-License-Identifier: GPL-3.0-or-later
 -->
 # Where the work is, and what is next
 
+## Transparent WebM and WebP media, 2026-10-21
+
+WebM with `alpha_mode=1` uses FFmpeg's libvpx VP8/VP9 decoder so block-side alpha
+survives conversion to RGBA and source-worker IPC. Frame presentation follows the
+existing media player's position; its audio path remains active. Decoder errors
+clear the picture and report a warning. Decoder pixel allocation is bounded.
+Static WebP media uses QImageReader; animated WebP uses QMovie, including speed,
+looping and clear-at-end handling. Static files do not restart in a busy loop.
+The operator confirmed `Starting.ms` transparency works in the comparison build.
+Generated fixtures exercise partial alpha, animation, looping and audio transport.
+
 ## Nested live scene refresh, 2026-10-21
 
 `FS.W.CAM` froze because the UI's live-source detection visited groups and direct

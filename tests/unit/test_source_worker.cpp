@@ -131,6 +131,23 @@ LTEST_CASE(media_worker_decodes_video_in_its_process) {
     CHECK(frames[0].pixels != frames[1].pixels);
 }
 
+LTEST_CASE(media_workers_preserve_webm_and_webp_alpha) {
+    for (const auto* file : {"/alpha.webm", "/alpha.webp", "/animated-alpha.webp"}) {
+        auto src = source("source.media");
+        src.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + file;
+        const int count = std::string_view(file) == "/alpha.webp" ? 1 : 12;
+        auto frames = capture(src, count);
+        REQUIRE(static_cast<int>(frames.size()) >= count);
+        const auto& pixels = frames.front().pixels;
+        bool transparent = false, translucent = false;
+        for (std::size_t i = 3; i < pixels.size(); i += 4) {
+            transparent = transparent || pixels[i] == 0;
+            translucent = translucent || (pixels[i] > 100 && pixels[i] < 160);
+        }
+        CHECK_MSG(transparent && translucent, "{} retains transparent and half-alpha pixels", file);
+    }
+}
+
 LTEST_CASE(browser_worker_renders_local_html) {
     auto src = source("source.browser");
     src.settings["url"] = std::string("file://") + LIBERTAS_IMAGE_FIXTURES + "/browser.html";
@@ -162,6 +179,35 @@ LTEST_CASE(unavailable_blackmagic_worker_exits_without_inventing_frames) {
         CHECK(stopped);
         CHECK(!picture);
     }
+}
+
+LTEST_CASE(alpha_webm_preserves_audio_alongside_transparency) {
+    auto src = source("source.media");
+    src.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/alpha-tone.webm";
+    std::mutex mu;
+    std::condition_variable ready;
+    bool tone = false, translucent = false;
+    {
+        SourceWorker worker(
+            src,
+            [&](auto frame) {
+                std::lock_guard lock(mu);
+                if (frame)
+                    for (std::size_t i = 3; i < frame->pixels.size(); i += 4)
+                        translucent =
+                            translucent || (frame->pixels[i] > 100 && frame->pixels[i] < 160);
+                ready.notify_all();
+            },
+            [&](auto samples) {
+                std::lock_guard lock(mu);
+                for (float sample : samples)
+                    tone = tone || std::abs(sample) > 0.001f;
+                ready.notify_all();
+            });
+        std::unique_lock lock(mu);
+        ready.wait_for(lock, std::chrono::seconds(8), [&] { return tone && translucent; });
+    }
+    CHECK(tone && translucent);
 }
 
 LTEST_CASE(browser_audio_reaches_pcm_transport) {
