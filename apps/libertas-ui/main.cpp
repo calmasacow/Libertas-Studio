@@ -1095,6 +1095,46 @@ int main(int argc, char** argv) {
                     post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton, modifiers);
                     settle();
                 };
+                for (const auto& output : graphProject.outputs) {
+                    const auto cards = collect(window->contentItem(), "outputNode_" +
+                        QString::fromStdString(output.id.to_string()));
+                    if (cards.empty()) continue;
+                    const auto switches = collect(cards.front(), "encodeArmingSwitch");
+                    const bool streaming = output.destination.kind != ldoc::DestinationKind::File &&
+                                           output.destination.kind != ldoc::DestinationKind::Replay;
+                    report(switches.size() == 1 && switches.front()->isVisible() == streaming,
+                           "only streaming destinations show an arming switch");
+                    if (!streaming || switches.empty()) continue;
+                    const bool needsUrl = output.destination.url.empty();
+                    if (needsUrl) {
+                        auto configured = output;
+                        configured.destination.url = "rtmp://localhost/arming-check";
+                        document.runCommand(ldoc::SetOutput{configured});
+                        settle();
+                    }
+                    const auto indicators = collect(switches.front(), "encodeArmingIndicator");
+                    const auto checkArmed = [&](bool armed) {
+                        const auto& outputs = document.projectForBindings().outputs;
+                        const auto found = std::ranges::find(outputs, output.id, &ldoc::Output::id);
+                        return found != outputs.end() && found->enabled == armed &&
+                            indicators.size() == 1 && indicators.front()->property("color").value<QColor>() ==
+                                QColor(theme.colors().value(armed ? "good" : "error").toString());
+                    };
+                    report(checkArmed(output.enabled), "stream arming indicator is red off and green armed");
+                    clickPort(switches.front(), false);
+                    report(checkArmed(!output.enabled), "clicking a stream switch persists its arming state");
+                    if (checkArmed(!output.enabled)) {
+                        document.undo();
+                        settle();
+                    }
+                    report(checkArmed(output.enabled), "one undo restores the stream arming indicator");
+                    if (needsUrl) {
+                        document.undo();
+                        settle();
+                    }
+                    report(checkArmed(output.enabled) && document.projectForBindings().outputs == graphProject.outputs,
+                           "one undo restores arming without moving or changing destination nodes");
+                }
                 if (fileOutput != graphProject.outputs.end()) {
                     const auto cards = collect(window->contentItem(), "outputNode_" +
                         QString::fromStdString(fileOutput->id.to_string()));

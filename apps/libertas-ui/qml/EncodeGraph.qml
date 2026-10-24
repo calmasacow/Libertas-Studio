@@ -689,15 +689,27 @@ Item {
             onVideoInputYChanged: report()
             onAudioInputYChanged: report()
 
-            // The live pill. Red rather than absent when misconfigured, because an output
-            // that cannot go anywhere should not look the same as one that is merely off.
             status: Rectangle {
+                objectName: "encodeArmingSwitch"
+                visible: outputCard.destinationKind !== "file" && outputCard.destinationKind !== "replay"
                 width: 26
                 height: 13
                 radius: 7
                 color: Theme.c.panelHeader
                 border.width: 1
-                border.color: Theme.c.border
+                border.color: activeFocus ? Theme.c.accent : Theme.c.border
+                activeFocusOnTab: visible
+                Accessible.role: Accessible.CheckBox
+                Accessible.name: qsTr("Arm %1").arg(outputCard.name)
+                Accessible.checkable: true
+                Accessible.checked: outputCard.isEnabled
+                Accessible.onToggleAction: toggle()
+
+                function toggle() {
+                    Document.setOutputEnabled(outputCard.outputId, !outputCard.isEnabled);
+                }
+                Keys.onSpacePressed: toggle()
+                Keys.onReturnPressed: toggle()
 
                 Rectangle {
                     width: 9
@@ -705,10 +717,13 @@ Item {
                     radius: 5
                     y: 2
                     x: outputCard.isEnabled ? parent.width - 11 : 2
-                    color: outputCard.destinationKind === "file" && Preview.recording ? Theme.c.error
-                         : outputCard.misconfigured ? Theme.c.error
-                         : outputCard.isEnabled ? Theme.c.good
-                         : Theme.c.textMuted
+                    objectName: "encodeArmingIndicator"
+                    color: outputCard.isEnabled ? Theme.c.good : Theme.c.error
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: parent.toggle()
                 }
             }
 
