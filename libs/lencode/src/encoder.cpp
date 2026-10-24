@@ -16,12 +16,11 @@
 
 #include "lencode/encoder.hpp"
 
-#include <lcore/log.hpp>
-
 #include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <format>
+#include <lcore/log.hpp>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -37,10 +36,14 @@ namespace libertas::encode {
 
 const char* tier_name(VideoTier t) {
     switch (t) {
-    case VideoTier::Vulkan: return "h264_vulkan";
-    case VideoTier::Nvenc: return "h264_nvenc";
-    case VideoTier::X264: return "libx264";
-    default: return "none";
+    case VideoTier::Vulkan:
+        return "h264_vulkan";
+    case VideoTier::Nvenc:
+        return "h264_nvenc";
+    case VideoTier::X264:
+        return "libx264";
+    default:
+        return "none";
     }
 }
 
@@ -124,7 +127,10 @@ AVCodecContext* try_video(const char* name, const RuntimeConfig& cfg, AVFormatCo
     // produces, and what a Vulkan video encode surface will be (G8_B8R8_2PLANE_420_UNORM). A
     // codec that cannot take it falls back to I420, and the GPU convert path is then refused
     // rather than silently feeding it the wrong layout.
-    c->pix_fmt = AV_PIX_FMT_NV12;
+    c->pix_fmt =
+        cfg.video_options.contains("profile") && cfg.video_options.at("profile") == "main10"
+            ? AV_PIX_FMT_P010LE
+            : AV_PIX_FMT_NV12;
     // AVCodec::pix_fmts was removed in FFmpeg 7; avcodec_get_supported_config is the current
     // way to ask, and it can answer "no list", which means the codec accepts anything.
     {
@@ -133,18 +139,23 @@ AVCodecContext* try_video(const char* name, const RuntimeConfig& cfg, AVFormatCo
         if (avcodec_get_supported_config(c, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0,
                                          reinterpret_cast<const void**>(&fmts), &n) >= 0 &&
             fmts != nullptr) {
-            bool nv12_ok = false;
+            bool format_ok = false;
             for (int k = 0; k < n; ++k)
-                if (fmts[k] == AV_PIX_FMT_NV12)
-                    nv12_ok = true;
-            if (!nv12_ok)
-                c->pix_fmt = AV_PIX_FMT_YUV420P;
+                if (fmts[k] == c->pix_fmt)
+                    format_ok = true;
+            if (!format_ok)
+                c->pix_fmt =
+                    c->pix_fmt == AV_PIX_FMT_P010LE ? AV_PIX_FMT_YUV420P10LE : AV_PIX_FMT_YUV420P;
         }
     }
     c->bit_rate = cfg.bitrate;
-    // A two-second GOP, which is what every live destination wants and what the operator's
-    // existing profile already uses (keyint 2).
-    c->gop_size = cfg.fps_num / cfg.fps_den * 2;
+    c->gop_size =
+        cfg.keyframe_interval_ms == 0
+            ? -1
+            : std::max(1, static_cast<int>(
+                              (static_cast<std::int64_t>(cfg.fps_num) * cfg.keyframe_interval_ms +
+                               static_cast<std::int64_t>(cfg.fps_den) * 500) /
+                              (static_cast<std::int64_t>(cfg.fps_den) * 1000)));
     c->max_b_frames = 0; // live: no reordering delay
     // State the colour properties rather than leaving them unset. An unset matrix in an H.264
     // bitstream means "assume BT.601", which is wrong for everything we produce.
@@ -155,18 +166,49 @@ AVCodecContext* try_video(const char* name, const RuntimeConfig& cfg, AVFormatCo
     if ((fmt->oformat->flags & AVFMT_GLOBALHEADER) != 0)
         c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    if (std::strcmp(name, "libx264") == 0) {
+    if (cfg.video_options.empty() && std::strcmp(name, "libx264") == 0) {
         av_opt_set(c->priv_data, "preset", "veryfast", 0);
         av_opt_set(c->priv_data, "tune", "zerolatency", 0);
-    } else if (std::strcmp(name, "h264_nvenc") == 0) {
+    } else if (cfg.video_options.empty() && std::strcmp(name, "h264_nvenc") == 0) {
         av_opt_set(c->priv_data, "preset", "p4", 0);
         av_opt_set(c->priv_data, "tune", "ll", 0);
         av_opt_set(c->priv_data, "rc", "cbr", 0);
     }
 
-    const int r = avcodec_open2(c, codec, nullptr);
-    if (r < 0) {
-        why = av_err(r);
+    AVDictionary* options = nullptr;
+    for (const auto& [key, value] : cfg.video_options) {
+        if (key == "x264-params") {
+            AVDictionary* parameters = nullptr;
+            char* serialised = nullptr;
+            const int parsed = av_dict_parse_string(&parameters, value.c_str(), "=", " :", 0);
+            if (parsed >= 0)
+                av_dict_get_string(parameters, &serialised, '=', ':');
+            av_dict_free(&parameters);
+            if (parsed < 0 || !serialised) {
+                why = "x264 options must be key=value pairs separated by spaces or colons";
+                av_dict_free(&options);
+                avcodec_free_context(&c);
+                return nullptr;
+            }
+            av_dict_set(&options, key.c_str(), serialised, 0);
+            av_free(serialised);
+        } else {
+            av_dict_set(&options, key.c_str(), value.c_str(), 0);
+        }
+    }
+    if (!cfg.custom_options.empty() &&
+        av_dict_parse_string(&options, cfg.custom_options.c_str(), "=", " :", 0) < 0) {
+        why = "encoder options must be key=value pairs separated by spaces or colons";
+        av_dict_free(&options);
+        avcodec_free_context(&c);
+        return nullptr;
+    }
+    const int r = avcodec_open2(c, codec, &options);
+    const std::string unused =
+        av_dict_count(options) ? av_dict_get(options, "", nullptr, AV_DICT_IGNORE_SUFFIX)->key : "";
+    av_dict_free(&options);
+    if (r < 0 || !unused.empty()) {
+        why = r < 0 ? av_err(r) : "unrecognised encoder option: " + unused;
         avcodec_free_context(&c);
         return nullptr;
     }
@@ -178,8 +220,10 @@ AVCodecContext* try_video(const char* name, const RuntimeConfig& cfg, AVFormatCo
 EncoderPtr encoder_open(const RuntimeConfig& cfg, std::string& error) {
     auto enc = EncoderPtr(new Encoder());
     enc->cfg = cfg;
-    if (enc->cfg.source_width == 0) enc->cfg.source_width = cfg.width;
-    if (enc->cfg.source_height == 0) enc->cfg.source_height = cfg.height;
+    if (enc->cfg.source_width == 0)
+        enc->cfg.source_width = cfg.width;
+    if (enc->cfg.source_height == 0)
+        enc->cfg.source_height = cfg.height;
 
     int r = avformat_alloc_output_context2(&enc->fmt, nullptr, nullptr, cfg.path.c_str());
     if (r < 0 || enc->fmt == nullptr) {
@@ -192,14 +236,18 @@ EncoderPtr encoder_open(const RuntimeConfig& cfg, std::string& error) {
         VideoTier tier;
         const char* name;
     };
-    const Rung ladder[] = {
+
+    std::vector<Rung> ladder = {
         {VideoTier::Nvenc, "h264_nvenc"},
         {VideoTier::X264, "libx264"},
     };
+    if (!cfg.force_tier.empty()) {
+        const auto tier = cfg.force_tier.ends_with("_nvenc") ? VideoTier::Nvenc
+                          : cfg.force_tier == "libx264"      ? VideoTier::X264
+                                                             : VideoTier::None;
+        ladder = {{tier, cfg.force_tier.c_str()}};
+    }
     for (const Rung& rung : ladder) {
-        if (!cfg.force_tier.empty() && cfg.force_tier != rung.name &&
-            cfg.force_tier != tier_name(rung.tier))
-            continue;
         std::string why;
         enc->vctx = try_video(rung.name, cfg, enc->fmt, why);
         if (enc->vctx != nullptr) {
@@ -207,10 +255,12 @@ EncoderPtr encoder_open(const RuntimeConfig& cfg, std::string& error) {
             enc->stats.video_encoder = rung.name;
             break;
         }
+        error = std::format("{}: {}", rung.name, why);
         lc::warn("encoder tier {} unavailable: {}", rung.name, why);
     }
     if (enc->vctx == nullptr) {
-        error = "no usable video encoder - every tier of the ladder failed";
+        if (error.empty())
+            error = "no usable video encoder";
         return nullptr;
     }
     lc::info("video encoder: {} ({}x{} @ {}/{}, {} kbps)", enc->stats.video_encoder, cfg.width,
@@ -235,12 +285,14 @@ EncoderPtr encoder_open(const RuntimeConfig& cfg, std::string& error) {
         return nullptr;
     }
 
-    enc->sws = sws_getContext(static_cast<int>(enc->cfg.source_width),
-                              static_cast<int>(enc->cfg.source_height),
-                              cfg.source_rgba ? AV_PIX_FMT_RGBA : AV_PIX_FMT_BGRA,
-                              static_cast<int>(cfg.width),
-                              static_cast<int>(cfg.height), enc->vctx->pix_fmt, SWS_BILINEAR,
-                              nullptr, nullptr, nullptr);
+    enc->sws = sws_getContext(
+        static_cast<int>(enc->cfg.source_width), static_cast<int>(enc->cfg.source_height),
+        cfg.source_rgba ? AV_PIX_FMT_RGBA : AV_PIX_FMT_BGRA, static_cast<int>(cfg.width),
+        static_cast<int>(cfg.height), enc->vctx->pix_fmt,
+        cfg.rescale_filter == "lanczos"   ? SWS_LANCZOS
+        : cfg.rescale_filter == "bicubic" ? SWS_BICUBIC
+                                          : SWS_BILINEAR,
+        nullptr, nullptr, nullptr);
     if (enc->sws == nullptr) {
         error = "sws_getContext failed";
         return nullptr;
@@ -252,13 +304,24 @@ EncoderPtr encoder_open(const RuntimeConfig& cfg, std::string& error) {
 
     // --- audio ---
     if (cfg.audio_channels > 0) {
-        const AVCodec* acodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+        const AVCodec* acodec = cfg.audio_codec == "aac"    ? avcodec_find_encoder(AV_CODEC_ID_AAC)
+                                : cfg.audio_codec == "opus" ? avcodec_find_encoder(AV_CODEC_ID_OPUS)
+                                                            : nullptr;
         if (acodec == nullptr) {
-            error = "no AAC encoder in this libavcodec";
+            error = "no encoder available for audio codec: " + cfg.audio_codec;
             return nullptr;
         }
         enc->actx = avcodec_alloc_context3(acodec);
         enc->actx->sample_fmt = AV_SAMPLE_FMT_FLTP;
+        const AVSampleFormat* formats = nullptr;
+        int format_count = 0;
+        if (avcodec_get_supported_config(enc->actx, acodec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0,
+                                         reinterpret_cast<const void**>(&formats),
+                                         &format_count) >= 0 &&
+            formats && format_count > 0 &&
+            std::find(formats, formats + format_count, AV_SAMPLE_FMT_FLTP) ==
+                formats + format_count)
+            enc->actx->sample_fmt = formats[0];
         enc->actx->sample_rate = static_cast<int>(cfg.audio_rate);
         enc->actx->bit_rate = cfg.audio_bitrate;
         av_channel_layout_default(&enc->actx->ch_layout, static_cast<int>(cfg.audio_channels));
@@ -266,7 +329,7 @@ EncoderPtr encoder_open(const RuntimeConfig& cfg, std::string& error) {
         if ((enc->fmt->oformat->flags & AVFMT_GLOBALHEADER) != 0)
             enc->actx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         if ((r = avcodec_open2(enc->actx, acodec, nullptr)) < 0) {
-            error = std::format("avcodec_open2 (aac): {}", av_err(r));
+            error = std::format("avcodec_open2 (audio): {}", av_err(r));
             return nullptr;
         }
         enc->stats.audio_encoder = acodec->name;
@@ -277,18 +340,18 @@ EncoderPtr encoder_open(const RuntimeConfig& cfg, std::string& error) {
 
         AVChannelLayout in_layout;
         av_channel_layout_default(&in_layout, static_cast<int>(cfg.audio_channels));
-        r = swr_alloc_set_opts2(&enc->swr, &enc->actx->ch_layout, AV_SAMPLE_FMT_FLTP,
+        r = swr_alloc_set_opts2(&enc->swr, &enc->actx->ch_layout, enc->actx->sample_fmt,
                                 static_cast<int>(cfg.audio_rate), &in_layout, AV_SAMPLE_FMT_FLT,
                                 static_cast<int>(cfg.audio_rate), 0, nullptr);
         if (r < 0 || swr_init(enc->swr) < 0) {
             error = "swr_init failed";
             return nullptr;
         }
-        enc->fifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLTP, static_cast<int>(cfg.audio_channels),
+        enc->fifo = av_audio_fifo_alloc(enc->actx->sample_fmt, static_cast<int>(cfg.audio_channels),
                                         enc->actx->frame_size * 8);
 
         enc->aframe = av_frame_alloc();
-        enc->aframe->format = AV_SAMPLE_FMT_FLTP;
+        enc->aframe->format = enc->actx->sample_fmt;
         enc->aframe->nb_samples = enc->actx->frame_size;
         av_channel_layout_copy(&enc->aframe->ch_layout, &enc->actx->ch_layout);
         if ((r = av_frame_get_buffer(enc->aframe, 0)) < 0) {
@@ -335,14 +398,14 @@ bool encoder_video(Encoder& enc, const std::uint8_t* bgra, std::size_t stride, s
     const auto t_convert = std::chrono::steady_clock::now();
     const std::uint8_t* src[4] = {bgra, nullptr, nullptr, nullptr};
     const int src_stride[4] = {static_cast<int>(stride), 0, 0, 0};
-    sws_scale(enc.sws, src, src_stride, 0, static_cast<int>(enc.cfg.source_height), enc.vframe->data,
-              enc.vframe->linesize);
+    sws_scale(enc.sws, src, src_stride, 0, static_cast<int>(enc.cfg.source_height),
+              enc.vframe->data, enc.vframe->linesize);
     enc.stats.convert_ms.push_back(
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_convert)
             .count());
 
-    enc.vframe->pts = av_rescale_q(pts_ns - enc.t0_ns, AVRational{1, 1'000'000'000},
-                                   enc.vctx->time_base);
+    enc.vframe->pts =
+        av_rescale_q(pts_ns - enc.t0_ns, AVRational{1, 1'000'000'000}, enc.vctx->time_base);
 
     const auto t_begin = std::chrono::steady_clock::now();
     const int r = avcodec_send_frame(enc.vctx, enc.vframe);
@@ -369,7 +432,7 @@ bool encoder_audio(Encoder& enc, const float* interleaved, std::uint32_t frames,
     const std::uint8_t* in[1] = {reinterpret_cast<const std::uint8_t*>(interleaved)};
     // Convert interleaved float into the planar layout AAC wants, straight into the FIFO.
     AVFrame* tmp = av_frame_alloc();
-    tmp->format = AV_SAMPLE_FMT_FLTP;
+    tmp->format = enc.actx->sample_fmt;
     tmp->nb_samples = static_cast<int>(frames);
     av_channel_layout_copy(&tmp->ch_layout, &enc.actx->ch_layout);
     if (av_frame_get_buffer(tmp, 0) < 0) {
@@ -458,8 +521,8 @@ bool encoder_video_nv12(Encoder& enc, const std::uint8_t* y, int y_stride, const
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_copy)
             .count());
 
-    enc.vframe->pts = av_rescale_q(pts_ns - enc.t0_ns, AVRational{1, 1'000'000'000},
-                                   enc.vctx->time_base);
+    enc.vframe->pts =
+        av_rescale_q(pts_ns - enc.t0_ns, AVRational{1, 1'000'000'000}, enc.vctx->time_base);
 
     const auto t_begin = std::chrono::steady_clock::now();
     const int r = avcodec_send_frame(enc.vctx, enc.vframe);
@@ -476,9 +539,13 @@ bool encoder_video_nv12(Encoder& enc, const std::uint8_t* y, int y_stride, const
     return true;
 }
 
-bool encoder_is_nv12(Encoder& enc) { return enc.vctx->pix_fmt == AV_PIX_FMT_NV12; }
+bool encoder_is_nv12(Encoder& enc) {
+    return enc.vctx->pix_fmt == AV_PIX_FMT_NV12;
+}
 
-const EncoderStats& encoder_stats(Encoder& enc) { return enc.stats; }
+const EncoderStats& encoder_stats(Encoder& enc) {
+    return enc.stats;
+}
 
 void encoder_close(Encoder* enc) {
     if (enc == nullptr)

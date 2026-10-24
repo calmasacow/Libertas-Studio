@@ -3558,7 +3558,11 @@ void Document::renameEncode(const QString& id, const QString& name) {
     run(ldoc::SetEncode{std::move(next)});
 }
 
-void Document::setEncodeRescale(const QString& id, int width, int height) {
+void Document::setEncodeRescale(const QString& id, int width, int height, const QString& filter) {
+    if (!filter.isEmpty() && !QStringList{"bilinear", "bicubic", "lanczos"}.contains(filter)) {
+        emit notice(QStringLiteral("Unknown rescale filter."));
+        return;
+    }
     if ((width != 0 || height != 0) &&
         (width < 2 || height < 2 || width > 16384 || height > 16384 || width % 2 || height % 2)) {
         emit notice(QStringLiteral("Output dimensions must be even numbers from 2 to 16384."));
@@ -3571,6 +3575,8 @@ void Document::setEncodeRescale(const QString& id, int width, int height) {
     if (!existing)
         return;
     ldoc::Encode next = *existing;
+    if (!filter.isEmpty())
+        next.encoder.extra["rescale_filter"] = to_std(filter);
     // Zero means "no rescale": send the canvas at its own size. A rescale equal to the canvas
     // is not the same thing stored -- it would survive a canvas resize and quietly pin the
     // encode to the old size.
@@ -3937,6 +3943,14 @@ void Document::setEncodeEncoder(const QString& id, const QString& codec,
         }
         e.encoder.codec = to_std(codec);
         e.encoder.implementation = to_std(implementation);
+        if (implementation == "nvenc") {
+            auto& profile = e.encoder.extra["nvenc.profile"];
+            const auto* text = std::get_if<std::string>(&profile);
+            const auto allowed = codec == "h264" ? QStringList{"baseline", "main", "high"}
+                               : codec == "hevc" ? QStringList{"main", "main10"} : QStringList{"main"};
+            if (!text || !allowed.contains(qstr(*text)))
+                profile = to_std(codec == "h264" ? QStringLiteral("high") : QStringLiteral("main"));
+        }
     });
 }
 
@@ -4066,7 +4080,7 @@ std::optional<ldoc::ParamValue> Document::encoderExtraValue(
     };
     const QMap<QString, QPair<int, int>> numbers{
         {"nvenc.bframes", {0, 4}}, {"x264.buffer_kbps", {0, 1000000}},
-        {"quality", {0, 63}}, {"audio.track", {1, 6}},
+        {"quality", {0, 63}}, {"gpu", {-1, 255}}, {"audio.track", {1, 6}},
         {"audio.vod_track", {0, 6}}, {"audio.bitrate_kbps", {32, 512}}
     };
     const QStringList flags{"nvenc.lookahead", "nvenc.adaptive_quantization", "x264.custom_buffer"};

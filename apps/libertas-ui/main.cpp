@@ -989,9 +989,72 @@ int main(int argc, char** argv) {
                            "and has room to draw them in");
 
                 }
-                if (parser.isSet(shot_opt)) {
+                if (view && props && !document.projectForBindings().encodes.empty()) {
+                    const auto original = document.projectForBindings().encodes.front();
+                    const auto id = QString::fromStdString(original.id.to_string());
+                    view->setProperty("selectedKind", QStringLiteral("encode"));
+                    view->setProperty("selectedId", id);
+                    document.setEncodeEncoder(id, QStringLiteral("h264"), QStringLiteral("nvenc"));
                     settle();
-                    grab().save(parser.value(shot_opt) + QStringLiteral("/encode-view.png"));
+                    const auto field = [&](const char* name) {
+                        return props->findChild<QObject*>(QString::fromLatin1(name));
+                    };
+                    for (const char* name : {"encodeVideoEncoder", "encodeRescale", "encodeResolution",
+                                             "encodeName", "encodeRateControl", "encodeBitrate",
+                                             "encodeKeyframe", "encodePreset", "encodeTuning",
+                                             "encodeMultipass", "encodeProfile", "encodeLookahead",
+                                             "encodeQuantization", "encodeBframes", "encodeGpu", "encodeOptions"}) {
+                        const auto* item = qobject_cast<QQuickItem*>(field(name));
+                        report(item && item->isVisible(), name);
+                    }
+                    if (auto* bitrate = field("encodeBitrate")) {
+                        report(bitrate->property("value").toInt() == original.encoder.bitrate_kbps,
+                               "Encode bitrate displays the saved value");
+                        QMetaObject::invokeMethod(bitrate, "committed", Q_ARG(double, 40000.0));
+                        settle();
+                        report(document.encodeSettings(id).value("bitrate").toInt() == 40000 &&
+                                   bitrate->property("value").toInt() == 40000,
+                               "Encode bitrate commits and refreshes without reselecting");
+                        document.undo();
+                        settle();
+                        report(bitrate->property("value").toInt() == original.encoder.bitrate_kbps,
+                               "undo refreshes Encode properties");
+                    }
+                    if (auto* scale = field("encodeRescale")) {
+                        QMetaObject::invokeMethod(scale, "committed", Q_ARG(QString, QStringLiteral("lanczos")));
+                        settle();
+                        auto* resolution = field("encodeResolution");
+                        if (resolution)
+                            QMetaObject::invokeMethod(resolution, "committed", Q_ARG(QString, QStringLiteral("1280x720")));
+                        settle();
+                        const auto settings = document.encodeSettings(id);
+                        report(settings.value("width").toInt() == 1280 && settings.value("height").toInt() == 720 &&
+                                   settings.value("extra").toMap().value("rescale_filter").toString() == "lanczos",
+                               "Encode resolution and filter commit to the selected encode");
+                        QMetaObject::invokeMethod(scale, "committed", Q_ARG(QString, QStringLiteral("disabled")));
+                        settle();
+                        report(!document.projectForBindings().encodes.front().rescale,
+                               "disabling rescale restores native canvas size");
+                    }
+                    if (auto* gpu = field("encodeGpu")) {
+                        QMetaObject::invokeMethod(gpu, "committed", Q_ARG(QString, QStringLiteral("0")));
+                        settle();
+                        report(document.encodeSettings(id).value("extra").toMap().value("gpu").toInt() == 0,
+                               "GPU selection persists as a validated device ordinal");
+                    }
+                    if (auto* control = field("encodeRateControl")) {
+                        QMetaObject::invokeMethod(control, "committed", Q_ARG(QString, QStringLiteral("cqp")));
+                        settle();
+                        auto* quality = qobject_cast<QQuickItem*>(field("encodeQuality"));
+                        report(quality && quality->isVisible(), "constant QP exposes its quality setting");
+                        QMetaObject::invokeMethod(control, "committed", Q_ARG(QString, QStringLiteral("cbr")));
+                    }
+                    settle();
+                    if (parser.isSet(shot_opt)) {
+                        grab().save(parser.value(shot_opt) + QStringLiteral("/encode-view.png"));
+                    }
+                    document.runCommand(ldoc::SetEncode{original});
+                    settle();
                 }
             }
             workspace.selectWorkspace(0);

@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <QTimer>
+#include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 
 #include <cstdint>
@@ -45,6 +46,7 @@ class Telemetry : public QObject {
 
     Q_PROPERTY(bool gpuAvailable READ gpuAvailable NOTIFY sampled)
     Q_PROPERTY(QString gpuName READ gpuName NOTIFY sampled)
+    Q_PROPERTY(QVariantList encodingGpus READ encodingGpus CONSTANT)
     Q_PROPERTY(double gpuPercent READ gpuPercent NOTIFY sampled)
     /// The video encode engine specifically, which is the one that matters when it saturates:
     /// a GPU at 40% whose encoder is at 100% drops frames while looking idle.
@@ -76,6 +78,7 @@ public:
     [[nodiscard]] QString diskPath() const { return disk_path_; }
     [[nodiscard]] bool gpuAvailable() const { return gpu_ok_; }
     [[nodiscard]] QString gpuName() const { return gpu_name_; }
+    [[nodiscard]] QVariantList encodingGpus() const;
     [[nodiscard]] double gpuPercent() const { return gpu_percent_; }
     [[nodiscard]] double encoderPercent() const { return encoder_percent_; }
     [[nodiscard]] bool encoderAvailable() const { return encoder_ok_; }

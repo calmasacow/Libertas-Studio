@@ -19,19 +19,30 @@ Item {
     required property string selectedKind
     required property string selectedId
 
-    readonly property var encode: panel.selectedKind === "encode"
-                                  ? Document.encodeSettings(panel.selectedId) : ({})
-    readonly property var audio: panel.selectedKind === "audio-encode"
-                                 ? Document.audioEncodeSettings(panel.selectedId) : ({})
+    property var encode: ({})
+    property var audio: ({})
     readonly property var extra: panel.encode.extra || ({})
     readonly property string implementation: panel.encode.implementation || ""
+
+    property size canvasSize: Qt.size(0, 0)
+    readonly property bool rescaled: (panel.encode.width || 0) > 0
+    property bool customResolution: false
+    onSelectedIdChanged: { customResolution = false; refresh(); }
+    onSelectedKindChanged: refresh()
+    Component.onCompleted: refresh()
+
+    function refresh() {
+        panel.encode = panel.selectedKind === "encode" ? Document.encodeSettings(panel.selectedId) : ({});
+        panel.audio = panel.selectedKind === "audio-encode" ? Document.audioEncodeSettings(panel.selectedId) : ({});
+        panel.canvasSize = Document.canvasSizeOf(Document.encodeCanvasOf(panel.selectedId));
+    }
 
     // Document emits `changed` after every command, and these are calls rather than
     // properties, so without this they would never re-read.
     property int revision: 0
     Connections {
         target: Document
-        function onChanged() { panel.revision++; }
+        function onChanged() { panel.revision++; panel.refresh(); }
     }
 
     function setExtra(key, value) {
@@ -133,8 +144,97 @@ Item {
                 spacing: 6
                 visible: panel.selectedKind === "encode"
 
+                ChoiceField {
+                    objectName: "encodeVideoEncoder"
+                    width: parent.width
+                    label: qsTr("Video Encoder")
+                    labelWidth: 150
+                    choices: Document.codecs.map(c => c.title)
+                    value: {
+                        for (const c of Document.codecs)
+                            if (c.codec === panel.encode.codec && c.implementation === panel.implementation)
+                                return c.title;
+                        return panel.encode.codec + "/" + panel.implementation;
+                    }
+                    onCommitted: value => {
+                        const codec = Document.codecs.find(c => c.title === value);
+                        if (codec) Document.setEncodeEncoder(panel.selectedId, codec.codec, codec.implementation);
+                    }
+                }
+
+                ChoiceField {
+                    objectName: "encodeRescale"
+                    width: parent.width
+                    label: qsTr("Rescale Output")
+                    labelWidth: 150
+                    choices: ["disabled", "bilinear", "bicubic", "lanczos"]
+                    choiceLabels: ({"disabled": qsTr("Disabled"), "bilinear": qsTr("Bilinear"),
+                                    "bicubic": qsTr("Bicubic"), "lanczos": qsTr("Lanczos")})
+                    value: panel.rescaled ? (panel.extra.rescale_filter || "bicubic") : "disabled"
+                    onCommitted: value => Document.setEncodeRescale(panel.selectedId,
+                        value === "disabled" ? 0 : (panel.encode.width || panel.canvasSize.width),
+                        value === "disabled" ? 0 : (panel.encode.height || panel.canvasSize.height),
+                        value === "disabled" ? "" : value)
+                }
+
+                ChoiceField {
+                    objectName: "encodeResolution"
+                    width: parent.width
+                    label: qsTr("Resolution")
+                    labelWidth: 150
+                    enabled: panel.rescaled
+                    choices: {
+                        const sizes = ["3840x2160", "2560x1440", "1920x1080", "1600x900", "1280x720",
+                                       "1080x1920", "720x1280"];
+                        const current = (panel.encode.width || panel.canvasSize.width) + "x"
+                                      + (panel.encode.height || panel.canvasSize.height);
+                        if (!sizes.includes(current)) sizes.unshift(current);
+                        return sizes.concat(["custom"]);
+                    }
+                    choiceLabels: ({"custom": qsTr("Custom…")})
+                    value: panel.customResolution ? "custom"
+                         : (panel.encode.width || panel.canvasSize.width) + "x"
+                         + (panel.encode.height || panel.canvasSize.height)
+                    onCommitted: value => {
+                        panel.customResolution = value === "custom";
+                        if (!panel.customResolution) {
+                            const size = value.split("x").map(Number);
+                            Document.setEncodeRescale(panel.selectedId, size[0], size[1]);
+                        }
+                    }
+                }
+
+                Row {
+                    width: parent.width
+                    spacing: 8
+                    visible: panel.rescaled && panel.customResolution
+                    NumberField {
+                        width: (parent.width - 8) / 2
+                        label: qsTr("Width")
+                        decimals: 0
+                        minimum: 2
+                        maximum: 16384
+                        value: panel.encode.width || 0
+                        onCommitted: value => Document.setEncodeRescale(panel.selectedId,
+                            Math.round(value), panel.encode.height)
+                    }
+                    NumberField {
+                        width: (parent.width - 8) / 2
+                        label: qsTr("Height")
+                        decimals: 0
+                        minimum: 2
+                        maximum: 16384
+                        value: panel.encode.height || 0
+                        onCommitted: value => Document.setEncodeRescale(panel.selectedId,
+                            panel.encode.width, Math.round(value))
+                    }
+                }
+
+                Rectangle { width: parent.width; height: 1; color: Theme.c.border }
+
                 TextLine {
                     width: parent.width
+                    objectName: "encodeName"
                     label: qsTr("Encoder Name")
                     labelWidth: 150
                     value: panel.encode.name || ""
@@ -143,6 +243,7 @@ Item {
 
                 ChoiceField {
                     width: parent.width
+                    objectName: "encodeRateControl"
                     label: qsTr("Rate Control")
                     labelWidth: 150
                     choices: panel.implementation === "x264" ? ["cbr", "vbr", "crf"]
@@ -155,27 +256,47 @@ Item {
                     value: panel.encode.rateControl || "cbr"
                     onCommitted: value => Document.setEncodeOptions(
                         panel.selectedId, value, panel.encode.preset || "",
-                        panel.encode.keyframeMs || 2000)
+                        panel.encode.keyframeMs ?? 2000)
                 }
 
                 NumberField {
                     width: parent.width
+                    objectName: "encodeBitrate"
                     label: qsTr("Bitrate")
                     labelWidth: 150
+                    minimum: 1
+                    maximum: 1000000
                     decimals: 0
                     suffix: qsTr("Kbps")
                     steppers: true
                     step: 500
                     visible: !["cqp", "crf"].includes(panel.encode.rateControl || "cbr")
-                    value: panel.encode.bitrateKbps || 0
+                    value: panel.encode.bitrate || 0
                     onCommitted: value => Document.setEncodeBitrate(
                         panel.selectedId, Math.max(1, Math.round(value)))
                 }
 
                 NumberField {
+                    objectName: "encodeQuality"
                     width: parent.width
+                    label: panel.encode.rateControl === "cqp" ? qsTr("Constant QP") : qsTr("Quality (CRF)")
+                    labelWidth: 150
+                    visible: ["cqp", "crf"].includes(panel.encode.rateControl)
+                    decimals: 0
+                    steppers: true
+                    minimum: 0
+                    maximum: panel.encode.codec === "av1" ? 63 : 51
+                    value: Number(panel.extra.quality ?? 23)
+                    onCommitted: value => panel.setExtra("quality", Math.round(value))
+                }
+
+                NumberField {
+                    width: parent.width
+                    objectName: "encodeKeyframe"
                     label: qsTr("Keyframe Interval")
                     labelWidth: 150
+                    minimum: 0
+                    maximum: 600
                     decimals: 0
                     suffix: qsTr("s")
                     steppers: true
@@ -187,6 +308,7 @@ Item {
 
                 ChoiceField {
                     width: parent.width
+                    objectName: "encodePreset"
                     label: panel.implementation === "x264" ? qsTr("CPU Usage Preset")
                                                            : qsTr("Preset")
                     labelWidth: 150
@@ -203,7 +325,7 @@ Item {
                     value: panel.encode.preset || ""
                     onCommitted: value => Document.setEncodeOptions(
                         panel.selectedId, panel.encode.rateControl || "cbr", value,
-                        panel.encode.keyframeMs || 2000)
+                        panel.encode.keyframeMs ?? 2000)
                 }
 
                 // The nvenc knobs. These live in EncoderConfig::extra, which is where the
@@ -211,6 +333,7 @@ Item {
                 ChoiceField {
                     width: parent.width
                     visible: panel.implementation === "nvenc"
+                    objectName: "encodeTuning"
                     label: qsTr("Tuning")
                     labelWidth: 150
                     choices: ["hq", "ll", "ull", "lossless"]
@@ -224,6 +347,7 @@ Item {
                 ChoiceField {
                     width: parent.width
                     visible: panel.implementation === "nvenc"
+                    objectName: "encodeMultipass"
                     label: qsTr("Multipass Mode")
                     labelWidth: 150
                     choices: ["disabled", "quarter", "full"]
@@ -236,22 +360,25 @@ Item {
 
                 ChoiceField {
                     width: parent.width
-                    visible: panel.implementation === "nvenc"
+                    visible: ["nvenc", "x264"].includes(panel.implementation)
+                    objectName: "encodeProfile"
                     label: qsTr("Profile")
                     labelWidth: 150
-                    choices: (panel.encode.codec === "h264") ? ["baseline", "main", "high"]
+                    choices: panel.implementation === "x264" ? ["", "baseline", "main", "high"]
+                           : (panel.encode.codec === "h264") ? ["baseline", "main", "high"]
                            : (panel.encode.codec === "hevc") ? ["main", "main10"] : ["main"]
-                    choiceLabels: ({"baseline": qsTr("Baseline"), "main": qsTr("Main"),
+                    choiceLabels: ({"": qsTr("Encoder default"), "baseline": qsTr("Baseline"), "main": qsTr("Main"),
                                     "high": qsTr("High"), "main10": qsTr("Main 10")})
-                    value: String(panel.extra["nvenc.profile"] ??
+                    value: String(panel.extra[panel.implementation + ".profile"] ??
                                   (panel.encode.codec === "h264" ? "high" : "main"))
-                    onCommitted: value => panel.setExtra("nvenc.profile", value)
+                    onCommitted: value => panel.setExtra(panel.implementation + ".profile", value)
                 }
 
                 Item { width: 1; height: 4 }
 
                 CheckLabel {
                     visible: panel.implementation === "nvenc"
+                    objectName: "encodeLookahead"
                     text: qsTr("Look Ahead")
                     checked: panel.extra["nvenc.lookahead"] === true
                     onToggled: panel.setExtra("nvenc.lookahead",
@@ -260,6 +387,7 @@ Item {
 
                 CheckLabel {
                     visible: panel.implementation === "nvenc"
+                    objectName: "encodeQuantization"
                     text: qsTr("Adaptive Quantization")
                     checked: panel.extra["nvenc.adaptive_quantization"] !== false
                     onToggled: panel.setExtra(
@@ -272,31 +400,70 @@ Item {
                 NumberField {
                     width: parent.width
                     visible: panel.implementation === "nvenc"
+                    objectName: "encodeBframes"
                     label: qsTr("B-Frames")
                     labelWidth: 150
                     decimals: 0
                     steppers: true
                     minimum: 0
-                    maximum: 16
+                    maximum: 4
                     value: Number(panel.extra["nvenc.bframes"] ?? 2)
                     onCommitted: value => panel.setExtra("nvenc.bframes", Math.round(value))
                 }
 
-                // Which device, not which encoder. The list of devices a machine really has is
-                // `libertas probe`'s answer and is not wired up yet, so this says so rather
-                // than offering a menu of one invented entry.
-                TextLine {
+                ChoiceField {
+                    objectName: "encodeGpu"
                     width: parent.width
+                    visible: panel.implementation === "nvenc"
                     label: qsTr("GPU Selection")
                     labelWidth: 150
-                    placeholder: Telemetry.gpuAvailable ? Telemetry.gpuName
-                                                        : qsTr("default device")
-                    value: String(panel.extra["gpu"] ?? "")
-                    onCommitted: value => panel.setExtra("gpu", value)
+                    choices: ["-1"].concat(Telemetry.encodingGpus.map(g => String(g.index)))
+                    choiceLabels: {
+                        const labels = {"-1": qsTr("Automatic")};
+                        for (const gpu of Telemetry.encodingGpus)
+                            labels[String(gpu.index)] = "GPU " + gpu.index + " (" + gpu.name + ")";
+                        return labels;
+                    }
+                    value: String(panel.extra.gpu ?? -1)
+                    onCommitted: value => panel.setExtra("gpu", Number(value))
+                }
+
+                ChoiceField {
+                    width: parent.width
+                    visible: panel.implementation === "x264"
+                    label: qsTr("Tuning")
+                    labelWidth: 150
+                    choices: ["", "film", "animation", "grain", "stillimage", "psnr", "ssim",
+                              "fastdecode", "zerolatency"]
+                    choiceLabels: ({"": qsTr("Encoder default")})
+                    value: String(panel.extra["x264.tune"] ?? "")
+                    onCommitted: value => panel.setExtra("x264.tune", value)
+                }
+
+                CheckLabel {
+                    visible: panel.implementation === "x264"
+                    text: qsTr("Use Custom Buffer Size")
+                    checked: panel.extra["x264.custom_buffer"] === true
+                    onToggled: panel.setExtra("x264.custom_buffer", !checked)
+                }
+
+                NumberField {
+                    width: parent.width
+                    visible: panel.implementation === "x264" && panel.extra["x264.custom_buffer"] === true
+                    label: qsTr("Buffer Size")
+                    labelWidth: 150
+                    decimals: 0
+                    minimum: 0
+                    maximum: 1000000
+                    suffix: qsTr("Kbps")
+                    value: Number(panel.extra["x264.buffer_kbps"] ?? 6000)
+                    onCommitted: value => panel.setExtra("x264.buffer_kbps", Math.round(value))
                 }
 
                 TextLine {
                     width: parent.width
+                    objectName: "encodeOptions"
+                    visible: ["nvenc", "x264"].includes(panel.implementation)
                     label: qsTr("Encoder Options")
                     labelWidth: 150
                     value: String(panel.extra[panel.implementation === "x264"

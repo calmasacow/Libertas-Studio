@@ -558,7 +558,8 @@ public:
     /// afterwards (ADR-0035).
     Q_INVOKABLE void setEncodeCanvas(const QString& id, const QString& canvasId);
     Q_INVOKABLE void renameEncode(const QString& id, const QString& name);
-    Q_INVOKABLE void setEncodeRescale(const QString& id, int width, int height);
+    Q_INVOKABLE void setEncodeRescale(const QString& id, int width, int height,
+                                     const QString& filter = {});
 
     // ---- audio encodes ----------------------------------------------------------------------
     //

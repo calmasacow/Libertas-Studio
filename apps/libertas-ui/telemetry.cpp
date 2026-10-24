@@ -14,6 +14,34 @@
 #include <unistd.h>
 
 namespace libertas::ui {
+
+QVariantList Telemetry::encodingGpus() const {
+    // NVENC's GPU indices are CUDA ordinals, which can differ from NVML/Vulkan ordering.
+    // ponytail: enumerate once per process; refresh this list if live GPU hotplug is needed.
+    static const QVariantList devices = [] {
+        QVariantList result;
+        void* library = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+        if (!library)
+            return result;
+        const auto init = reinterpret_cast<int (*)(unsigned)>(dlsym(library, "cuInit"));
+        const auto count = reinterpret_cast<int (*)(int*)>(dlsym(library, "cuDeviceGetCount"));
+        const auto get = reinterpret_cast<int (*)(int*, int)>(dlsym(library, "cuDeviceGet"));
+        const auto name = reinterpret_cast<int (*)(char*, int, int)>(dlsym(library, "cuDeviceGetName"));
+        int total = 0;
+        if (init && count && get && name && init(0) == 0 && count(&total) == 0) {
+            for (int i = 0; i < total; ++i) {
+                std::array<char, 256> label{};
+                int device = 0;
+                if (get(&device, i) == 0 && name(label.data(), static_cast<int>(label.size()), device) == 0)
+                    result.append(QVariantMap{{"index", i}, {"name", QString::fromUtf8(label.data())}});
+            }
+        }
+        dlclose(library);
+        return result;
+    }();
+    return devices;
+}
+
 namespace {
 
 QString g_disk_path;

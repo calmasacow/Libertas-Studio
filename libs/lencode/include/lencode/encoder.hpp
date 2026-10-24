@@ -5,6 +5,7 @@
 #include "ldoc/document.hpp"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,9 +16,9 @@ namespace libertas::encode {
 /// because the top rung is not available everywhere and failing to start a show is not an option.
 enum class VideoTier {
     None,
-    Vulkan,   ///< h264_vulkan on OUR VkDevice - no interop in the hot path
-    Nvenc,    ///< h264_nvenc, software frames (costs an upload)
-    X264,     ///< libx264 - the floor, always present
+    Vulkan, ///< h264_vulkan on OUR VkDevice - no interop in the hot path
+    Nvenc,  ///< h264_nvenc, software frames (costs an upload)
+    X264,   ///< libx264 - the floor, always present
 };
 
 const char* tier_name(VideoTier t);
@@ -26,7 +27,7 @@ const char* tier_name(VideoTier t);
 /// is what the *document* says, in the operator's terms, and this one is what FFmpeg needs, in
 /// the muxer's. `runtime_config` below is the single place the first becomes the second.
 struct RuntimeConfig {
-    std::string path;              ///< output file; the container is chosen from its extension
+    std::string path; ///< output file; the container is chosen from its extension
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     /// Zero uses the output size. The compositor supplies RGBA at the canvas size;
@@ -37,13 +38,18 @@ struct RuntimeConfig {
     std::int32_t fps_num = 60;
     std::int32_t fps_den = 1;
     std::int64_t bitrate = 12'000'000;
-    std::string force_tier;        ///< Encoder name from tier_name(); empty = walk the ladder
+    std::string force_tier; ///< Encoder name from tier_name(); empty = walk the ladder
+    std::int32_t keyframe_interval_ms = 2000;
+    std::map<std::string, std::string> video_options;
+    std::string custom_options;
+    std::string rescale_filter = "bilinear";
 
     /// Audio. Zero channels disables the audio stream entirely, which is useful for isolating a
     /// video problem but is NOT the Phase-0 gate - the gate requires synced audio.
     std::uint32_t audio_rate = 48000;
     std::uint32_t audio_channels = 2;
     std::int64_t audio_bitrate = 160'000;
+    std::string audio_codec = "aac";
 };
 
 struct EncoderStats {
@@ -63,9 +69,11 @@ struct EncoderStats {
 
 struct Encoder;
 void encoder_close(Encoder*);
+
 struct EncoderDeleter {
     void operator()(Encoder* p) const { encoder_close(p); }
 };
+
 using EncoderPtr = std::unique_ptr<Encoder, EncoderDeleter>;
 
 /// Opens the output file and brings up both streams. Walks the encoder ladder unless pinned.

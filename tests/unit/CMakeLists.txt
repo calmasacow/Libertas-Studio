@@ -46,6 +46,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(RECORD_TEST_FFMPEG REQUIRED IMPORTED_TARGET
     libavcodec libavformat libavutil libswscale)
 libertas_unit_test(test_preview         libertas::lcomp libertas::lcapture PkgConfig::RECORD_TEST_FFMPEG)
+libertas_unit_test(test_encode          libertas::lencode PkgConfig::RECORD_TEST_FFMPEG)
 target_compile_definitions(test_preview PRIVATE
     LIBERTAS_VST_FIXTURE="$<TARGET_FILE:vst_fixture>"
     LIBERTAS_RENDER="$<TARGET_FILE:libertas-render>"

@@ -272,7 +272,7 @@ Item {
         anchors.bottom: parent.bottom
         // The mockup's proportion. Narrow enough that the graph keeps the room, wide enough
         // that "Two Passes (Quarter Resolution)" fits in a dropdown without eliding.
-        width: Math.min(360, Math.max(290, view.width * 0.22))
+        width: Math.min(520, Math.max(440, view.width * 0.20))
 
         selectedKind: view.selectedKind
         selectedId: view.selectedId
