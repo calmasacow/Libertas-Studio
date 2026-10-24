@@ -37,6 +37,56 @@ Item {
     property real panX: 0
     property real panY: 0
 
+    property string wireSourceKind: ""
+    property string wireSourceId: ""
+    readonly property bool wireActive: wireSourceId !== ""
+    property point wireStart: Qt.point(0, 0)
+    property point wireEnd: Qt.point(0, 0)
+    readonly property Item dragItem: wireCursor
+
+    function beginWire(card, port) {
+        graph.cancelWire();
+        graph.nodeSelected(card.nodeKind, card.nodeId);
+        graph.forceActiveFocus();
+        graph.wireStart = port.mapToItem(graph, port.width / 2, port.height / 2);
+        graph.wireEnd = graph.wireStart;
+        graph.wireSourceKind = card.nodeKind;
+        graph.wireSourceId = card.nodeId;
+    }
+    function moveWire(x, y) {
+        if (graph.wireActive)
+            graph.wireEnd = Qt.point(x, y);
+    }
+    function dropWire(source, kind, id, port) {
+        return graph.wireActive && source === wireCursor &&
+               Document.connectGraphPorts(graph.wireSourceKind, graph.wireSourceId, kind, id, port);
+    }
+    function endWire() {
+        if (graph.wireActive)
+            wireCursor.Drag.drop();
+        graph.wireSourceId = "";
+        graph.wireSourceKind = "";
+    }
+    function cancelWire() {
+        wireCursor.Drag.cancel();
+        graph.wireSourceId = "";
+        graph.wireSourceKind = "";
+    }
+    Keys.onEscapePressed: graph.cancelWire()
+
+    Item {
+        id: wireCursor
+        x: graph.wireEnd.x
+        y: graph.wireEnd.y
+        width: 1
+        height: 1
+        Drag.active: graph.wireActive
+        Drag.source: wireCursor
+        Drag.keys: [graph.wireSourceKind]
+        Drag.supportedActions: Qt.LinkAction
+        Drag.proposedAction: Qt.LinkAction
+    }
+
     readonly property real railX: 30
     readonly property real railTop: 20
     readonly property real railSpacing: 14
@@ -140,6 +190,14 @@ Item {
         links: graph.links
     }
 
+    GraphEdges {
+        objectName: "encodePendingWire"
+        anchors.fill: parent
+        visible: graph.wireActive
+        links: graph.wireActive ? [{x1: graph.wireStart.x, y1: graph.wireStart.y,
+                                   x2: graph.wireEnd.x, y2: graph.wireEnd.y, lit: true}] : []
+    }
+
     // --- the left rail: canvases, then audio tracks ------------------------------------------
 
     Column {
@@ -157,6 +215,9 @@ Item {
             delegate: EncodeNodeCard {
                 id: canvasCard
                 objectName: "encodeCanvasNode_" + canvasId
+                nodeKind: "canvas"
+                nodeId: canvasId
+                connectionGraph: graph
 
                 required property string canvasId
                 required property string name
@@ -229,6 +290,9 @@ Item {
             delegate: EncodeNodeCard {
                 id: busCard
                 objectName: "encodeBusNode_" + busId
+                nodeKind: "bus"
+                nodeId: busId
+                connectionGraph: graph
 
                 required property string busId
                 required property string name
@@ -323,6 +387,10 @@ Item {
         delegate: EncodeNodeCard {
             id: encodeCard
             objectName: "encodeNode_" + encodeId
+            nodeKind: "encode"
+            nodeId: encodeId
+            connectionGraph: graph
+            acceptedSourceKind: "canvas"
 
             required property string encodeId
             required property string name
@@ -478,6 +546,10 @@ Item {
         delegate: EncodeNodeCard {
             id: audioCard
             objectName: "audioEncodeNode_" + audioEncodeId
+            nodeKind: "audio-encode"
+            nodeId: audioEncodeId
+            connectionGraph: graph
+            acceptedSourceKind: "bus"
 
             required property string audioEncodeId
             required property string name
@@ -558,6 +630,9 @@ Item {
         delegate: EncodeNodeCard {
             id: outputCard
             objectName: "outputNode_" + outputId
+            nodeKind: "output"
+            nodeId: outputId
+            connectionGraph: graph
 
             required property string outputId
             required property string name
@@ -583,8 +658,8 @@ Item {
             hasInput: true
             readonly property real videoInputY: bodyTop + outputDetails.y + videoTrack.y + videoTrack.height / 2
             readonly property real audioInputY: bodyTop + outputDetails.y + audioTrack.y + audioTrack.height / 2
-            inputPorts: [{key: "video", y: videoInputY, label: qsTr("Video 0")},
-                         {key: "audio", y: audioInputY, label: qsTr("Audio 0")}]
+            inputPorts: [{key: "video", y: videoInputY, label: qsTr("Video 0"), accepts: "encode"},
+                         {key: "audio", y: audioInputY, label: qsTr("Audio 0"), accepts: "audio-encode"}]
             missingConnections: outputCard.encodeId === "" || outputCard.audioEncodeId === ""
             onDisconnectRequested: port => Document.disconnectGraphPort("output", outputCard.outputId, port)
             selected: graph.isSelected("output", outputCard.outputId)

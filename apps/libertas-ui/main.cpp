@@ -1200,6 +1200,141 @@ int main(int argc, char** argv) {
                         [&](const auto& p) { return p.audio_encode(audio.id)->bus.is_nil(); });
                 }
                 auto* menu = window->findChild<QQuickItem*>(QStringLiteral("encodeNodeMenu"));
+                auto* pendingWire = window->findChild<QQuickItem*>(QStringLiteral("encodePendingWire"));
+                const auto portFor = [&](const QString& kind, const ldoc::Id& id, const QString& port) -> QQuickItem* {
+                    const QString prefix = kind == "canvas" ? "encodeCanvasNode_"
+                        : kind == "bus" ? "encodeBusNode_" : kind == "encode" ? "encodeNode_"
+                        : kind == "audio-encode" ? "audioEncodeNode_" : "outputNode_";
+                    const auto cards = collect(window->contentItem(), prefix + QString::fromStdString(id.to_string()));
+                    if (cards.empty()) return nullptr;
+                    const auto ports = collect(cards.front(), "encodePort_" + port);
+                    return ports.empty() ? nullptr : ports.front();
+                };
+                const auto sameProject = [](ldoc::Project a, const ldoc::Project& b) {
+                    a.generation = b.generation; // Autosave is independent of the gesture.
+                    return a == b;
+                };
+                bool wireShotWritten = false;
+                const auto dragWire = [&](QQuickItem* output, QQuickItem* input, bool compatible,
+                                           bool escape = false) {
+                    report(output && pendingWire, "the wire gesture has an output port and preview");
+                    if (!output || !pendingWire) return;
+                    const auto from = output->mapToScene(QPointF(output->width()/2, output->height()/2));
+                    const auto to = input ? input->mapToScene(QPointF(input->width()/2, input->height()/2))
+                        : pendingWire->mapToScene(QPointF(pendingWire->width()-20, pendingWire->height()-80));
+                    post(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+                    pump(30);
+                    report(pendingWire->isVisible() && !pendingWire->property("links").toList().empty(),
+                           "pulling an output draws a live wire preview");
+                    for (int step = 1; step <= 6; ++step) {
+                        post(QEvent::MouseMove, from + (to-from) * (step/6.0), Qt::NoButton, Qt::LeftButton);
+                        pump(25);
+                    }
+                    if (input)
+                        report((input->property("color").value<QColor>() ==
+                                    QColor(theme.colors().value("good").toString())) == compatible,
+                               "only compatible landing points highlight as drop targets");
+                    if (compatible && !escape && parser.isSet(shot_opt) && !wireShotWritten) {
+                        grab().save(parser.value(shot_opt) + QStringLiteral("/encode-wire-drag.png"));
+                        wireShotWritten = true;
+                    }
+                    if (escape) {
+                        QKeyEvent cancel(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+                        QCoreApplication::sendEvent(window, &cancel);
+                        pump(20);
+                        report(!pendingWire->isVisible(), "Escape cancels the pending wire before release");
+                    }
+                    post(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                    report(!pendingWire->isVisible(), "the pending wire disappears after release");
+                };
+                if (fileOutput != graphProject.outputs.end() && !graphProject.audio_encodes.empty()) {
+                    const auto& video = graphProject.encodes.front();
+                    const auto& audio = graphProject.audio_encodes.front();
+                    const auto fileId = QString::fromStdString(fileOutput->id.to_string());
+                    const auto checkWire = [&](const QString& sourceKind, const ldoc::Id& source,
+                                               const QString& targetKind, const ldoc::Id& targetId,
+                                               const QString& port) {
+                        const auto connected = document.projectForBindings();
+                        document.disconnectGraphPort(targetKind, QString::fromStdString(targetId.to_string()), port);
+                        settle();
+                        const auto disconnected = document.projectForBindings();
+                        dragWire(portFor(sourceKind, source, "output"), portFor(targetKind, targetId, port), true);
+                        const bool linked = sameProject(document.projectForBindings(), connected);
+                        report(linked,
+                               "dragging a compatible wire restores its saved route without moving nodes");
+                        if (!sameProject(document.projectForBindings(), disconnected)) {
+                            document.undo();
+                            settle();
+                        }
+                        report(sameProject(document.projectForBindings(), disconnected),
+                               "one undo removes the new connection");
+                        document.undo();
+                        settle();
+                    };
+                    checkWire("encode", video.id, "output", fileOutput->id, "video");
+                    checkWire("audio-encode", audio.id, "output", fileOutput->id, "audio");
+                    checkWire("canvas", video.canvas, "encode", video.id, "input");
+                    checkWire("bus", audio.bus, "audio-encode", audio.id, "input");
+                    const auto unchanged = document.projectForBindings();
+                    const auto undoBeforeWire = document.undoDescription();
+                    auto* videoOut = portFor("encode", video.id, "output");
+                    auto* audioOut = portFor("audio-encode", audio.id, "output");
+                    auto* videoIn = portFor("output", fileOutput->id, "video");
+                    auto* audioIn = portFor("output", fileOutput->id, "audio");
+                    dragWire(audioOut, videoIn, false);
+                    dragWire(videoOut, audioIn, false);
+                    dragWire(videoOut, nullptr, false);
+                    dragWire(videoOut, videoIn, true, true);
+                    dragWire(videoOut, videoIn, true); // An already connected input is a no-op.
+                    report(sameProject(document.projectForBindings(), unchanged) &&
+                               document.undoDescription() == undoBeforeWire,
+                           "wrong types, empty drops, Escape and duplicate wires preserve the graph and undo history");
+                    report(!document.connectGraphPorts("audio-encode", QString::fromStdString(audio.id.to_string()),
+                                                       "output", fileId, "video") &&
+                               !document.connectGraphPorts("encode", "not-an-id", "output", fileId, "video") &&
+                               !document.connectGraphPorts("encode", QString::fromStdString(ldoc::Id::generate().to_string()),
+                                                           "output", fileId, "video") &&
+                               sameProject(document.projectForBindings(), unchanged),
+                           "the command boundary refuses invalid types and missing source ids");
+
+                    auto spare = video;
+                    spare.id = ldoc::Id::generate();
+                    spare.name = "Wire replacement check";
+                    spare.position = {400, 420};
+                    ldoc::Output destination;
+                    destination.id = ldoc::Id::generate();
+                    destination.name = "Wire fan-out check";
+                    destination.encode = spare.id;
+                    destination.position = {760, 580};
+                    document.runCommand(ldoc::make_batch({ldoc::AddEncode{spare, unchanged.encodes.size()},
+                        ldoc::AddOutput{destination, unchanged.outputs.size()}}, "Wire check fixtures"));
+                    settle();
+                    const auto fixture = document.projectForBindings();
+                    dragWire(portFor("encode", video.id, "output"),
+                             portFor("output", destination.id, "video"), true);
+                    report(document.projectForBindings().outputs.back().encode == video.id &&
+                               document.projectForBindings().encode(spare.id) != nullptr &&
+                               document.projectForBindings().encodes == fixture.encodes &&
+                               std::equal(unchanged.outputs.begin(), unchanged.outputs.end(),
+                                          document.projectForBindings().outputs.begin()),
+                           "replacing a wire preserves the old encoder and the source's other destinations");
+                    document.undo();
+                    settle();
+                    report(sameProject(document.projectForBindings(), fixture),
+                           "one undo restores the replaced wire");
+                    dragWire(portFor("audio-encode", audio.id, "output"),
+                             portFor("output", destination.id, "audio"), true);
+                    report(document.projectForBindings().outputs.back().audio_encode == audio.id &&
+                               std::equal(unchanged.outputs.begin(), unchanged.outputs.end(),
+                                          document.projectForBindings().outputs.begin()),
+                           "audio output ports fan out without taking connections from other destinations");
+                    document.undo();
+                    document.undo();
+                    settle();
+                    report(sameProject(document.projectForBindings(), unchanged),
+                           "wire gesture checks leave the original graph intact");
+                }
                 auto* confirmation = window->findChild<QQuickItem*>(QStringLiteral("encodeRemovalConfirmation"));
                 const auto checkRemoval = [&](const QString& prefix, const ldoc::Id& nodeId) {
                     const auto beforeRemoval = document.projectForBindings();

@@ -541,6 +541,9 @@ public:
     Q_INVOKABLE void initializeEncodeGraph();
     Q_INVOKABLE void disconnectGraphPort(const QString& kind, const QString& id,
                                          const QString& port);
+    Q_INVOKABLE bool connectGraphPorts(const QString& sourceKind, const QString& sourceId,
+                                       const QString& targetKind, const QString& targetId,
+                                       const QString& targetPort);
     Q_INVOKABLE QString recordingEncodeId() const;
     Q_INVOKABLE void removeEncode(const QString& id);
     Q_INVOKABLE QVariantMap encodeSettings(const QString& id) const;

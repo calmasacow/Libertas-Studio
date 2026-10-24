@@ -12,12 +12,15 @@ import Libertas
 /// destination -- because they differ only in what goes in the body. Five near-identical
 /// cards would drift apart the first time the selection outline changed.
 ///
-/// The card does not know what it represents. It reports presses and drags; whoever placed it
-/// decides what those mean.
+/// The graph owns wire gestures; the card supplies its identity and typed landing points.
 Item {
     id: card
 
     required property string title
+    property string nodeKind: ""
+    property string nodeId: ""
+    property Item connectionGraph: null
+    property string acceptedSourceKind: ""
     /// Drawn after the title in the muted colour: a resolution, a bitrate, a codec.
     property string subtitle: ""
     property bool selected: false
@@ -29,7 +32,8 @@ Item {
     /// that cannot be made.
     property bool hasInput: false
     property bool hasOutput: false
-    property var inputPorts: hasInput ? [{key: "input", y: 30, label: qsTr("Input")}] : []
+    property var inputPorts: hasInput ? [{key: "input", y: 30, label: qsTr("Input"),
+                                        accepts: acceptedSourceKind}] : []
     readonly property real bodyTop: bodySlot.y
     /// Where edges attach, in the graph's coordinates. Read by GraphEdges.
     readonly property point inPort: Qt.point(card.x, card.y + 30)
@@ -71,7 +75,8 @@ Item {
             height: 12
             radius: 6
             z: 2
-            color: card.selected ? Theme.c.accent : Theme.c.textMuted
+            color: dropZone.containsDrag ? Theme.c.good
+                 : card.selected ? Theme.c.accent : Theme.c.textMuted
             border.width: activeFocus ? 1 : 0
             border.color: Theme.c.text
             activeFocusOnTab: true
@@ -86,15 +91,55 @@ Item {
                 }
             }
             MouseArea {
+                id: portMouse
                 anchors.fill: parent
                 anchors.margins: -4
                 acceptedButtons: Qt.LeftButton
                 cursorShape: Qt.PointingHandCursor
+                property bool disconnecting: false
                 onPressed: mouse => {
-                    if (!(mouse.modifiers & Qt.AltModifier))
+                    disconnecting = (mouse.modifiers & Qt.AltModifier) !== 0;
+                    if (disconnecting)
+                        return;
+                    if (port.modelData.key === "output" && card.connectionGraph)
+                        card.connectionGraph.beginWire(card, port);
+                    else
                         mouse.accepted = false;
                 }
-                onClicked: card.disconnectRequested(port.modelData.key)
+                onPositionChanged: mouse => {
+                    if (pressed && !disconnecting && port.modelData.key === "output" && card.connectionGraph) {
+                        const at = portMouse.mapToItem(card.connectionGraph, mouse.x, mouse.y);
+                        card.connectionGraph.moveWire(at.x, at.y);
+                    }
+                }
+                onReleased: {
+                    if (!disconnecting && port.modelData.key === "output" && card.connectionGraph)
+                        card.connectionGraph.endWire();
+                }
+                onCanceled: {
+                    if (card.connectionGraph)
+                        card.connectionGraph.cancelWire();
+                }
+                onClicked: {
+                    if (disconnecting)
+                        card.disconnectRequested(port.modelData.key);
+                }
+            }
+            DropArea {
+                id: dropZone
+                anchors.fill: parent
+                anchors.margins: -4
+                enabled: port.modelData.key !== "output"
+                keys: [port.modelData.accepts || ""]
+                onEntered: drag => {
+                    if (!card.connectionGraph || drag.source !== card.connectionGraph.dragItem)
+                        drag.accepted = false;
+                }
+                onDropped: drop => {
+                    if (card.connectionGraph && card.connectionGraph.dropWire(
+                            drop.source, card.nodeKind, card.nodeId, port.modelData.key))
+                        drop.acceptProposedAction();
+                }
             }
         }
     }

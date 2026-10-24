@@ -3591,6 +3591,56 @@ void Document::disconnectGraphPort(const QString& kind, const QString& id, const
         run(ldoc::make_batch(std::move(steps), "Disconnect graph port"));
 }
 
+bool Document::connectGraphPorts(const QString& sourceKind, const QString& sourceId,
+                                 const QString& targetKind, const QString& targetId,
+                                 const QString& targetPort) {
+    const auto source = parse_id(sourceId);
+    const auto target = parse_id(targetId);
+    if (!source || !target)
+        return false;
+    const auto& p = session_->project();
+    std::optional<ldoc::Command> command;
+    if (sourceKind == "canvas" && targetKind == "encode" && targetPort == "input") {
+        const auto* existing = p.encode(*target);
+        if (!existing || !p.canvas(*source)) return false;
+        if (existing->canvas == *source) return true;
+        auto next = *existing;
+        next.canvas = *source;
+        retitle_if_auto(p, *existing, next);
+        command = ldoc::SetEncode{std::move(next)};
+    } else if (sourceKind == "bus" && targetKind == "audio-encode" && targetPort == "input") {
+        const auto* existing = p.audio_encode(*target);
+        const auto* bus = p.bus(*source);
+        if (!existing || !bus ||
+            (bus->kind != ldoc::BusKind::Program && bus->kind != ldoc::BusKind::Vod &&
+             bus->kind != ldoc::BusKind::Track && bus->kind != ldoc::BusKind::Submix))
+            return false;
+        if (existing->bus == *source) return true;
+        auto next = *existing;
+        next.bus = *source;
+        command = ldoc::SetAudioEncode{std::move(next)};
+    } else if (targetKind == "output") {
+        const auto existing = std::ranges::find(p.outputs, *target, &ldoc::Output::id);
+        if (existing == p.outputs.end()) return false;
+        auto next = *existing;
+        if (sourceKind == "encode" && targetPort == "video" && p.encode(*source))
+            next.encode = *source;
+        else if (sourceKind == "audio-encode" && targetPort == "audio" && p.audio_encode(*source))
+            next.audio_encode = *source;
+        else
+            return false;
+        if (next == *existing) return true;
+        // Replacing a wire keeps both encoders; this edits only the destination's input.
+        command = ldoc::SetOutput{std::move(next)};
+    }
+    if (!command)
+        return false;
+    const auto result = session_->run(*command);
+    if (!result)
+        emit notice(qstr(result.error()));
+    return result.has_value();
+}
+
 void Document::removeEncode(const QString& id) {
     const auto parsed = parse_id(id);
     if (!parsed || !session_->project().encode(*parsed)) return;
