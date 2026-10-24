@@ -194,6 +194,30 @@ LTEST_CASE(the_default_project_round_trips) {
     CHECK_MSG(project_to_json(rebuilt) == text, "serialising what was read gave different bytes");
 }
 
+LTEST_CASE(replay_outputs_preserve_routes_and_graph_positions) {
+    auto p = make_default_project("Backtrack");
+    Encode video;
+    video.id = Id::generate();
+    video.canvas = p.canvases.front().id;
+    p.encodes.push_back(video);
+    AudioEncode audio;
+    audio.id = Id::generate();
+    audio.bus = p.buses.front().id;
+    p.audio_encodes.push_back(audio);
+    Output replay;
+    replay.id = Id::generate();
+    replay.name = "Backtrack";
+    replay.encode = video.id;
+    replay.audio_encode = audio.id;
+    replay.destination.kind = DestinationKind::Replay;
+    replay.position = {915.0, 425.0};
+    p.outputs.push_back(replay);
+    p.settings.extra["encode.graph.initialized"] = true;
+    const auto back = project_from_json(project_to_json(p));
+    REQUIRE(back);
+    CHECK(back->project == without_scenes(p));
+}
+
 LTEST_CASE(serialisation_is_deterministic) {
     // A project directory is meant to be diffable. If the same project can produce two different
     // files, every save churns the diff and the format stops being reviewable.

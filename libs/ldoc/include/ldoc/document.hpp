@@ -206,7 +206,7 @@ struct EncoderConfig {
     friend bool operator==(const EncoderConfig&, const EncoderConfig&) = default;
 };
 
-enum class DestinationKind : std::uint8_t { Rtmp, Rtmps, Srt, Whip, File };
+enum class DestinationKind : std::uint8_t { Rtmp, Rtmps, Srt, Whip, File, Replay };
 
 [[nodiscard]] std::string_view to_string(DestinationKind k);
 [[nodiscard]] std::optional<DestinationKind> destination_kind_from_string(std::string_view s);

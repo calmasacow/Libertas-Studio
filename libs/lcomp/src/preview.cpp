@@ -332,7 +332,7 @@ std::expected<void, std::string> PreviewLink::refresh(std::uint32_t max_edge) {
 }
 
 std::expected<void, std::string> PreviewLink::send_record(const RecordRequest& request) {
-    if (request.encode.is_nil())
+    if (request.start && request.encode.is_nil())
         return std::unexpected(std::string{"a recording needs an encode"});
     // A path long enough to be a problem is a bug on the way in, not something to truncate.
     if (request.path.size() > 4096)

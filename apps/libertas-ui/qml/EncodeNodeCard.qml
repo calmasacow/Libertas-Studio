@@ -36,6 +36,7 @@ Item {
     signal pressed(real mouseX, real mouseY)
     signal dragged(real mouseX, real mouseY)
     signal released
+    signal contextRequested(real mouseX, real mouseY)
 
     implicitWidth: 260
     implicitHeight: header.height + bodySlot.implicitHeight + 10
@@ -131,10 +132,21 @@ Item {
     MouseArea {
         anchors.fill: parent
         z: -1
-        acceptedButtons: Qt.LeftButton
-        onPressed: mouse => card.pressed(mouse.x, mouse.y)
-        onPositionChanged: mouse => card.dragged(mouse.x, mouse.y)
-        onReleased: card.released
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        onPressed: mouse => {
+            if (mouse.button === Qt.RightButton)
+                card.contextRequested(mouse.x, mouse.y);
+            else
+                card.pressed(mouse.x, mouse.y);
+        }
+        onPositionChanged: mouse => {
+            if (pressedButtons & Qt.LeftButton)
+                card.dragged(mouse.x, mouse.y);
+        }
+        onReleased: mouse => {
+            if (mouse.button === Qt.LeftButton)
+                card.released();
+        }
         onCanceled: card.released
     }
 }

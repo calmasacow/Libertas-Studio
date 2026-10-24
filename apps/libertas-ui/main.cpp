@@ -1056,6 +1056,167 @@ int main(int argc, char** argv) {
                     document.runCommand(ldoc::SetEncode{original});
                     settle();
                 }
+
+                const auto graphProject = document.projectForBindings();
+                const auto fileOutput = std::find_if(graphProject.outputs.begin(), graphProject.outputs.end(),
+                    [](const auto& o) { return o.destination.kind == ldoc::DestinationKind::File; });
+                const auto replayOutput = std::find_if(graphProject.outputs.begin(), graphProject.outputs.end(),
+                    [](const auto& o) { return o.destination.kind == ldoc::DestinationKind::Replay; });
+                report(fileOutput != graphProject.outputs.end() && replayOutput != graphProject.outputs.end(),
+                       "Encode initializes Recording and Backtrack destinations");
+                document.initializeEncodeGraph();
+                report(document.projectForBindings() == graphProject,
+                       "opening Encode again preserves its arrangement without duplicating nodes");
+                if (fileOutput != graphProject.outputs.end()) {
+                    const QString fileId = QString::fromStdString(fileOutput->id.to_string());
+                    report(fileOutput->position.x > graphProject.encodes.front().position.x &&
+                               fileOutput->audio_encode.has_value(),
+                           "Recording starts right of the main encoder with an audio route");
+                    document.setGraphPosition("output", fileId, 890.0, 310.0);
+                    document.initializeEncodeGraph();
+                    const auto saved = ldoc::project_from_json(ldoc::project_to_json(document.projectForBindings()));
+                    report(saved && std::ranges::any_of(saved->project.outputs, [&](const auto& o) {
+                               return o.id == fileOutput->id && o.position == ldoc::Vec2{890.0, 310.0};
+                           }), "moved output positions survive serialization and initialization");
+                    document.undo();
+                    settle();
+                }
+
+                const auto click = [&](QQuickItem* item, Qt::MouseButton button = Qt::LeftButton) {
+                    const auto at = item->mapToScene(QPointF(15, 12));
+                    post(QEvent::MouseButtonPress, at, button, button);
+                    post(QEvent::MouseButtonRelease, at, button, Qt::NoButton);
+                    settle();
+                };
+                auto* menu = window->findChild<QQuickItem*>(QStringLiteral("encodeNodeMenu"));
+                auto* confirmation = window->findChild<QQuickItem*>(QStringLiteral("encodeRemovalConfirmation"));
+                const auto checkRemoval = [&](const QString& prefix, const ldoc::Id& nodeId) {
+                    const auto beforeRemoval = document.projectForBindings();
+                    const auto cards = collect(window->contentItem(), prefix + QString::fromStdString(nodeId.to_string()));
+                    report(!cards.empty(), "removable graph node is drawn");
+                    if (cards.empty() || !menu || !confirmation)
+                        return;
+                    click(cards.front(), Qt::RightButton);
+                    report(menu->isVisible(), "right-click opens the node menu");
+                    const auto rows = collect(menu, QStringLiteral("stripMenuItem"));
+                    if (rows.empty()) {
+                        report(false, "node menu has a Remove action");
+                        return;
+                    }
+                    click(rows.front());
+                    report(confirmation->isVisible() && document.projectForBindings() == beforeRemoval,
+                           "Remove asks for confirmation before changing the document");
+                    const auto cancel = collect(confirmation, QStringLiteral("cancelEncodeRemoval"));
+                    const auto confirm = collect(confirmation, QStringLiteral("confirmEncodeRemoval"));
+                    if (cancel.empty() || confirm.empty()) {
+                        report(false, "removal prompt has Cancel and Remove buttons");
+                        return;
+                    }
+                    click(cancel.front());
+                    report(!confirmation->isVisible() && document.projectForBindings() == beforeRemoval,
+                           "Cancel preserves the node and all its connections");
+                    click(cards.front(), Qt::RightButton);
+                    const auto reopened = collect(menu, QStringLiteral("stripMenuItem"));
+                    if (!reopened.empty())
+                        click(reopened.front());
+                    click(confirm.front());
+                    const auto removed = document.projectForBindings();
+                    report(removed != beforeRemoval && std::ranges::none_of(ldoc::validate(removed), [](const auto& p) {
+                               return p.severity == ldoc::Severity::Error;
+                           }),
+                           "confirmed removal leaves valid routing");
+                    document.initializeEncodeGraph();
+                    report(document.projectForBindings() == removed,
+                           "removed nodes stay removed when Encode initializes again");
+                    document.undo();
+                    settle();
+                    report(document.projectForBindings() == beforeRemoval,
+                           "one undo restores the node and every connection");
+                };
+                if (fileOutput != graphProject.outputs.end())
+                    checkRemoval("outputNode_", fileOutput->id);
+                if (!graphProject.audio_encodes.empty())
+                    checkRemoval("audioEncodeNode_", graphProject.audio_encodes.front().id);
+                if (!graphProject.encodes.empty())
+                    checkRemoval("encodeNode_", graphProject.encodes.front().id);
+
+                // Exercise the real thumbnail while a looping clip drives frames and meters.
+                const auto thumbnails = collect(window->contentItem(), "encodeCanvasPreview");
+                if (!thumbnails.empty() && !graphProject.buses.empty()) {
+                    const auto& canvas = graphProject.canvases.front();
+                    ldoc::Source red;
+                    red.id = ldoc::Id::generate();
+                    red.type = "source.color";
+                    red.settings = {{"color", ldoc::Rgba{1, 0, 0, 1}},
+                                    {"width", std::int64_t{canvas.width}},
+                                    {"height", std::int64_t{canvas.height}}};
+                    ldoc::Source tone;
+                    tone.id = ldoc::Id::generate();
+                    tone.type = "source.media";
+                    tone.settings = {{"localFile", (std::filesystem::path(__FILE__).parent_path() /
+                        "../../tests/unit/fixtures/images/alpha-tone.webm").lexically_normal().string()},
+                                     {"loop", true}};
+                    auto background = ldoc::make_node(ldoc::NodeKind::Source, "Preview red");
+                    std::get<ldoc::SourceData>(background.data).source = red.id;
+                    background.layout.size = {static_cast<double>(canvas.width), static_cast<double>(canvas.height)};
+                    auto sound = ldoc::make_node(ldoc::NodeKind::Source, "Preview tone");
+                    auto& soundData = std::get<ldoc::SourceData>(sound.data);
+                    soundData.source = tone.id;
+                    soundData.audio.bus = graphProject.buses.front().id;
+                    sound.layout.size = {32, 32};
+                    ldoc::Scene scene;
+                    scene.id = ldoc::Id::generate();
+                    scene.canvas = canvas.id;
+                    scene.roots = {sound, background};
+                    auto deck = graphProject.decks.front();
+                    deck.program_scene = scene.id;
+                    document.runCommand(ldoc::make_batch({
+                        ldoc::AddSource{red, graphProject.sources.size()},
+                        ldoc::AddSource{tone, graphProject.sources.size() + 1},
+                        ldoc::AddScene{scene, graphProject.scenes.size()}, ldoc::SetDeck{deck}},
+                        "Preview continuity check"));
+                    const auto busId = QString::fromStdString(graphProject.buses.front().id.to_string());
+                    const auto sampleRed = [&] {
+                        const auto* thumbnail = thumbnails.front();
+                        const auto at = thumbnail->mapToScene(QPointF(thumbnail->width() * .8, thumbnail->height() * .8));
+                        const auto frame = grab();
+                        const QPoint pixel(qRound(at.x() * window->devicePixelRatio()),
+                                           qRound(at.y() * window->devicePixelRatio()));
+                        return frame.rect().contains(pixel) && qRed(frame.pixel(pixel)) > 200 &&
+                               qGreen(frame.pixel(pixel)) < 40;
+                    };
+                    bool metering = false;
+                    for (int i = 0; i < 100; ++i) {
+                        pump(40);
+                        metering = preview.audioLevel(busId).value("left").toDouble() > .001;
+                        if (metering && sampleRed())
+                            break;
+                    }
+                    const int firstGeneration = preview.generation();
+                    bool continuous = true;
+                    auto changingPicture = document.projectForBindings();
+                    for (int i = 0; i < 30; ++i) {
+                        // This fixture's video pixels are static. Vary the red background
+                        // slightly so the renderer must publish fresh pictures as well.
+                        changingPicture.sources[graphProject.sources.size()].settings["color"] =
+                            ldoc::Rgba{1, static_cast<double>(i) * .0002, 0, 1};
+                        preview.publish(changingPicture);
+                        pump(17);
+                        continuous = sampleRed() && continuous;
+                    }
+                    report(metering && preview.generation() > firstGeneration,
+                           "a real media clip drives Encode frames and active audio meters");
+                    report(continuous, "the Encode thumbnail stays painted throughout live meter updates");
+                    if (parser.isSet(shot_opt))
+                        grab().save(parser.value(shot_opt) + QStringLiteral("/encode-live.png"));
+                    document.undo();
+                    settle();
+                    // Autosave may advance storage generations during the live check.
+                    auto restored = document.projectForBindings();
+                    restored.generation = graphProject.generation;
+                    report(restored == graphProject,
+                           "preview continuity check restores the project");
+                }
             }
             workspace.selectWorkspace(0);
             settle();

@@ -661,13 +661,14 @@ void Preview::send_record(const QString& encodeId, const QString& path, bool sta
         return;
     }
     const auto id = ldoc::Id::parse(encodeId.toStdString());
-    if (!id) {
+    if (start && !id) {
         report(QStringLiteral("That is not an encode."));
         return;
     }
     lcomp::RecordRequest request;
     request.start = start;
-    request.encode = *id;
+    // Stop must still work after the recording node or its encoder has been removed.
+    request.encode = id.value_or(ldoc::Id::nil());
     request.path = path.toStdString();
     if (const auto sent = link_->channel->send_record(request); !sent)
         report(QString::fromStdString(sent.error()));

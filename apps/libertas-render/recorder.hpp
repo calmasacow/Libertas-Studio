@@ -52,14 +52,16 @@ class Recorder {
         if (!canvas)
             return {false, std::format("encode '{}' has no canvas to record", encode->name)};
 
-        // Whichever audio encode a destination fed by this video encode names. Without one
-        // the file is silent, which is a thing someone can mean and so is not refused.
+        // A file destination owns its audio route, including an intentionally silent route.
+        // Legacy callers without a file output retain the first connected audio route.
         const ldoc::AudioEncode* audio = nullptr;
         for (const ldoc::Output& o : project.outputs) {
-            if (o.encode == encode->id && o.audio_encode) {
+            if (o.encode == encode->id && o.destination.kind == ldoc::DestinationKind::File) {
+                audio = o.audio_encode ? project.audio_encode(*o.audio_encode) : nullptr;
+                break;
+            }
+            if (!audio && o.encode == encode->id && o.audio_encode) {
                 audio = project.audio_encode(*o.audio_encode);
-                if (audio)
-                    break;
             }
         }
         ldoc::AudioEncode silent;

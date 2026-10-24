@@ -38,10 +38,10 @@ constexpr std::array<std::pair<BusKind, std::string_view>, 6> kBusKinds = {{
     {BusKind::Program, "program"}, {BusKind::Vod, "vod"},
 }};
 
-constexpr std::array<std::pair<DestinationKind, std::string_view>, 5> kDestinationKinds = {{
+constexpr std::array<std::pair<DestinationKind, std::string_view>, 6> kDestinationKinds = {{
     {DestinationKind::Rtmp, "rtmp"}, {DestinationKind::Rtmps, "rtmps"},
     {DestinationKind::Srt, "srt"},   {DestinationKind::Whip, "whip"},
-    {DestinationKind::File, "file"},
+    {DestinationKind::File, "file"}, {DestinationKind::Replay, "replay"},
 }};
 
 /// Source types that cannot fault at the moment they are needed.

@@ -162,11 +162,21 @@ LTEST_CASE(record_writes_playable_rescaled_video_with_correct_colours_and_routed
     audio.id = ldoc::Id::generate();
     audio.bus = project.buses[0].id;
     project.audio_encodes = {audio};
+    auto stream_audio = audio;
+    stream_audio.id = ldoc::Id::generate();
+    stream_audio.codec = "opus";
+    project.audio_encodes.push_back(stream_audio);
+    ldoc::Output stream;
+    stream.id = ldoc::Id::generate();
+    stream.encode = video.id;
+    stream.audio_encode = stream_audio.id;
     ldoc::Output output;
     output.id = ldoc::Id::generate();
     output.encode = video.id;
     output.audio_encode = audio.id;
-    project.outputs = {output};
+    output.destination.kind = ldoc::DestinationKind::File;
+    // The file must use its own AAC route, even with an Opus stream output listed first.
+    project.outputs = {stream, output};
     const auto path = std::filesystem::temp_directory_path() /
                       ("libertas-record-" + video.id.to_string() + ".mkv");
     bool ready = false;
@@ -176,7 +186,7 @@ LTEST_CASE(record_writes_playable_rescaled_video_with_correct_colours_and_routed
     }
     REQUIRE(ready);
     const auto control = [&](bool start) {
-        REQUIRE(link.send_record({start, video.id, path.string()}));
+        REQUIRE(link.send_record({start, start ? video.id : ldoc::Id::nil(), path.string()}));
         bool replied = false;
         for (int i = 0; i < 20 && !replied; ++i) {
             auto event = link.receive(2000);

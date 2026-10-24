@@ -24,21 +24,24 @@ Item {
     /// about where someone is looking belongs in a file that goes to another machine.
     property string selectedKind: ""
     property string selectedId: ""
-
-    /// Which encode Record acts on: the selected one, or the first when the selection is
-    /// something else. A call, so it needs the revision to re-read.
-    property int revision: 0
-    readonly property string recordTarget: {
-        void view.revision;
-        if (view.selectedKind === "encode")
-            return view.selectedId;
-        const encodes = Document.encodeChoices();
-        return encodes.length > 0 ? encodes[0].id : "";
+    property string initializedProjectPath: ""
+    function initializeProject() {
+        initializedProjectPath = Document.projectPath;
+        Document.initializeEncodeGraph();
     }
+    Component.onCompleted: initializeProject()
+
+    /// Record follows the Recording output's route, regardless of the current selection.
+    property int revision: 0
+    readonly property string recordTarget: view.revision >= 0 ? Document.recordingEncodeId() : ""
 
     Connections {
         target: Document
-        function onChanged() { view.revision++; }
+        function onChanged() {
+            view.revision++;
+            if (view.initializedProjectPath !== Document.projectPath)
+                Qt.callLater(view.initializeProject);
+        }
     }
 
     function bytesLabel(n) {
@@ -152,9 +155,7 @@ Item {
                 tip: qsTr("Streaming is not connected yet")
             }
 
-            // The one action with something behind it. It records the selected encode, or
-            // the first one when nothing is selected -- a Record button that refuses until
-            // something is clicked is a Record button that misses the thing worth recording.
+            // The Recording node names the bitstreams this action writes.
             ToolButton {
                 objectName: "encodeRecord"
                 width: 96
@@ -166,8 +167,8 @@ Item {
                 tip: Preview.recording
                      ? qsTr("Stop recording and close the file")
                      : view.recordTarget !== ""
-                       ? qsTr("Record this encode to a file beside the project")
-                       : qsTr("Add an encoder first; there is nothing to record")
+                       ? qsTr("Record the Recording output to a file beside the project")
+                       : qsTr("Add a file destination to record")
                 onClicked: {
                     if (Preview.recording) {
                         Preview.stopRecording(view.recordTarget);
@@ -212,6 +213,12 @@ Item {
         onNodeSelected: (kind, id) => {
             view.selectedKind = kind;
             view.selectedId = id;
+        }
+        onRemoveRequested: (kind, id, name) => {
+            removal.kind = kind;
+            removal.nodeId = id;
+            removal.nodeName = name;
+            removal.forceActiveFocus();
         }
     }
 
@@ -276,5 +283,99 @@ Item {
 
         selectedKind: view.selectedKind
         selectedId: view.selectedId
+    }
+
+    Item {
+        id: removal
+        objectName: "encodeRemovalConfirmation"
+        anchors.fill: parent
+        z: 20
+        property string kind: ""
+        property string nodeId: ""
+        property string nodeName: ""
+        visible: nodeId !== ""
+        focus: visible
+
+        function dismiss() { nodeId = ""; }
+        function confirm() {
+            if (kind === "encode")
+                Document.removeEncode(nodeId);
+            else if (kind === "audio-encode")
+                Document.removeAudioEncode(nodeId);
+            else if (kind === "output")
+                Document.removeOutput(nodeId);
+            view.selectedKind = "";
+            view.selectedId = "";
+            dismiss();
+        }
+        Keys.onEscapePressed: dismiss()
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onClicked: removal.dismiss()
+            onWheel: wheel => { wheel.accepted = true; }
+        }
+        Rectangle {
+            anchors.fill: parent
+            color: Theme.c.window
+            opacity: 0.55
+        }
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 40, 430)
+            height: message.height + buttons.height + 42
+            color: Theme.c.panelBackground
+            border.width: 1
+            border.color: Theme.c.warning
+            radius: 3
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+            }
+            Column {
+                id: message
+                x: 14
+                y: 14
+                width: parent.width - 28
+                spacing: 8
+                Text {
+                    width: parent.width
+                    text: qsTr("Remove “%1”?").arg(removal.nodeName)
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 13
+                    font.bold: true
+                    color: Theme.c.text
+                }
+                Text {
+                    width: parent.width
+                    text: removal.kind === "encode"
+                        ? qsTr("This also removes every destination connected to this video encoder. You can undo this change.")
+                        : removal.kind === "audio-encode"
+                        ? qsTr("Connected destinations will lose this audio track. You can undo this change.")
+                        : qsTr("The connected encoders will be kept. You can undo this change.")
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 11
+                    color: Theme.c.textMuted
+                }
+            }
+            Row {
+                id: buttons
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 14
+                spacing: 8
+                DialogButton {
+                    objectName: "cancelEncodeRemoval"
+                    text: qsTr("Cancel")
+                    onClicked: removal.dismiss()
+                }
+                DialogButton {
+                    objectName: "confirmEncodeRemoval"
+                    text: qsTr("Remove")
+                    primary: true
+                    onClicked: removal.confirm()
+                }
+            }
+        }
     }
 }

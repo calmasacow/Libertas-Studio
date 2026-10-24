@@ -23,6 +23,15 @@ Item {
     required property string selectedId
 
     signal nodeSelected(string kind, string id)
+    signal removeRequested(string kind, string id, string name)
+
+    function nodeMenu(card, kind, id, name, mx, my) {
+        graph.nodeSelected(kind, id);
+        const at = card.mapToItem(graph, mx, my);
+        contextMenu.popup(at.x, at.y, [{text: qsTr("Remove…"), action: function() {
+            graph.removeRequested(kind, id, name);
+        }}]);
+    }
 
     /// Graph-space offset of the view. Pan moves this; nodes are drawn at position + offset.
     property real panX: 0
@@ -181,11 +190,14 @@ Item {
                     }
 
                     Image {
+                        objectName: "encodeCanvasPreview"
                         anchors.fill: parent
                         anchors.margins: 1
                         fillMode: Image.PreserveAspectFit
                         cache: false
-                        asynchronous: true
+                        // The provider returns an already-held image. An asynchronous reload
+                        // clears it between frames; match the Program panel's atomic swap.
+                        asynchronous: false
                         // `hasFrame` is a call, so the generation binding is what makes this
                         // re-evaluate; a bare call would never update.
                         source: Preview.generation >= 0 &&
@@ -298,6 +310,7 @@ Item {
 
         delegate: EncodeNodeCard {
             id: encodeCard
+            objectName: "encodeNode_" + encodeId
 
             required property string encodeId
             required property string name
@@ -309,6 +322,16 @@ Item {
             required property double positionX
             required property double positionY
 
+            property var settings: ({})
+            function refreshSettings() {
+                settings = Document.encodeSettings(encodeId);
+            }
+            readonly property var extra: settings.extra || ({})
+            Connections {
+                target: Document
+                function onChanged() { encodeCard.refreshSettings(); }
+            }
+
             property real dragFromX: 0
             property real dragFromY: 0
 
@@ -317,7 +340,8 @@ Item {
             width: 270
             title: encodeCard.implementation.toUpperCase() + ": " +
                    encodeCard.codec.toUpperCase()
-            subtitle: encodeCard.resolution
+            subtitle: qsTr("Rescale: %1").arg(encodeCard.settings.width > 0
+                      ? (encodeCard.extra.rescale_filter || "bicubic") : qsTr("Off"))
             hasInput: true
             hasOutput: true
             selected: graph.isSelected("encode", encodeCard.encodeId)
@@ -333,12 +357,14 @@ Item {
                            encodeCard.y - graph.panY + (my - encodeCard.dragFromY), true)
             // One drag is one undo step, and it lands back where it started.
             onReleased: Document.endGesture()
+            onContextRequested: (mx, my) => graph.nodeMenu(
+                encodeCard, "encode", encodeCard.encodeId, encodeCard.name, mx, my)
 
             function report() {
                 graph.setPort("encode:" + encodeCard.encodeId,
                               x, y + 30, x + width, y + 30);
             }
-            Component.onCompleted: report()
+            Component.onCompleted: { refreshSettings(); report(); }
             onXChanged: report()
             onYChanged: report()
 
@@ -362,9 +388,68 @@ Item {
 
                     Text {
                         anchors.centerIn: parent
-                        text: qsTr("%1 Kbps").arg(encodeCard.bitrateKbps)
+                        objectName: "encodeNodeRate"
+                        text: {
+                            const rate = (encodeCard.settings.rateControl || "cbr").toUpperCase();
+                            if (rate === "CQP" || rate === "CRF")
+                                return rate + " " + (encodeCard.extra.quality ?? 23);
+                            return qsTr("%1 %2 Kbps").arg(rate).arg(encodeCard.bitrateKbps);
+                        }
                         font.pixelSize: 11
                         color: Theme.c.text
+                    }
+                }
+
+                Text {
+                    text: encodeCard.name + " · " + encodeCard.resolution
+                    width: parent.width
+                    elide: Text.ElideRight
+                    font.pixelSize: 10
+                    color: Theme.c.textMuted
+                }
+
+                Row {
+                    width: parent.width
+                    spacing: 4
+                    Repeater {
+                        model: [
+                            {label: qsTr("Mode"), value: encodeCard.implementation === "nvenc"
+                                ? ((encodeCard.extra["nvenc.multipass"] ?? "quarter") === "disabled"
+                                   ? qsTr("1 Pass") : qsTr("2 Pass"))
+                                : (encodeCard.settings.preset || qsTr("Default"))},
+                            {label: qsTr("Tuning"), value: encodeCard.implementation === "nvenc"
+                                ? (encodeCard.extra["nvenc.tuning"] || "hq").toUpperCase()
+                                : (encodeCard.extra["x264.tune"] || qsTr("None"))},
+                            {label: qsTr("Profile"), value: encodeCard.extra[
+                                encodeCard.implementation + ".profile"] || qsTr("Auto")}
+                        ]
+                        delegate: Column {
+                            required property var modelData
+                            width: (encodeCard.width - 26) / 3
+                            spacing: 3
+                            Text {
+                                text: modelData.label
+                                font.pixelSize: 9
+                                color: Theme.c.textMuted
+                            }
+                            Rectangle {
+                                width: parent.width
+                                height: 22
+                                color: Theme.c.panelHeader
+                                border.width: 1
+                                border.color: Theme.c.border
+                                Text {
+                                    anchors.fill: parent
+                                    anchors.margins: 3
+                                    text: modelData.value
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                    elide: Text.ElideRight
+                                    font.pixelSize: 10
+                                    color: Theme.c.text
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -378,6 +463,7 @@ Item {
 
         delegate: EncodeNodeCard {
             id: audioCard
+            objectName: "audioEncodeNode_" + audioEncodeId
 
             required property string audioEncodeId
             required property string name
@@ -397,6 +483,8 @@ Item {
             hasInput: true
             hasOutput: true
             selected: graph.isSelected("audio-encode", audioCard.audioEncodeId)
+            onContextRequested: (mx, my) => graph.nodeMenu(
+                audioCard, "audio-encode", audioCard.audioEncodeId, audioCard.name, mx, my)
 
             onPressed: (mx, my) => {
                 graph.nodeSelected("audio-encode", audioCard.audioEncodeId);
@@ -453,6 +541,7 @@ Item {
 
         delegate: EncodeNodeCard {
             id: outputCard
+            objectName: "outputNode_" + outputId
 
             required property string outputId
             required property string name
@@ -460,6 +549,7 @@ Item {
             required property string audioEncodeId
             required property string audioEncodeName
             required property string encodeName
+            required property string destinationKind
             required property bool isEnabled
             required property bool misconfigured
             required property double positionX
@@ -471,9 +561,13 @@ Item {
             x: outputCard.positionX + graph.panX
             y: outputCard.positionY + graph.panY
             width: 270
-            title: qsTr("STREAM: %1").arg(outputCard.name)
+            title: outputCard.destinationKind === "file" ? outputCard.name.toUpperCase()
+                 : outputCard.destinationKind === "replay" ? outputCard.name.toUpperCase()
+                 : qsTr("STREAM: %1").arg(outputCard.name)
             hasInput: true
             selected: graph.isSelected("output", outputCard.outputId)
+            onContextRequested: (mx, my) => graph.nodeMenu(
+                outputCard, "output", outputCard.outputId, outputCard.name, mx, my)
 
             onPressed: (mx, my) => {
                 graph.nodeSelected("output", outputCard.outputId);
@@ -510,7 +604,8 @@ Item {
                     radius: 5
                     y: 2
                     x: outputCard.isEnabled ? parent.width - 11 : 2
-                    color: outputCard.misconfigured ? Theme.c.error
+                    color: outputCard.destinationKind === "file" && Preview.recording ? Theme.c.error
+                         : outputCard.misconfigured ? Theme.c.error
                          : outputCard.isEnabled ? Theme.c.good
                          : Theme.c.textMuted
                 }
@@ -557,11 +652,23 @@ Item {
                     color: outputCard.audioEncodeId === "" ? Theme.c.warning : Theme.c.text
                     elide: Text.ElideRight
                 }
+
+                Text {
+                    visible: outputCard.destinationKind === "replay"
+                    text: qsTr("Replay buffer is not connected yet")
+                    font.pixelSize: 9
+                    color: Theme.c.textMuted
+                }
             }
         }
     }
 
     // --- panning -----------------------------------------------------------------------------
+    StripMenu {
+        id: contextMenu
+        objectName: "encodeNodeMenu"
+        z: 10
+    }
     //
     // Middle-drag, or left-drag on empty space. Below the cards, so a press that lands on a
     // node moves the node instead.
