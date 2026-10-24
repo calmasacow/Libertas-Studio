@@ -17,7 +17,7 @@
 
 namespace lcomp {
 
-/// The preview protocol. Version 6.
+/// The preview protocol. Version 7.
 ///
 /// Whole messages on a `lipc::Channel`, bulk in sealed memfds. The bytes are little-endian and
 /// carry no padding, so a reader does not depend on the writer's struct layout.
@@ -41,10 +41,14 @@ namespace lcomp {
 ///            u8 availability. Sent even when a video refresh only produces an Ack.
 ///   Pcm      u8 kind, source ULID, interleaved stereo float32 little-endian at 48 kHz.
 ///            At most 9600 samples; workers to renderer only, never to the UI.
+///   Record   u8 kind, u8 start (0 = stop), 26-byte encode id, then the UTF-8 path.
+///            Client to renderer. A stop carries the id and an empty path.
+///   RecState u8 kind, u8 running, then UTF-8 error text, empty when nothing went wrong.
+///            One per Record, and one unprompted if a recording stops on its own.
 ///
 /// An empty payload cannot be sent (ADR-0026), and every message here starts with its kind, so
 /// none of them are empty.
-inline constexpr std::uint16_t kPreviewProtocol = 6;
+inline constexpr std::uint16_t kPreviewProtocol = 7;
 
 struct AudioLevel {
     ldoc::Id node;
@@ -52,6 +56,23 @@ struct AudioLevel {
     bool available = false;
 };
 struct AudioPacket { ldoc::Id source; std::vector<float> samples; };
+
+/// Start or stop writing one encode to one file.
+///
+/// The encode names the canvas, so this does not carry one: two recordings of the same canvas
+/// at different bitrates are two encodes, and that is the only way to say it (ADR-0029).
+struct RecordRequest {
+    bool start = false;
+    ldoc::Id encode;
+    /// Where to write. Empty for a stop; the container is chosen from the extension.
+    std::string path;
+};
+
+/// What the renderer made of it. `error` empty means it did what was asked.
+struct RecordState {
+    bool running = false;
+    std::string error;
+};
 
 /// One frame: owned pixels, or a retained read-only immutable mapping.
 struct PreviewFrame {
@@ -77,13 +98,14 @@ struct PreviewFrame {
 
 /// What `poll` produced. `fault` is set for Fault; `frame` is set for Frame.
 struct PreviewEvent {
-    enum class Kind : std::uint8_t { Hello, Frame, Ack, Fault, PeerGone, Audio, Pcm };
+    enum class Kind : std::uint8_t { Hello, Frame, Ack, Fault, PeerGone, Audio, Pcm, Record };
 
     Kind kind = Kind::PeerGone;
     PreviewFrame frame;
     std::string fault;
     std::vector<AudioLevel> audio;
     AudioPacket pcm;
+    RecordState record;
 };
 
 /// The UI's end of the preview, and the test's. It does not composite.
@@ -113,6 +135,11 @@ class PreviewLink {
     [[nodiscard]] std::expected<void, std::string> send_project(const ldoc::Project& project,
                                                                 std::uint32_t max_edge = 0);
     [[nodiscard]] std::expected<void, std::string> refresh(std::uint32_t max_edge = 0);
+
+    /// Ask the renderer to start or stop writing an encode to a file. The answer comes back
+    /// as a Record event, not as this call's return: the encoder opens on the renderer's
+    /// thread and finding out whether it opened is worth one round trip.
+    [[nodiscard]] std::expected<void, std::string> send_record(const RecordRequest& request);
 
     /// Ask the renderer to exit. A peer that has already gone is not an error here.
     void quit();
@@ -191,9 +218,22 @@ using CanvasRenderer = std::function<Picture(const ldoc::Project&, const ldoc::I
 using AudioMeters = std::function<std::vector<AudioLevel>(const ldoc::Project&)>;
 using AudioPcm = std::function<AudioPacket()>;
 
+/// The recording side, supplied by whoever owns an encoder. Left empty by a client that does
+/// not record -- the self-check and the tests -- so lcomp never has to know what FFmpeg is.
+struct RecordHooks {
+    /// Act on a Record message. Returns the state to report back.
+    std::function<RecordState(const RecordRequest&, const ldoc::Project&)> control;
+    /// Whether this canvas is being recorded. Asked once per canvas per commit, because the
+    /// answer decides whether it has to be composited at full size as well as preview size.
+    std::function<bool(const ldoc::Id&)> wants;
+    /// One freshly composited full-size frame, offered to whatever is recording that canvas.
+    std::function<void(const ldoc::Id&, const Picture&)> frame;
+};
+
 [[nodiscard]] std::expected<void, std::string>
 serve_preview(lipc::Channel channel, FrameSource frames = {}, FramesDone done = {},
-              FramesFresh fresh = {}, CanvasRenderer render = {}, AudioMeters audio = {}, AudioPcm pcm = {});
+              FramesFresh fresh = {}, CanvasRenderer render = {}, AudioMeters audio = {},
+              AudioPcm pcm = {}, RecordHooks record = {});
 
 /// Start `libertas-render` with one end of a channel.
 ///

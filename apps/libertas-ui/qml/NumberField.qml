@@ -26,8 +26,24 @@ Item {
     property int labelAlign: Text.AlignLeft
     /// A unit printed inside the box, after the number. Never a value.
     property string suffix: ""
+    /// Up/down arrows inside the box, for a field whose value is nudged as often as it is typed
+    /// -- the four parts of a countdown's period, which is what a spin box is for. Off by
+    /// default, so every field that was here before this looks exactly as it did.
+    property bool steppers: false
+    /// What one press of an arrow is worth.
+    property real step: 1
 
     signal committed(real newValue)
+
+    /// Clamped and rounded here rather than in each caller, so an arrow can never commit a value
+    /// the typed path would have refused.
+    function nudge(by) {
+        const next = Math.min(field.maximum, Math.max(field.minimum, field.value + by));
+        const rounded = field.decimals === 0 ? Math.round(next)
+                                             : parseFloat(next.toFixed(field.decimals));
+        if (rounded !== field.value)
+            field.committed(rounded);
+    }
 
     implicitHeight: 20
 
@@ -69,7 +85,7 @@ Item {
         Text {
             id: unit
 
-            anchors.right: parent.right
+            anchors.right: steps.left
             anchors.rightMargin: 6
             anchors.verticalCenter: parent.verticalCenter
             visible: field.suffix !== ""
@@ -78,13 +94,68 @@ Item {
             color: Theme.c.textMuted
         }
 
+        Column {
+            id: steps
+
+            anchors.right: parent.right
+            anchors.rightMargin: 1
+            anchors.verticalCenter: parent.verticalCenter
+            visible: field.steppers && field.enabled
+            width: visible ? 13 : 0
+
+            Repeater {
+                model: [true, false]
+
+                delegate: Rectangle {
+                    id: arrow
+
+                    required property bool modelData
+
+                    width: steps.width
+                    height: 8
+                    color: arrowMouse.pressed ? Theme.c.accent
+                         : arrowMouse.containsMouse ? Theme.c.panelHeaderActive
+                         : "transparent"
+                    radius: 1
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: arrow.modelData ? "▴" : "▾"
+                        font.pixelSize: 8
+                        color: arrowMouse.pressed ? Theme.c.window : Theme.c.textMuted
+                    }
+
+                    MouseArea {
+                        id: arrowMouse
+
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        // Held down, it repeats: setting fifty-five seconds one press at a time
+                        // is not a thing to ask of anyone.
+                        onPressed: field.nudge(arrow.modelData ? field.step : -field.step)
+                        onReleased: repeat.stop()
+                        onCanceled: repeat.stop()
+                        onPressAndHold: repeat.start()
+                    }
+
+                    Timer {
+                        id: repeat
+
+                        interval: 60
+                        repeat: true
+                        onTriggered: field.nudge(arrow.modelData ? field.step : -field.step)
+                    }
+                }
+            }
+        }
+
         TextInput {
             id: input
             objectName: "numberInput"
 
             anchors.fill: parent
             anchors.leftMargin: 5
-            anchors.rightMargin: unit.visible ? unit.width + 10 : 5
+            anchors.rightMargin: (unit.visible ? unit.width + 10 : 5) + steps.width
             verticalAlignment: TextInput.AlignVCenter
             font.pixelSize: 11
             color: field.enabled ? Theme.c.text : Theme.c.textMuted

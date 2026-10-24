@@ -315,6 +315,25 @@ Jv body(const SetEncode& c) {
     return o;
 }
 
+Jv body(const AddAudioEncode& c) {
+    Jv o{Json::objectValue};
+    o["encode"] = detail::enc(c.encode);
+    o["index"] = enc_index(c.index);
+    return o;
+}
+
+Jv body(const RemoveAudioEncode& c) {
+    Jv o{Json::objectValue};
+    o["encode"] = detail::enc(c.encode);
+    return o;
+}
+
+Jv body(const SetAudioEncode& c) {
+    Jv o{Json::objectValue};
+    o["value"] = detail::enc(c.value);
+    return o;
+}
+
 Jv body(const AddOutput& c) {
     Jv o{Json::objectValue};
     o["output"] = detail::enc(c.output);
@@ -557,6 +576,19 @@ std::expected<Command, std::string> command_from_value(Rd& rd, const Jv& o,
         if (!ev)
             return std::unexpected("encode.set has no value");
         out = SetEncode{detail::dec_encode(rd, *ev, path)};
+    } else if (name == "audio-encode.add") {
+        const Jv* ev = rd.object(o, "encode", path);
+        if (!ev)
+            return std::unexpected("audio-encode.add has no encode");
+        out = AddAudioEncode{detail::dec_audio_encode(rd, *ev, path),
+                             dec_index(rd, o, "index", path)};
+    } else if (name == "audio-encode.remove") {
+        out = RemoveAudioEncode{rd.id(o, "encode", path)};
+    } else if (name == "audio-encode.set") {
+        const Jv* ev = rd.object(o, "value", path);
+        if (!ev)
+            return std::unexpected("audio-encode.set has no value");
+        out = SetAudioEncode{detail::dec_audio_encode(rd, *ev, path)};
     } else if (name == "output.add") {
         const Jv* ov = rd.object(o, "output", path);
         if (!ov)

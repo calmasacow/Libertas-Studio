@@ -135,6 +135,8 @@ std::unordered_set<Id> all_ids(const Project& p) {
         ids.insert(d.id);
     for (const Encode& e : p.encodes)
         ids.insert(e.id);
+    for (const AudioEncode& e : p.audio_encodes)
+        ids.insert(e.id);
     for (const Output& o : p.outputs)
         ids.insert(o.id);
     for (const SceneLink& l : p.scene_links)
@@ -222,6 +224,9 @@ std::string_view command_name(const Command& command) {
             else if constexpr (std::is_same_v<T, AddEncode>) return "encode.add";
             else if constexpr (std::is_same_v<T, RemoveEncode>) return "encode.remove";
             else if constexpr (std::is_same_v<T, SetEncode>) return "encode.set";
+            else if constexpr (std::is_same_v<T, AddAudioEncode>) return "audio-encode.add";
+            else if constexpr (std::is_same_v<T, RemoveAudioEncode>) return "audio-encode.remove";
+            else if constexpr (std::is_same_v<T, SetAudioEncode>) return "audio-encode.set";
             else if constexpr (std::is_same_v<T, AddOutput>) return "output.add";
             else if constexpr (std::is_same_v<T, RemoveOutput>) return "output.remove";
             else if constexpr (std::is_same_v<T, SetOutput>) return "output.set";
@@ -320,6 +325,12 @@ std::string describe(const Command& command) {
                 return "Remove encode";
             else if constexpr (std::is_same_v<T, SetEncode>)
                 return std::format("Change encode {}", quoted(c.value.name));
+            else if constexpr (std::is_same_v<T, AddAudioEncode>)
+                return std::format("Add audio encode {}", quoted(c.encode.name));
+            else if constexpr (std::is_same_v<T, RemoveAudioEncode>)
+                return "Remove audio encode";
+            else if constexpr (std::is_same_v<T, SetAudioEncode>)
+                return std::format("Change audio encode {}", quoted(c.value.name));
             else if constexpr (std::is_same_v<T, AddOutput>)
                 return std::format("Add output {}", quoted(c.output.name));
             else if constexpr (std::is_same_v<T, RemoveOutput>)
@@ -1025,6 +1036,16 @@ struct Apply {
                                      [&c](const Bus& b) { return b.id == c.bus; });
         if (it == p.buses.end())
             return std::unexpected(std::format("there is no bus {}", c.bus.to_string()));
+        // An audio encode of this bus is the same ownership question RemoveEncode answers:
+        // a source route left dangling still draws nothing, but a bitstream with nothing to
+        // encode is not a degraded state the model has a meaning for. Refuse, as that does.
+        for (const AudioEncode& e : p.audio_encodes) {
+            if (e.bus == c.bus)
+                return std::unexpected(
+                    std::format("audio encode '{}' encodes this bus; point it at another one "
+                                "first",
+                                e.name));
+        }
         // Keep source routes visibly unresolved, but remove incoming bus sends: those
         // otherwise leave an invalid graph, particularly on older OBS imports.
         const auto index = static_cast<std::size_t>(it - p.buses.begin());
@@ -1119,6 +1140,65 @@ struct Apply {
         return out;
     }
 
+    std::expected<Applied, std::string> operator()(const AddAudioEncode& c) const {
+        if (c.index > p.audio_encodes.size())
+            return std::unexpected(
+                std::format("audio encode position {} is past the end", c.index));
+        if (c.encode.id.is_nil())
+            return std::unexpected("an audio encode needs an id");
+        if (c.encode.bitrate_kbps <= 0)
+            return std::unexpected(
+                std::format("a bitrate of {} kbps is not usable", c.encode.bitrate_kbps));
+        // An audio encode without a bus has nothing to encode, the same kind of nothing an
+        // encode without a canvas has.
+        if (!p.bus(c.encode.bus))
+            return std::unexpected(
+                std::format("there is no bus {} to encode", c.encode.bus.to_string()));
+        if (all_ids(p).contains(c.encode.id))
+            return std::unexpected(
+                std::format("id {} is already in the project", c.encode.id.to_string()));
+        Applied out{RemoveAudioEncode{c.encode.id}, describe(c)};
+        p.audio_encodes.insert(p.audio_encodes.begin() + static_cast<std::ptrdiff_t>(c.index),
+                               c.encode);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const RemoveAudioEncode& c) const {
+        const auto it = std::find_if(p.audio_encodes.begin(), p.audio_encodes.end(),
+                                     [&c](const AudioEncode& e) { return e.id == c.encode; });
+        if (it == p.audio_encodes.end())
+            return std::unexpected(
+                std::format("there is no audio encode {}", c.encode.to_string()));
+        for (const Output& o : p.outputs) {
+            if (o.audio_encode && *o.audio_encode == c.encode)
+                return std::unexpected(std::format(
+                    "output '{}' sends this audio encode; point it at another one first",
+                    o.name));
+        }
+        const auto index = static_cast<std::size_t>(it - p.audio_encodes.begin());
+        Applied out{AddAudioEncode{*it, index},
+                    std::format("Remove audio encode {}", quoted(it->name))};
+        p.audio_encodes.erase(it);
+        return out;
+    }
+
+    std::expected<Applied, std::string> operator()(const SetAudioEncode& c) const {
+        const auto it = std::find_if(p.audio_encodes.begin(), p.audio_encodes.end(),
+                                     [&c](const AudioEncode& e) { return e.id == c.value.id; });
+        if (it == p.audio_encodes.end())
+            return std::unexpected(
+                std::format("there is no audio encode {}", c.value.id.to_string()));
+        if (c.value.bitrate_kbps <= 0)
+            return std::unexpected(
+                std::format("a bitrate of {} kbps is not usable", c.value.bitrate_kbps));
+        if (!p.bus(c.value.bus))
+            return std::unexpected(
+                std::format("there is no bus {} to encode", c.value.bus.to_string()));
+        Applied out{SetAudioEncode{*it}, describe(c)};
+        *it = c.value;
+        return out;
+    }
+
     std::expected<Applied, std::string> operator()(const AddOutput& c) const {
         if (c.index > p.outputs.size())
             return std::unexpected(std::format("output position {} is past the end", c.index));
@@ -1129,6 +1209,9 @@ struct Apply {
         if (!p.encode(c.output.encode))
             return std::unexpected(
                 std::format("there is no encode {} to send", c.output.encode.to_string()));
+        if (c.output.audio_encode && !p.audio_encode(*c.output.audio_encode))
+            return std::unexpected(std::format("there is no audio encode {} to send",
+                                               c.output.audio_encode->to_string()));
         if (all_ids(p).contains(c.output.id))
             return std::unexpected(
                 std::format("id {} is already in the project", c.output.id.to_string()));
@@ -1157,6 +1240,9 @@ struct Apply {
         if (!p.encode(c.value.encode))
             return std::unexpected(
                 std::format("there is no encode {} to send", c.value.encode.to_string()));
+        if (c.value.audio_encode && !p.audio_encode(*c.value.audio_encode))
+            return std::unexpected(std::format("there is no audio encode {} to send",
+                                               c.value.audio_encode->to_string()));
         if (c.value.enabled && c.value.destination.url.empty())
             return std::unexpected("an output cannot be enabled with nowhere to send to");
         Applied out{SetOutput{*it}, describe(c)};

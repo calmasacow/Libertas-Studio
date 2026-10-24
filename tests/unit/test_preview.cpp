@@ -21,6 +21,12 @@
 #include <tuple>
 #include <utility>
 
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libswscale/swscale.h>
+}
+
 #ifndef LIBERTAS_RENDER
 #error "LIBERTAS_RENDER must name the libertas-render binary"
 #endif
@@ -118,6 +124,126 @@ lcomp::PreviewFrame commit(lcomp::PreviewLink& link, const ldoc::Project& projec
 }
 
 } // namespace
+
+LTEST_CASE(record_writes_playable_rescaled_video_with_correct_colours_and_routed_audio) {
+    auto ends = lipc::Channel::pair();
+    REQUIRE(ends);
+    auto child = lcomp::spawn_renderer(LIBERTAS_RENDER, std::move(ends->second).take_socket());
+    REQUIRE(child);
+    lcomp::PreviewLink link{std::move(ends->first)};
+    REQUIRE(link.take_hello(5000));
+
+    auto red = colour_source(255, 0, 0);
+    red.settings["width"] = std::int64_t{64};
+    red.settings["height"] = std::int64_t{64};
+    auto tone = colour_source(0, 0, 0);
+    tone.type = "source.media";
+    tone.settings["localFile"] = std::string(LIBERTAS_IMAGE_FIXTURES) + "/alpha-tone.webm";
+    tone.settings["loop"] = true;
+    auto background = bound_to(red);
+    background.layout.fit = ldoc::FitMode::Stretch;
+    background.layout.size = {64, 64};
+    auto sound = bound_to(tone);
+    sound.layout.size = {8, 8};
+    ldoc::Scene scene;
+    scene.id = ldoc::Id::generate();
+    scene.roots = {background, sound};
+    auto project = show(scene, {red, tone});
+    project.canvases[0].width = project.canvases[0].height = 64;
+    project.canvases[0].fps = {30, 1};
+    std::get<ldoc::SourceData>(project.scenes[0].roots[1].data).audio.bus = project.buses[0].id;
+    ldoc::Encode video;
+    video.id = ldoc::Id::generate();
+    video.canvas = project.canvases[0].id;
+    video.encoder.implementation = "x264";
+    video.rescale = ldoc::Vec2{32, 32};
+    project.encodes = {video};
+    ldoc::AudioEncode audio;
+    audio.id = ldoc::Id::generate();
+    audio.bus = project.buses[0].id;
+    project.audio_encodes = {audio};
+    ldoc::Output output;
+    output.id = ldoc::Id::generate();
+    output.encode = video.id;
+    output.audio_encode = audio.id;
+    project.outputs = {output};
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("libertas-record-" + video.id.to_string() + ".mkv");
+    bool ready = false;
+    for (int i = 0; i < 200 && !ready; ++i) {
+        ready = commit(link, project).status == lcomp::PictureStatus::Complete;
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+    REQUIRE(ready);
+    const auto control = [&](bool start) {
+        REQUIRE(link.send_record({start, video.id, path.string()}));
+        bool replied = false;
+        for (int i = 0; i < 20 && !replied; ++i) {
+            auto event = link.receive(2000);
+            REQUIRE(event && *event);
+            if ((**event).kind == lcomp::PreviewEvent::Kind::Record) {
+                CHECK_MSG((**event).record.error.empty(), "{}", (**event).record.error);
+                CHECK_EQ((**event).record.running, start);
+                replied = true;
+            }
+        }
+        REQUIRE(replied);
+    };
+    control(true);
+    for (int i = 0; i < 60; ++i) {
+        commit(link, project);
+        std::this_thread::sleep_for(std::chrono::milliseconds(33));
+    }
+    control(false);
+    link.quit();
+    link.close();
+    CHECK_EQ(reap(*child, 5000), 0);
+
+    AVFormatContext* file = nullptr;
+    REQUIRE(avformat_open_input(&file, path.c_str(), nullptr, nullptr) >= 0);
+    REQUIRE(avformat_find_stream_info(file, nullptr) >= 0);
+    const int vi = av_find_best_stream(file, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    const int ai = av_find_best_stream(file, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    REQUIRE(vi >= 0 && ai >= 0);
+    CHECK_EQ(file->streams[ai]->codecpar->codec_id, AV_CODEC_ID_AAC);
+    CHECK_EQ(file->streams[vi]->codecpar->width, 32);
+    CHECK_EQ(file->streams[vi]->codecpar->height, 32);
+    AVCodecContext* decoder = avcodec_alloc_context3(nullptr);
+    REQUIRE(decoder);
+    REQUIRE(avcodec_parameters_to_context(decoder, file->streams[vi]->codecpar) >= 0);
+    REQUIRE(avcodec_open2(decoder, avcodec_find_decoder(decoder->codec_id), nullptr) >= 0);
+    AVPacket* packet = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    REQUIRE(packet && frame);
+    bool decoded = false;
+    while (av_read_frame(file, packet) >= 0) {
+        if (packet->stream_index == vi && avcodec_send_packet(decoder, packet) >= 0 &&
+            avcodec_receive_frame(decoder, frame) >= 0) {
+            decoded = true;
+            av_packet_unref(packet);
+            break;
+        }
+        av_packet_unref(packet);
+    }
+    REQUIRE(decoded);
+    auto* converter = sws_getContext(32, 32, static_cast<AVPixelFormat>(frame->format), 32, 32,
+                                     AV_PIX_FMT_RGBA, SWS_POINT, nullptr, nullptr, nullptr);
+    REQUIRE(converter);
+    std::vector<std::uint8_t> rgba(32 * 32 * 4);
+    std::uint8_t* planes[] = {rgba.data(), nullptr, nullptr, nullptr};
+    const int strides[] = {32 * 4, 0, 0, 0};
+    CHECK_EQ(sws_scale(converter, frame->data, frame->linesize, 0, 32, planes, strides), 32);
+    const auto pixel_offset = (24 * 32 + 24) * 4;
+    CHECK_MSG(rgba[pixel_offset] > 200 && rgba[pixel_offset + 2] < 30,
+              "decoded red pixel is {}, {}, {}", rgba[pixel_offset], rgba[pixel_offset + 1],
+              rgba[pixel_offset + 2]);
+    sws_freeContext(converter);
+    av_frame_free(&frame);
+    av_packet_free(&packet);
+    avcodec_free_context(&decoder);
+    avformat_close_input(&file);
+    std::filesystem::remove(path);
+}
 
 LTEST_CASE(render_lag_counts_composite_budgets_not_delayed_acknowledgments) {
     auto ends = lipc::Channel::pair();

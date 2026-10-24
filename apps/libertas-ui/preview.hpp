@@ -33,6 +33,9 @@ class Preview : public QObject {
     /// Bumped when a commit's frames have been copied. The image URL carries it so Qt reloads.
     Q_PROPERTY(int generation READ generation NOTIFY changed)
     Q_PROPERTY(bool rendererAttached READ rendererAttached NOTIFY changed)
+    /// Whether the renderer is writing a file right now. Reported by the renderer rather than
+    /// assumed from the request: the encoder opens over there, and it can fail to.
+    Q_PROPERTY(bool recording READ recording NOTIFY recordingChanged)
 
   public:
     /// Not default-constructible. Qt's singleton registration prefers a default constructor
@@ -82,8 +85,15 @@ class Preview : public QObject {
 
     friend class ProgramImageProvider;
 
+    [[nodiscard]] bool recording() const { return recording_; }
+    /// Start writing `encodeId` to `path`, or stop whatever is being written. The answer
+    /// arrives as `recordingChanged`, or as a notice when the encoder would not open.
+    Q_INVOKABLE void startRecording(const QString& encodeId, const QString& path);
+    Q_INVOKABLE void stopRecording(const QString& encodeId);
+
   signals:
     void changed();
+    void recordingChanged();
     void notice(const QString& text);
 
   private:
@@ -100,6 +110,7 @@ class Preview : public QObject {
     void lose(const QString& why);
     void reap(bool patient);
     void report(const QString& text);
+    void send_record(const QString& encodeId, const QString& path, bool start);
     [[nodiscard]] QString resolve(const QString& canvasId) const;
 
     std::filesystem::path renderer_;
@@ -108,6 +119,7 @@ class Preview : public QObject {
     std::unique_ptr<Link> link_;
     QTimer* live_ = nullptr;
     bool program_live_ = false;
+    bool recording_ = false;
     ldoc::Project latest_;
     QString filter_target_;
     ldoc::Id filter_canvas_ = ldoc::Id::generate();

@@ -9,6 +9,7 @@
 #include "lipc/fd.hpp"
 #include "source_worker.hpp"
 #include "audio_sources.hpp"
+#include "recorder.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -573,12 +574,24 @@ int main() {
 
     AudioSources audio;
     Renderer renderer(audio);
+    Recorder recorder(audio);
+    lcomp::RecordHooks record;
+    record.control = [&recorder](const lcomp::RecordRequest& request, const ldoc::Project& p) {
+        return recorder.control(request, p);
+    };
+    record.wants = [&recorder](const ldoc::Id& canvas) {
+        return recorder.running() && recorder.canvas() == canvas;
+    };
+    record.frame = [&recorder](const ldoc::Id& canvas, const lcomp::Picture& picture) {
+        recorder.frame(canvas, picture);
+    };
     auto served = lcomp::serve_preview(
         lipc::Channel{lipc::Fd{fd}}, {}, [&renderer] { renderer.done(); },
         [&renderer] { return renderer.fresh(); },
         [&renderer](const ldoc::Project& p, const ldoc::Id& id, std::uint32_t edge) {
             return renderer.render(p, id, edge);
-        }, [&audio, &renderer](const ldoc::Project& p) { return audio.meters(renderer.prepare(p)); });
+        }, [&audio, &renderer](const ldoc::Project& p) { return audio.meters(renderer.prepare(p)); },
+        {}, std::move(record));
     if (!served) {
         std::fprintf(stderr, "libertas-render: %s\n", served.error().c_str());
         return 1;

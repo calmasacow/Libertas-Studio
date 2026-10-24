@@ -52,7 +52,7 @@ if(LIBERTAS_BUILD_TESTS)
                      "${CMAKE_SOURCE_DIR}/tests/unit/fixtures/golden-project-v1" --verbose)
     set_tests_properties(inspect_migrates_an_older_project PROPERTIES
         TIMEOUT 30
-        PASS_REGULAR_EXPRESSION "version 1, brought up to 3"
+        PASS_REGULAR_EXPRESSION "version 1, brought up to 4"
         FAIL_REGULAR_EXPRESSION "error "
     )
 

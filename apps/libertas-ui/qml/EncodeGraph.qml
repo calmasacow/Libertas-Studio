@@ -1,0 +1,589 @@
+// SPDX-FileCopyrightText: Libertas-Studio contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import Libertas
+
+/// The node graph: sources on the left, encoders in the middle, destinations on the right.
+///
+/// The left column is not placeable. Canvases and audio tracks are what the project *has*
+/// rather than what the operator arranged, so they stack in order and stay put; only encoders
+/// and destinations carry a position. If that ever changes, they need a position in the
+/// document too -- see the ponytail note on Canvas in document.hpp.
+///
+/// Panning is middle-drag or space-drag, never a Flickable: ADR-0039 says nothing in this
+/// program scrolls by being dragged, because a drag that scrolls is a drag that cannot also
+/// move a node.
+Item {
+    id: graph
+
+    required property string selectedKind
+    required property string selectedId
+
+    signal nodeSelected(string kind, string id)
+
+    /// Graph-space offset of the view. Pan moves this; nodes are drawn at position + offset.
+    property real panX: 0
+    property real panY: 0
+
+    readonly property real railX: 30
+    readonly property real railTop: 20
+    readonly property real railSpacing: 14
+
+    function isSelected(kind, id) {
+        return graph.selectedKind === kind && graph.selectedId === id;
+    }
+
+    clip: true
+
+    Rectangle {
+        anchors.fill: parent
+        color: Theme.c.window
+    }
+
+    // The dotted ground, so panning is visible even over empty space. Drawn from the pan
+    // offset rather than scrolled, which keeps it exact at any offset.
+    Repeater {
+        model: 400
+
+        delegate: Rectangle {
+            required property int index
+
+            readonly property int columns: 20
+            readonly property real step: 60
+
+            width: 1
+            height: 1
+            radius: 0
+            color: Theme.c.border
+            opacity: 0.35
+            x: ((index % columns) * step + graph.panX % step + step) % (columns * step)
+            y: (Math.floor(index / columns) * step + graph.panY % step + step) % (20 * step)
+            visible: x < graph.width && y < graph.height
+        }
+    }
+
+    // --- the edges, under the nodes ---------------------------------------------------------
+    //
+    // Rebuilt whenever anything they attach to moves. Each node reports its own port position
+    // into `ports`, keyed by kind and id, and the links are read back out of that -- so an
+    // edge cannot be drawn to a card that is not on screen, and nothing needs to know the card
+    // geometry twice.
+    property var ports: ({})
+    property int portRevision: 0
+
+    function setPort(key, inX, inY, outX, outY) {
+        graph.ports[key] = { "inX": inX, "inY": inY, "outX": outX, "outY": outY };
+        graph.portRevision++;
+    }
+
+    /// The edges, read back out of the ports the cards reported.
+    ///
+    /// Built from the models rather than by walking the Repeaters' delegates: `itemAt()` is a
+    /// call with no binding dependency, so a graph built that way draws whatever existed the
+    /// first time it ran and never gains an edge again. The models are properties, and
+    /// `portRevision` covers the cards moving.
+    readonly property var links: {
+        void graph.portRevision;
+        void Document.revision;
+        const out = [];
+        const add = (a, b, lit) => {
+            const s = graph.ports[a];
+            const e = graph.ports[b];
+            if (s && e)
+                out.push({ "x1": s.outX, "y1": s.outY, "x2": e.inX, "y2": e.inY, "lit": lit });
+        };
+        const live = (kind, id) => graph.isSelected(kind, id);
+
+        for (const e of Document.encodeChoices()) {
+            const canvas = Document.encodeCanvasOf(e.id);
+            add("canvas:" + canvas, "encode:" + e.id,
+                live("encode", e.id) || live("canvas", canvas));
+            for (const d of e.destinations)
+                add("encode:" + e.id, "output:" + d.id,
+                    live("output", d.id) || live("encode", e.id));
+        }
+        for (const a of Document.audioEncodeChoices()) {
+            const bus = Document.audioEncodeSettings(a.id).busId || "";
+            add("bus:" + bus, "audio-encode:" + a.id,
+                live("audio-encode", a.id) || live("bus", bus));
+        }
+        for (const o of Document.outputsWithAudio()) {
+            add("audio-encode:" + o.audioEncode, "output:" + o.id,
+                live("output", o.id) || live("audio-encode", o.audioEncode));
+        }
+        return out;
+    }
+
+    GraphEdges {
+        objectName: "encodeGraphEdges"
+        anchors.fill: parent
+        links: graph.links
+    }
+
+    // --- the left rail: canvases, then audio tracks ------------------------------------------
+
+    Column {
+        id: rail
+
+        x: graph.railX + graph.panX
+        y: graph.railTop + graph.panY
+        spacing: graph.railSpacing
+
+        Repeater {
+            id: canvasRepeater
+
+            model: Document.canvases
+
+            delegate: EncodeNodeCard {
+                id: canvasCard
+
+                required property string canvasId
+                required property string name
+                required property int pixelWidth
+                required property int pixelHeight
+                required property double fps
+
+                width: 250
+                title: qsTr("CANVAS: %1").arg(canvasCard.name)
+                subtitle: canvasCard.pixelWidth + " x " + canvasCard.pixelHeight + " " +
+                          canvasCard.fps.toFixed(0) + "fps"
+                hasOutput: true
+                selected: graph.isSelected("canvas", canvasCard.canvasId)
+                onPressed: graph.nodeSelected("canvas", canvasCard.canvasId)
+
+                function report() {
+                    graph.setPort("canvas:" + canvasCard.canvasId,
+                                  rail.x, rail.y + y + 30,
+                                  rail.x + width, rail.y + y + 30);
+                }
+                Component.onCompleted: report()
+                onYChanged: report()
+                Connections {
+                    target: rail
+                    function onXChanged() { canvasCard.report(); }
+                    function onYChanged() { canvasCard.report(); }
+                }
+
+                // The canvas's own picture, from the preview the renderer already publishes.
+                Item {
+                    width: canvasCard.width - 18
+                    height: 108
+                    x: 9
+
+                    Rectangle {
+                        anchors.fill: parent
+                        color: "black"
+                        border.width: 1
+                        border.color: Theme.c.border
+                    }
+
+                    Image {
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        fillMode: Image.PreserveAspectFit
+                        cache: false
+                        asynchronous: true
+                        // `hasFrame` is a call, so the generation binding is what makes this
+                        // re-evaluate; a bare call would never update.
+                        source: Preview.generation >= 0 &&
+                                Preview.hasFrame(canvasCard.canvasId)
+                                ? "image://program/" +
+                                  Preview.canvasKey(canvasCard.canvasId) + "/" +
+                                  Preview.generation
+                                : ""
+                    }
+                }
+            }
+        }
+
+        Repeater {
+            id: busRepeater
+
+            model: Document.buses
+
+            delegate: EncodeNodeCard {
+                id: busCard
+
+                required property string busId
+                required property string name
+                required property string kind
+
+                // Only the mixes that can be encoded. An input bus is where one source
+                // arrives, not something a destination can carry.
+                readonly property bool encodable: busCard.kind === "program" ||
+                                                  busCard.kind === "vod" ||
+                                                  busCard.kind === "track"
+
+                property var meter: ({})
+
+                visible: busCard.encodable
+                // A Column lays out by height, so an invisible card still has to measure zero
+                // or it leaves a gap where it would have been.
+                height: busCard.encodable ? busCard.implicitHeight : 0
+                width: 250
+                title: qsTr("AUDIO TRACK: %1").arg(busCard.name)
+                hasOutput: true
+                selected: graph.isSelected("bus", busCard.busId)
+                onPressed: graph.nodeSelected("bus", busCard.busId)
+
+                function report() {
+                    if (!busCard.encodable)
+                        return;
+                    graph.setPort("bus:" + busCard.busId,
+                                  rail.x, rail.y + busCard.y + 30,
+                                  rail.x + busCard.width, rail.y + busCard.y + 30);
+                }
+                Component.onCompleted: report()
+                onYChanged: report()
+                Connections {
+                    target: rail
+                    function onXChanged() { busCard.report(); }
+                    function onYChanged() { busCard.report(); }
+                }
+                // Nothing makes a sound yet, so this reads whatever the renderer publishes and
+                // sits at nothing when that is nothing. A meter that moved on a timer would
+                // look finished while being a decoration.
+                Connections {
+                    target: Preview
+                    function onChanged() { busCard.meter = Preview.audioLevel(busCard.busId); }
+                }
+
+                Item {
+                    width: busCard.width - 18
+                    height: 26
+                    x: 9
+
+                    Rectangle {
+                        anchors.fill: parent
+                        color: Theme.c.panelHeader
+                        border.width: 1
+                        border.color: Theme.c.border
+                    }
+
+                    Repeater {
+                        model: 2
+
+                        delegate: Rectangle {
+                            required property int index
+
+                            readonly property real peak: index === 0
+                                                         ? (busCard.meter.left || 0)
+                                                         : (busCard.meter.right || 0)
+
+                            x: 2
+                            y: 2 + index * 11
+                            height: 9
+                            // The same dB mapping the mixer faders use: -60 dB to 0 across the
+                            // width, so a strip here and a strip there agree.
+                            width: (parent.width - 4) *
+                                   Math.max(0, Math.min(1,
+                                       (20 * Math.log(Math.max(peak, 0.001)) / Math.LN10 + 60) / 60))
+                            color: peak >= 0.99 ? Theme.c.warning : Theme.c.good
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- the placed nodes --------------------------------------------------------------------
+
+    Repeater {
+        id: encodeRepeater
+
+        model: Document.encodes
+
+        delegate: EncodeNodeCard {
+            id: encodeCard
+
+            required property string encodeId
+            required property string name
+            required property string canvasId
+            required property string resolution
+            required property string codec
+            required property string implementation
+            required property int bitrateKbps
+            required property double positionX
+            required property double positionY
+
+            property real dragFromX: 0
+            property real dragFromY: 0
+
+            x: encodeCard.positionX + graph.panX
+            y: encodeCard.positionY + graph.panY
+            width: 270
+            title: encodeCard.implementation.toUpperCase() + ": " +
+                   encodeCard.codec.toUpperCase()
+            subtitle: encodeCard.resolution
+            hasInput: true
+            hasOutput: true
+            selected: graph.isSelected("encode", encodeCard.encodeId)
+
+            onPressed: (mx, my) => {
+                graph.nodeSelected("encode", encodeCard.encodeId);
+                encodeCard.dragFromX = mx;
+                encodeCard.dragFromY = my;
+            }
+            onDragged: (mx, my) => Document.setGraphPosition(
+                           "encode", encodeCard.encodeId,
+                           encodeCard.x - graph.panX + (mx - encodeCard.dragFromX),
+                           encodeCard.y - graph.panY + (my - encodeCard.dragFromY), true)
+            // One drag is one undo step, and it lands back where it started.
+            onReleased: Document.endGesture()
+
+            function report() {
+                graph.setPort("encode:" + encodeCard.encodeId,
+                              x, y + 30, x + width, y + 30);
+            }
+            Component.onCompleted: report()
+            onXChanged: report()
+            onYChanged: report()
+
+            Column {
+                x: 9
+                width: encodeCard.width - 18
+                spacing: 4
+
+                Text {
+                    text: qsTr("Bitrate")
+                    font.pixelSize: 9
+                    color: Theme.c.textMuted
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 22
+                    color: Theme.c.panelHeader
+                    border.width: 1
+                    border.color: Theme.c.border
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: qsTr("%1 Kbps").arg(encodeCard.bitrateKbps)
+                        font.pixelSize: 11
+                        color: Theme.c.text
+                    }
+                }
+            }
+        }
+    }
+
+    Repeater {
+        id: audioRepeater
+
+        model: Document.audioEncodes
+
+        delegate: EncodeNodeCard {
+            id: audioCard
+
+            required property string audioEncodeId
+            required property string name
+            required property string busId
+            required property string codec
+            required property int bitrateKbps
+            required property double positionX
+            required property double positionY
+
+            property real dragFromX: 0
+            property real dragFromY: 0
+
+            x: audioCard.positionX + graph.panX
+            y: audioCard.positionY + graph.panY
+            width: 270
+            title: "FFmpeg: " + audioCard.codec.toUpperCase()
+            hasInput: true
+            hasOutput: true
+            selected: graph.isSelected("audio-encode", audioCard.audioEncodeId)
+
+            onPressed: (mx, my) => {
+                graph.nodeSelected("audio-encode", audioCard.audioEncodeId);
+                audioCard.dragFromX = mx;
+                audioCard.dragFromY = my;
+            }
+            onDragged: (mx, my) => Document.setGraphPosition(
+                           "audio-encode", audioCard.audioEncodeId,
+                           audioCard.x - graph.panX + (mx - audioCard.dragFromX),
+                           audioCard.y - graph.panY + (my - audioCard.dragFromY), true)
+            onReleased: Document.endGesture()
+
+            function report() {
+                graph.setPort("audio-encode:" + audioCard.audioEncodeId,
+                              x, y + 30, x + width, y + 30);
+            }
+            Component.onCompleted: report()
+            onXChanged: report()
+            onYChanged: report()
+
+            Column {
+                x: 9
+                width: audioCard.width - 18
+                spacing: 4
+
+                Text {
+                    text: qsTr("Bitrate")
+                    font.pixelSize: 9
+                    color: Theme.c.textMuted
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 22
+                    color: Theme.c.panelHeader
+                    border.width: 1
+                    border.color: Theme.c.border
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: qsTr("%1 Kbps").arg(audioCard.bitrateKbps)
+                        font.pixelSize: 11
+                        color: Theme.c.text
+                    }
+                }
+            }
+        }
+    }
+
+    Repeater {
+        id: outputRepeater
+
+        model: Document.outputs
+
+        delegate: EncodeNodeCard {
+            id: outputCard
+
+            required property string outputId
+            required property string name
+            required property string encodeId
+            required property string audioEncodeId
+            required property string audioEncodeName
+            required property string encodeName
+            required property bool isEnabled
+            required property bool misconfigured
+            required property double positionX
+            required property double positionY
+
+            property real dragFromX: 0
+            property real dragFromY: 0
+
+            x: outputCard.positionX + graph.panX
+            y: outputCard.positionY + graph.panY
+            width: 270
+            title: qsTr("STREAM: %1").arg(outputCard.name)
+            hasInput: true
+            selected: graph.isSelected("output", outputCard.outputId)
+
+            onPressed: (mx, my) => {
+                graph.nodeSelected("output", outputCard.outputId);
+                outputCard.dragFromX = mx;
+                outputCard.dragFromY = my;
+            }
+            onDragged: (mx, my) => Document.setGraphPosition(
+                           "output", outputCard.outputId,
+                           outputCard.x - graph.panX + (mx - outputCard.dragFromX),
+                           outputCard.y - graph.panY + (my - outputCard.dragFromY), true)
+            onReleased: Document.endGesture()
+
+            function report() {
+                graph.setPort("output:" + outputCard.outputId,
+                              x, y + 30, x + width, y + 30);
+            }
+            Component.onCompleted: report()
+            onXChanged: report()
+            onYChanged: report()
+
+            // The live pill. Red rather than absent when misconfigured, because an output
+            // that cannot go anywhere should not look the same as one that is merely off.
+            status: Rectangle {
+                width: 26
+                height: 13
+                radius: 7
+                color: Theme.c.panelHeader
+                border.width: 1
+                border.color: Theme.c.border
+
+                Rectangle {
+                    width: 9
+                    height: 9
+                    radius: 5
+                    y: 2
+                    x: outputCard.isEnabled ? parent.width - 11 : 2
+                    color: outputCard.misconfigured ? Theme.c.error
+                         : outputCard.isEnabled ? Theme.c.good
+                         : Theme.c.textMuted
+                }
+            }
+
+            Column {
+                x: 9
+                width: outputCard.width - 18
+                spacing: 2
+
+                Text {
+                    text: qsTr("Video Tracks")
+                    font.pixelSize: 9
+                    color: Theme.c.textMuted
+                    bottomPadding: 1
+                }
+
+                Text {
+                    width: parent.width
+                    text: outputCard.encodeName === ""
+                          ? qsTr("no video")
+                          : qsTr("Video track 0 (%1)").arg(outputCard.encodeName)
+                    font.pixelSize: 10
+                    color: Theme.c.text
+                    elide: Text.ElideRight
+                }
+
+                Text {
+                    text: qsTr("Audio Tracks")
+                    font.pixelSize: 9
+                    color: Theme.c.textMuted
+                    topPadding: 5
+                    bottomPadding: 1
+                }
+
+                // Said rather than left blank: a destination with no audio goes to air silent,
+                // which is a thing someone can mean and a thing nobody should discover live.
+                Text {
+                    width: parent.width
+                    text: outputCard.audioEncodeId === ""
+                          ? qsTr("no audio")
+                          : qsTr("Audio track 0 (%1)").arg(outputCard.audioEncodeName)
+                    font.pixelSize: 10
+                    color: outputCard.audioEncodeId === "" ? Theme.c.warning : Theme.c.text
+                    elide: Text.ElideRight
+                }
+            }
+        }
+    }
+
+    // --- panning -----------------------------------------------------------------------------
+    //
+    // Middle-drag, or left-drag on empty space. Below the cards, so a press that lands on a
+    // node moves the node instead.
+    MouseArea {
+        anchors.fill: parent
+        z: -2
+        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.ArrowCursor
+
+        property real fromX: 0
+        property real fromY: 0
+
+        onPressed: mouse => {
+            fromX = mouse.x - graph.panX;
+            fromY = mouse.y - graph.panY;
+            // A press on nothing is also how a selection is let go.
+            if (mouse.button === Qt.LeftButton)
+                graph.nodeSelected("", "");
+        }
+        onPositionChanged: mouse => {
+            graph.panX = mouse.x - fromX;
+            graph.panY = mouse.y - fromY;
+        }
+    }
+}

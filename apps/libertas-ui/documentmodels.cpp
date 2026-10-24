@@ -237,6 +237,10 @@ QVariant OutputModel::data(const QModelIndex& index, int role) const {
     case EnabledRole:         return r->enabled;
     case MisconfiguredRole:   return r->misconfigured;
     case EncodeIdRole:        return r->encodeId;
+    case AudioEncodeIdRole:   return r->audioEncodeId;
+    case AudioEncodeNameRole: return r->audioEncodeName;
+    case PositionXRole:       return r->positionX;
+    case PositionYRole:       return r->positionY;
     default:                  return {};
     }
 }
@@ -260,6 +264,10 @@ QHash<int, QByteArray> OutputModel::roleNames() const {
         {EnabledRole, "isEnabled"},
         {MisconfiguredRole, "misconfigured"},
         {EncodeIdRole, "encodeId"},
+        {AudioEncodeIdRole, "audioEncodeId"},
+        {AudioEncodeNameRole, "audioEncodeName"},
+        {PositionXRole, "positionX"},
+        {PositionYRole, "positionY"},
     };
 }
 
@@ -318,6 +326,8 @@ QVariant EncodeModel::data(const QModelIndex& index, int role) const {
     case BitrateRole:        return r->bitrateKbps;
     case PresetRole:         return r->preset;
     case DestinationsRole:   return r->destinations;
+    case PositionXRole:      return r->positionX;
+    case PositionYRole:      return r->positionY;
     default:                 return {};
     }
 }
@@ -334,6 +344,44 @@ QHash<int, QByteArray> EncodeModel::roleNames() const {
         {BitrateRole, "bitrateKbps"},
         {PresetRole, "preset"},
         {DestinationsRole, "destinations"},
+        {PositionXRole, "positionX"},
+        {PositionYRole, "positionY"},
+    };
+}
+
+int AudioEncodeModel::rowCount(const QModelIndex& parent) const {
+    return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+}
+
+QVariant AudioEncodeModel::data(const QModelIndex& index, int role) const {
+    const AudioEncodeRow* r = at(rows_, index);
+    if (!r)
+        return {};
+    switch (role) {
+    case IdRole:           return r->id;
+    case NameRole:         return r->name;
+    case BusIdRole:        return r->busId;
+    case BusNameRole:      return r->busName;
+    case CodecRole:        return r->codec;
+    case BitrateRole:      return r->bitrateKbps;
+    case DestinationsRole: return r->destinations;
+    case PositionXRole:    return r->positionX;
+    case PositionYRole:    return r->positionY;
+    default:               return {};
+    }
+}
+
+QHash<int, QByteArray> AudioEncodeModel::roleNames() const {
+    return {
+        {IdRole, "audioEncodeId"},
+        {NameRole, "name"},
+        {BusIdRole, "busId"},
+        {BusNameRole, "busName"},
+        {CodecRole, "codec"},
+        {BitrateRole, "bitrateKbps"},
+        {DestinationsRole, "destinations"},
+        {PositionXRole, "positionX"},
+        {PositionYRole, "positionY"},
     };
 }
 

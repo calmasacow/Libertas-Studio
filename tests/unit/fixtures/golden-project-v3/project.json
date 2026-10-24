@@ -91,6 +91,19 @@
         "codec" : "h264",
         "extra" : 
         {
+          "audio.bitrate_kbps" : 
+          {
+            "int" : 160
+          },
+          "audio.codec" : "aac",
+          "audio.track" : 
+          {
+            "int" : 1
+          },
+          "audio.vod_track" : 
+          {
+            "int" : 0
+          },
           "rc-lookahead" : 
           {
             "int" : 20
@@ -111,7 +124,22 @@
       {
         "bitrate_kbps" : 8000,
         "codec" : "h264",
-        "extra" : {},
+        "extra" : 
+        {
+          "audio.bitrate_kbps" : 
+          {
+            "int" : 160
+          },
+          "audio.codec" : "aac",
+          "audio.track" : 
+          {
+            "int" : 1
+          },
+          "audio.vod_track" : 
+          {
+            "int" : 0
+          }
+        },
         "implementation" : "nvenc",
         "keyframe_interval_ms" : 2000,
         "preset" : "p4",

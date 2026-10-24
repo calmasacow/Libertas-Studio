@@ -13,6 +13,11 @@ Workspaces Workspaces::defaults() {
     Workspaces w;
     w.items_.push_back(Workspace{std::string{kBuild}, true, Layout::default_build()});
     w.items_.push_back(Workspace{std::string{kLive}, true, Layout::default_live()});
+    // ponytail: Encode carries Build's layout because a Workspace has to hold one that
+    // validate() accepts, and nothing ever draws this one -- the shell swaps in a fixed view
+    // for it. If the node graph ever grows dockable panels, this is where its own default
+    // tree goes.
+    w.items_.push_back(Workspace{std::string{kEncode}, true, Layout::default_build()});
     w.active_ = 0;
     return w;
 }
@@ -117,6 +122,7 @@ std::optional<std::string> Workspaces::validate() const {
     std::set<std::string> seen;
     bool has_build = false;
     bool has_live = false;
+    bool has_encode = false;
     for (const Workspace& w : items_) {
         if (w.name.empty())
             return "a workspace has no name";
@@ -126,12 +132,15 @@ std::optional<std::string> Workspaces::validate() const {
             return std::format("'{}': {}", w.name, *bad);
         has_build = has_build || (w.builtin && w.name == kBuild);
         has_live = has_live || (w.builtin && w.name == kLive);
+        has_encode = has_encode || (w.builtin && w.name == kEncode);
     }
     // Losing one of these to a hand-edited file would leave no known arrangement to get back to.
     if (!has_build)
         return std::format("the built-in '{}' workspace is missing", kBuild);
     if (!has_live)
         return std::format("the built-in '{}' workspace is missing", kLive);
+    if (!has_encode)
+        return std::format("the built-in '{}' workspace is missing", kEncode);
     return std::nullopt;
 }
 

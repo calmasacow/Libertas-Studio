@@ -10,7 +10,7 @@
 // proves nothing about what happens when the fast path is unavailable.
 
 #include "audio.hpp"
-#include "encoder.hpp"
+#include "lencode/encoder.hpp"
 
 #include <vk_convert.hpp>
 #include <lrhi/vulkan.hpp>
@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
     }
 
     // --- encoder ---
-    libertas::spike::EncoderConfig ecfg;
+    libertas::encode::RuntimeConfig ecfg;
     ecfg.path = out_path;
     ecfg.width = caps.width;
     ecfg.height = caps.height;
@@ -231,7 +231,7 @@ int main(int argc, char** argv) {
     ecfg.bitrate = bitrate_kbps * 1000;
     ecfg.force_tier = tier;
     ecfg.audio_channels = want_audio ? 2 : 0;
-    libertas::spike::EncoderPtr enc = libertas::spike::encoder_open(ecfg, err);
+    libertas::encode::EncoderPtr enc = libertas::encode::encoder_open(ecfg, err);
     if (!enc) {
         lc::error("encoder open failed: {}", err);
         return 2;
@@ -495,11 +495,11 @@ int main(int argc, char** argv) {
 
         const bool sent =
             gpu_convert
-                ? libertas::spike::encoder_video_nv12(
+                ? libertas::encode::encoder_video_nv12(
                       *enc, nv12.data.data(), static_cast<int>(nv12.y_stride),
                       nv12.data.data() + nv12.uv_offset, static_cast<int>(nv12.uv_stride), pts_ns,
                       err)
-                : libertas::spike::encoder_video(*enc, pixels.data(),
+                : libertas::encode::encoder_video(*enc, pixels.data(),
                                                  static_cast<std::size_t>(caps.width) * 4, pts_ns,
                                                  err);
         if (!sent) {
@@ -512,7 +512,7 @@ int main(int argc, char** argv) {
             std::uint32_t n = 0;
             libertas::spike::audio_drain(*audio, samples, n);
             if (n > 0) {
-                if (!libertas::spike::encoder_audio(*enc, samples.data(), n, pts_ns, err)) {
+                if (!libertas::encode::encoder_audio(*enc, samples.data(), n, pts_ns, err)) {
                     lc::error("audio encode failed: {}", err);
                     break;
                 }
@@ -536,18 +536,18 @@ int main(int argc, char** argv) {
         std::vector<float> samples;
         std::uint32_t n = 0;
         libertas::spike::audio_drain(*audio, samples, n);
-        if (n > 0 && libertas::spike::encoder_audio(*enc, samples.data(), n, 0, err))
+        if (n > 0 && libertas::encode::encoder_audio(*enc, samples.data(), n, 0, err))
             audio_frames_fed += n;
     }
 
-    if (!libertas::spike::encoder_finish(*enc, err)) {
+    if (!libertas::encode::encoder_finish(*enc, err)) {
         lc::error("finish failed: {}", err);
         return 3;
     }
     const double wall_s =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - run_begin).count();
 
-    const auto& st = libertas::spike::encoder_stats(*enc);
+    const auto& st = libertas::encode::encoder_stats(*enc);
     std::printf("\n=== Phase-0 gate: %s ===\n", out_path.c_str());
     std::printf("  video         : %s, %u frames, %.2f MiB\n", st.video_encoder.c_str(),
                 static_cast<unsigned>(st.video_frames),

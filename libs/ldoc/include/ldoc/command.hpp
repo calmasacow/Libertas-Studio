@@ -315,6 +315,29 @@ struct SetEncode {
     friend bool operator==(const SetEncode&, const SetEncode&) = default;
 };
 
+// ---- audio encodes --------------------------------------------------------------------------
+
+struct AddAudioEncode {
+    AudioEncode encode;
+    std::size_t index = 0;
+    friend bool operator==(const AddAudioEncode&, const AddAudioEncode&) = default;
+};
+
+/// Refused while an output still names it, exactly as RemoveEncode is.
+///
+/// A destination with no audio bitstream is not a degraded state the model has a meaning for;
+/// it is a destination that will go to air silent. Point the outputs elsewhere, or clear their
+/// audio, first.
+struct RemoveAudioEncode {
+    Id encode;
+    friend bool operator==(const RemoveAudioEncode&, const RemoveAudioEncode&) = default;
+};
+
+struct SetAudioEncode {
+    AudioEncode value;
+    friend bool operator==(const SetAudioEncode&, const SetAudioEncode&) = default;
+};
+
 // ---- outputs --------------------------------------------------------------------------------
 
 struct AddOutput {
@@ -427,7 +450,8 @@ using Command = std::variant<
     SetEffectEnabled, SetDeck, AddDeck, RemoveDeck, SetDeckProgram, SetDeckPreview, AddSceneLink,
     RemoveSceneLink, SetCanvasEmergencyScene, SetNodeSource, AddSource, RemoveSource, SetSource,
     AddCanvas, RemoveCanvas, SetCanvas, AddBus, RemoveBus, SetBus, AddOutput, RemoveOutput,
-    SetOutput, AddEncode, RemoveEncode, SetEncode, SetProjectSettings, Batch>;
+    SetOutput, AddEncode, RemoveEncode, SetEncode, AddAudioEncode, RemoveAudioEncode,
+    SetAudioEncode, SetProjectSettings, Batch>;
 
 struct BatchBody {
     std::vector<Command> commands;

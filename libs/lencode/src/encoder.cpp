@@ -14,7 +14,7 @@
 //     is exact by construction, and video is placed against that same origin. Wall-clock arrival
 //     time is used for neither.
 
-#include "encoder.hpp"
+#include "lencode/encoder.hpp"
 
 #include <lcore/log.hpp>
 
@@ -33,7 +33,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
-namespace libertas::spike {
+namespace libertas::encode {
 
 const char* tier_name(VideoTier t) {
     switch (t) {
@@ -45,7 +45,7 @@ const char* tier_name(VideoTier t) {
 }
 
 struct Encoder {
-    EncoderConfig cfg;
+    RuntimeConfig cfg;
     EncoderStats stats;
 
     AVFormatContext* fmt = nullptr;
@@ -104,7 +104,7 @@ bool drain(Encoder& enc, AVCodecContext* ctx, AVStream* st, std::uint64_t& bytes
 /// Tries one video encoder by name. Returns nullptr when the encoder is absent or refuses to open,
 /// which is the ladder's whole mechanism - "not available" and "present but unusable here" must
 /// both fall through to the next rung rather than abort the run.
-AVCodecContext* try_video(const char* name, const EncoderConfig& cfg, AVFormatContext* fmt,
+AVCodecContext* try_video(const char* name, const RuntimeConfig& cfg, AVFormatContext* fmt,
                           std::string& why) {
     const AVCodec* codec = avcodec_find_encoder_by_name(name);
     if (codec == nullptr) {
@@ -175,9 +175,11 @@ AVCodecContext* try_video(const char* name, const EncoderConfig& cfg, AVFormatCo
 
 } // namespace
 
-EncoderPtr encoder_open(const EncoderConfig& cfg, std::string& error) {
+EncoderPtr encoder_open(const RuntimeConfig& cfg, std::string& error) {
     auto enc = EncoderPtr(new Encoder());
     enc->cfg = cfg;
+    if (enc->cfg.source_width == 0) enc->cfg.source_width = cfg.width;
+    if (enc->cfg.source_height == 0) enc->cfg.source_height = cfg.height;
 
     int r = avformat_alloc_output_context2(&enc->fmt, nullptr, nullptr, cfg.path.c_str());
     if (r < 0 || enc->fmt == nullptr) {
@@ -233,8 +235,10 @@ EncoderPtr encoder_open(const EncoderConfig& cfg, std::string& error) {
         return nullptr;
     }
 
-    enc->sws = sws_getContext(static_cast<int>(cfg.width), static_cast<int>(cfg.height),
-                              AV_PIX_FMT_BGRA, static_cast<int>(cfg.width),
+    enc->sws = sws_getContext(static_cast<int>(enc->cfg.source_width),
+                              static_cast<int>(enc->cfg.source_height),
+                              cfg.source_rgba ? AV_PIX_FMT_RGBA : AV_PIX_FMT_BGRA,
+                              static_cast<int>(cfg.width),
                               static_cast<int>(cfg.height), enc->vctx->pix_fmt, SWS_BILINEAR,
                               nullptr, nullptr, nullptr);
     if (enc->sws == nullptr) {
@@ -331,7 +335,7 @@ bool encoder_video(Encoder& enc, const std::uint8_t* bgra, std::size_t stride, s
     const auto t_convert = std::chrono::steady_clock::now();
     const std::uint8_t* src[4] = {bgra, nullptr, nullptr, nullptr};
     const int src_stride[4] = {static_cast<int>(stride), 0, 0, 0};
-    sws_scale(enc.sws, src, src_stride, 0, static_cast<int>(enc.cfg.height), enc.vframe->data,
+    sws_scale(enc.sws, src, src_stride, 0, static_cast<int>(enc.cfg.source_height), enc.vframe->data,
               enc.vframe->linesize);
     enc.stats.convert_ms.push_back(
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_convert)
@@ -505,4 +509,4 @@ void encoder_close(Encoder* enc) {
     delete enc;
 }
 
-} // namespace libertas::spike
+} // namespace libertas::encode

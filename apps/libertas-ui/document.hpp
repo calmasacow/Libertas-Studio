@@ -59,6 +59,7 @@ class Document : public QObject {
     /// audio comes from and a bus is where it goes.
     Q_PROPERTY(QAbstractItemModel* mixerStrips READ mixerStripsModel CONSTANT)
     Q_PROPERTY(QAbstractItemModel* encodes READ encodesModel CONSTANT)
+    Q_PROPERTY(QAbstractItemModel* audioEncodes READ audioEncodesModel CONSTANT)
 
     Q_PROPERTY(QVariantList collections READ collections NOTIFY collectionsChanged)
     Q_PROPERTY(QString collectionReport READ collectionReport NOTIFY collectionsChanged)
@@ -147,6 +148,10 @@ public:
     /// That canvas's pixel size, so its Program panel can be drawn the shape it really is.
     /// Empty `canvasId` means the first canvas; an unknown one gives an invalid size.
     Q_INVOKABLE [[nodiscard]] QSize canvasSizeOf(const QString& canvasId) const;
+    /// A canvas's frame rate as a number, for a panel that wants to say "60.0". Empty id means
+    /// the first canvas; an unknown one gives zero. Exact arithmetic stays in the document --
+    /// 59.94 is 60000/1001 and this is only for showing.
+    Q_INVOKABLE [[nodiscard]] double canvasFpsOf(const QString& canvasId) const;
     /// The rectangle the program picture draws for this node, in canvas pixels, and the terms a
     /// resize needs to keep the opposite edge still. Empty when this canvas's program scene does
     /// not draw that node.
@@ -161,6 +166,7 @@ public:
     /// The same list, by name, in the same order.
     Q_INVOKABLE [[nodiscard]] QStringList canvasNames() const;
     [[nodiscard]] QAbstractItemModel* encodesModel() { return &encodes_; }
+    [[nodiscard]] QAbstractItemModel* audioEncodesModel() { return &audio_encodes_; }
 
     [[nodiscard]] QString projectName() const;
     [[nodiscard]] QString projectPath() const;
@@ -546,6 +552,50 @@ public:
     Q_INVOKABLE void renameEncode(const QString& id, const QString& name);
     Q_INVOKABLE void setEncodeRescale(const QString& id, int width, int height);
 
+    // ---- audio encodes ----------------------------------------------------------------------
+    //
+    // The audio half of ADR-0029, and the same shape: one bitstream, named, that any number of
+    // destinations receive. These were four string keys inside EncoderConfig::extra until
+    // schema 4, which could not say that several destinations share one AAC stream.
+
+    /// A new audio encode of the program bus, named for what it is.
+    Q_INVOKABLE void addAudioEncode();
+    Q_INVOKABLE void removeAudioEncode(const QString& id);
+    Q_INVOKABLE void renameAudioEncode(const QString& id, const QString& name);
+    Q_INVOKABLE void setAudioEncodeBus(const QString& id, const QString& busId);
+    Q_INVOKABLE void setAudioEncodeCodec(const QString& id, const QString& codec);
+    Q_INVOKABLE void setAudioEncodeBitrate(const QString& id, int kbps);
+    Q_INVOKABLE [[nodiscard]] QVariantMap audioEncodeSettings(const QString& id) const;
+    /// {id, name} for every audio encode, for a dropdown to choose between them.
+    Q_INVOKABLE [[nodiscard]] QVariantList audioEncodeChoices() const;
+    /// Which bus each audio encode could read: the program and track buses, by {id, name}.
+    Q_INVOKABLE [[nodiscard]] QVariantList audioBusChoices() const;
+    /// Point a destination at an audio bitstream, or at none when the id is empty. None is a
+    /// destination that goes out silent, which validate() warns about rather than refusing.
+    Q_INVOKABLE void setOutputAudioEncode(const QString& outputId, const QString& audioEncodeId);
+    /// Which audio encode a destination names, or empty for none. A call rather than a model
+    /// role lookup, because QML reading a role by its integer offset breaks the moment a role
+    /// is inserted above it.
+    Q_INVOKABLE [[nodiscard]] QString outputAudioEncode(const QString& outputId) const;
+    /// Where a recording of this encode would be written: beside the project when there is
+    /// one, in the home directory when there is not, stamped so a second take does not
+    /// overwrite the first. Empty when the encode is not in the project.
+    Q_INVOKABLE [[nodiscard]] QString recordingPathFor(const QString& encodeId) const;
+    /// Which canvas an encode reads. For the graph, which draws that as an edge.
+    Q_INVOKABLE [[nodiscard]] QString encodeCanvasOf(const QString& encodeId) const;
+    /// {id, audioEncode} for every destination that carries audio. The graph's other edge;
+    /// destinations with no audio are simply absent rather than listed with an empty field.
+    Q_INVOKABLE [[nodiscard]] QVariantList outputsWithAudio() const;
+
+    /// Move a node on the Encode workspace's graph. `kind` is "encode", "audio-encode" or
+    /// "output".
+    ///
+    /// `dragging` is true while the pointer is still down, so a whole drag becomes one undo
+    /// step and lands back where it started -- the same gesture handling as setBusGain and
+    /// setNodeFrame. The caller must finish with endGesture().
+    Q_INVOKABLE void setGraphPosition(const QString& kind, const QString& id, double x, double y,
+                                      bool dragging = false);
+
     // ---- the nodes of the current scene ------------------------------------------------------
     //
     // "Node" rather than "source" in these names because they act on whatever is selected,
@@ -683,6 +733,9 @@ private:
     void edit_deck(const QString& id, const std::function<void(ldoc::Deck&)>& change);
     void edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change);
     void edit_encode(const QString& id, const std::function<void(ldoc::Encode&)>& change);
+    void edit_audio_encode(const QString& id,
+                           const std::function<void(ldoc::AudioEncode&)>& change,
+                           std::string_view gesture = {});
     static std::optional<ldoc::ParamValue> encoderExtraValue(
         const QString& key, const QVariant& value);
     void edit_canvas(const QString& id, const std::function<void(ldoc::Canvas&)>& change);
@@ -709,6 +762,7 @@ private:
     OutputModel outputs_;
     CanvasModel canvases_;
     EncodeModel encodes_;
+    AudioEncodeModel audio_encodes_;
 
     /// Per canvas: each canvas's panels keep their own place in their own scene list.
     std::map<QString, QString> selected_scene_;

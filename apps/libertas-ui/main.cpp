@@ -437,8 +437,6 @@ int main(int argc, char** argv) {
                    render_stats.value(QStringLiteral("frames")).toULongLong() > 0 &&
                    render_stats.value(QStringLiteral("renderMs")).toDouble() > 0.0,
                "the real renderer reports per-canvas frame count and render time");
-        report(render_stats.value(QStringLiteral("missed")).toULongLong() == 0,
-               "idle time does not count as missed render frames");
         // Startup layout can request a second preview size. Wait for actual idle
         // render work to expire, without assuming which event-loop pass settles it.
         auto expired_stats = render_stats;
@@ -450,6 +448,12 @@ int main(int argc, char** argv) {
                    expired_stats.value(QStringLiteral("frames")).toULongLong() >=
                        render_stats.value(QStringLiteral("frames")).toULongLong(),
                "render time expires after 500 ms while frame totals stay cumulative");
+        // Slow startup rendering may miss real budgets. Only growth while idle is wrong.
+        const auto idle_missed = expired_stats.value(QStringLiteral("missed")).toULongLong();
+        pump(100);
+        report(preview.renderStats(QString{}).value(QStringLiteral("missed")).toULongLong() ==
+                   idle_missed,
+               "idle time does not count as missed render frames");
         preview.resetStats();
         report(preview.renderStats(QString{}).value(QStringLiteral("frames")).toULongLong() == 0,
                "reset clears the displayed per-canvas frame count");
@@ -816,12 +820,13 @@ int main(int argc, char** argv) {
 
         // ---- the saved workspaces -----------------------------------------------------------
         //
-        // Build and Live exist, hold different panels, and cannot be renamed away. The point of
-        // the pair is that there is always a known arrangement to get back to after one has been
-        // wrecked, so what matters is that the built-in ones survive being misused.
-        report(workspace.workspaceCount() >= 2, "there are at least two workspaces");
-        report(workspace.workspaceIsBuiltin(0) && workspace.workspaceIsBuiltin(1),
-               "the first two are built in");
+        // Build, Live and Encode exist, hold different panels, and cannot be renamed away. The
+        // point of the set is that there is always a known arrangement to get back to after one
+        // has been wrecked, so what matters is that the built-in ones survive being misused.
+        report(workspace.workspaceCount() >= 3, "there are at least three workspaces");
+        report(workspace.workspaceIsBuiltin(0) && workspace.workspaceIsBuiltin(1) &&
+                   workspace.workspaceIsBuiltin(2),
+               "the first three are built in");
 
         const QString started_on = workspace.activeWorkspaceName();
         workspace.renameWorkspace(0, QStringLiteral("Nope"));
@@ -907,6 +912,65 @@ int main(int argc, char** argv) {
                "and reset to how it shipped");
         workspace.selectWorkspace(0);
         settle();
+
+        // Encode is a built-in like the other two, and nothing about it being drawn as a fixed
+        // view rather than a dock tree may change that.
+        {
+            const int encode = 2;
+            report(workspace.workspaceIsBuiltin(encode), "Encode is built in");
+            const QString was = workspace.activeWorkspaceName();
+            const int before = workspace.workspaceCount();
+            workspace.renameWorkspace(encode, QStringLiteral("Nope"));
+            settle();
+            report(workspace.workspaceCount() == before, "Encode cannot be renamed away");
+            workspace.removeWorkspace(encode);
+            settle();
+            report(workspace.workspaceCount() == before, "and cannot be removed");
+
+            // Switching through Encode and back must leave the dock tree alone. The view hides
+            // the panel surface rather than unloading it for exactly this reason: unloaded, it
+            // stops feeding the layout a viewport and every panel rect comes back empty.
+            const int panels_before = workspace.panelCount();
+            workspace.selectWorkspace(encode);
+            settle();
+            report(workspace.activeWorkspaceName() == QLatin1String("Encode"),
+                   "the Encode workspace can be selected");
+
+            // Ask the scene graph what it drew, not the engine what it believes. The view is
+            // the whole deliverable here, so "the workspace is selected" is only half the
+            // claim; the other half is that there is a graph painted in the window.
+            {
+                QObject* view = window->findChild<QObject*>(QStringLiteral("encodeView"));
+                report(view != nullptr, "and draws the encode view rather than the dock tree");
+                QObject* props =
+                    window->findChild<QObject*>(QStringLiteral("encodeProperties"));
+                report(props != nullptr, "with a properties column beside it");
+                // A graph with nodes and no edges is a list. The curves are what say which
+                // bitstream goes where, so their absence is a failure, not a cosmetic one.
+                QObject* edges =
+                    window->findChild<QObject*>(QStringLiteral("encodeGraphEdges"));
+                report(edges != nullptr, "and the edge layer");
+                if (edges != nullptr) {
+                    const auto links = edges->property("links").toList();
+                    report(!links.isEmpty(),
+                           "which has at least one connection to draw");
+                    report(edges->property("width").toReal() > 0 &&
+                               edges->property("height").toReal() > 0,
+                           "and has room to draw them in");
+
+                }
+                if (parser.isSet(shot_opt)) {
+                    settle();
+                    grab().save(parser.value(shot_opt) + QStringLiteral("/encode-view.png"));
+                }
+            }
+            workspace.selectWorkspace(0);
+            settle();
+            report(workspace.panelCount() == panels_before,
+                   "and switching back leaves the panels it had");
+            report(workspace.activeWorkspaceName() == was,
+                   "and lands on the workspace it came from");
+        }
 
         report(!theme.colors().isEmpty(), "the theme exposes colours");
         report(theme.colors().contains(QStringLiteral("dropFill")), "including the drop overlay fill");

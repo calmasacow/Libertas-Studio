@@ -5,9 +5,11 @@
 
 #include "lcore/atomic_file.hpp"
 
+#include <algorithm>
 #include <format>
 #include <limits>
 #include <unordered_map>
+#include <utility>
 
 #include <toml++/toml.hpp>
 
@@ -281,6 +283,34 @@ std::string to_toml(const Workspaces& w) {
     return out;
 }
 
+namespace {
+
+/// Add any built-in the file did not have, with the layout it ships with.
+///
+/// Reached by every file written by an older build, which is the common case rather than the
+/// exceptional one: a build that adds a built-in has to be able to open yesterday's file.
+std::expected<void, std::string> backfill_builtins(Workspaces& w) {
+    const std::pair<std::string_view, Layout (*)()> wanted[] = {
+        {Workspaces::kBuild, &Layout::default_build},
+        {Workspaces::kLive, &Layout::default_live},
+        // Nothing draws Encode's layout; it holds one only because a Workspace must.
+        {Workspaces::kEncode, &Layout::default_build},
+    };
+    for (const auto& [name, make] : wanted) {
+        const bool present = std::ranges::any_of(
+            w.items(), [name = name](const Workspace& item) { return item.name == name; });
+        if (present)
+            continue;
+        const auto added = w.add(std::string{name}, make());
+        if (!added)
+            return std::unexpected(added.error());
+        w.make_builtin(*added);
+    }
+    return {};
+}
+
+} // namespace
+
 std::expected<Workspaces, std::string> workspaces_from_toml(std::string_view text) {
     toml::table tbl;
     try {
@@ -332,7 +362,7 @@ std::expected<Workspaces, std::string> workspaces_from_toml(std::string_view tex
         // `builtin` is taken from the name rather than from the file. A hand-edited file that
         // marked every workspace as removable, or marked a new one as built in, would otherwise
         // be able to leave no known arrangement to return to.
-        const bool builtin = (*name == Workspaces::kBuild) || (*name == Workspaces::kLive);
+        const bool builtin = Workspaces::is_builtin_name(*name);
         if (builtin) {
             if (const auto r = w.add(*name, std::move(*layout)); !r)
                 return std::unexpected(r.error());
@@ -341,6 +371,13 @@ std::expected<Workspaces, std::string> workspaces_from_toml(std::string_view tex
             return std::unexpected(r.error());
         }
     }
+
+    // Every file written before a built-in existed is missing it, and validate() would reject
+    // the whole file for that -- taking the operator's own workspaces down with it. Backfill
+    // instead. Appending leaves the indices already read from the file alone, so `active`
+    // below still means what the file said.
+    if (const auto r = backfill_builtins(w); !r)
+        return std::unexpected(r.error());
 
     // An out-of-range index in a hand-edited file just leaves the first one active, which is
     // why the result is deliberately ignored rather than treated as a parse failure.

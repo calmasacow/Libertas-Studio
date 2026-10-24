@@ -36,6 +36,9 @@ struct Fixture {
     Id existing_bus;
     Id existing_encode;
     Id unused_encode;
+    Id encoded_bus;
+    Id existing_audio_encode;
+    Id unused_audio_encode;
     Id existing_output;
     Id spare_scene;
     Id vertical_scene;
@@ -102,6 +105,32 @@ struct Fixture {
         unused.encoder.bitrate_kbps = 2000;
         unused_encode = unused.id;
         project.encodes.push_back(std::move(unused));
+
+        // A bus of their own: `existing_bus` is the one the removal cases take, and an audio
+        // encode reading it would make every one of those a refusal.
+        Bus encoded;
+        encoded.id = Id::generate();
+        encoded.name = "Stream mix";
+        encoded.kind = BusKind::Program;
+        encoded_bus = encoded.id;
+        project.buses.push_back(std::move(encoded));
+
+        AudioEncode aac;
+        aac.id = Id::generate();
+        aac.name = "AAC 160";
+        aac.bus = encoded_bus;
+        aac.bitrate_kbps = 160;
+        existing_audio_encode = aac.id;
+        project.audio_encodes.push_back(std::move(aac));
+
+        // One nothing sends, so the removal case has one it is allowed to take.
+        AudioEncode spare_aac;
+        spare_aac.id = Id::generate();
+        spare_aac.name = "AAC 320";
+        spare_aac.bus = encoded_bus;
+        spare_aac.bitrate_kbps = 320;
+        unused_audio_encode = spare_aac.id;
+        project.audio_encodes.push_back(std::move(spare_aac));
 
         Output out;
         out.id = Id::generate();
@@ -251,6 +280,16 @@ std::vector<Command> every_command_shape(const Fixture& f) {
     Encode rebitrated = f.project.encodes.front();
     rebitrated.encoder.bitrate_kbps = 12000;
 
+    AudioEncode spare_audio_encode;
+    spare_audio_encode.id = Id::generate();
+    spare_audio_encode.name = "Opus 128";
+    spare_audio_encode.bus = f.encoded_bus;
+    spare_audio_encode.codec = "opus";
+    spare_audio_encode.bitrate_kbps = 128;
+
+    AudioEncode rebitrated_audio = f.project.audio_encodes.front();
+    rebitrated_audio.bitrate_kbps = 256;
+
     Settings tuned = f.project.settings;
     tuned.sample_rate = 44100;
 
@@ -302,6 +341,9 @@ std::vector<Command> every_command_shape(const Fixture& f) {
         AddEncode{spare_encode, 0},
         RemoveEncode{f.unused_encode},
         SetEncode{rebitrated},
+        AddAudioEncode{spare_audio_encode, 0},
+        RemoveAudioEncode{f.unused_audio_encode},
+        SetAudioEncode{rebitrated_audio},
         SetProjectSettings{tuned},
     };
 }
@@ -1152,6 +1194,11 @@ LTEST_CASE(an_output_needs_a_canvas_but_a_bus_does_not_need_its_listeners) {
     CHECK_MSG(!apply(f.project, SetOutput{live}).has_value(),
               "an output was enabled with nowhere to send to");
     CHECK(f.project == before);
+
+    // Removing a bus an audio encode reads is refused, the same way removing an encode an
+    // output sends is: a bitstream with nothing to encode has no meaning.
+    CHECK_MSG(!apply(f.project, RemoveBus{f.encoded_bus}).has_value(),
+              "a bus was removed out from under an audio encode");
 
     // Removing a bus a source node routes to is allowed, and reported afterwards.
     DocumentHistory h{f.project};

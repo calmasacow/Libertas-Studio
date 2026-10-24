@@ -14,7 +14,7 @@ namespace ldoc {
 /// Bumped only by a change that older builds cannot read. Migrations are forward-only, with
 /// golden fixtures; a project newer than this opens read-only rather than silently dropping the
 /// fields this build does not know about.
-inline constexpr int kSchemaVersion = 3;
+inline constexpr int kSchemaVersion = 4;
 
 /// An output surface with its own size, rate and colour space.
 ///
@@ -256,8 +256,39 @@ struct Encode {
     EncoderConfig encoder;
     /// Twitch's 1080p out of a 1440p canvas. Absent means the canvas's own size.
     std::optional<Vec2> rescale;
+    /// Where this sits on the Encode workspace's graph. View state, but it belongs to the
+    /// project rather than to the machine: an arrangement someone laid out by hand should
+    /// survive being opened on the other desk, for the same reason `Scene::favourite` is here.
+    Vec2 position;
 
     friend bool operator==(const Encode&, const Encode&) = default;
+};
+
+/// One encode of one bus: an audio bitstream, named, that any number of destinations receive.
+///
+/// First-class for exactly the reason `Encode` is (ADR-0029). This used to be four string keys
+/// inside `EncoderConfig::extra` -- `audio.codec`, `audio.bitrate_kbps`, `audio.track`,
+/// `audio.vod_track` -- which could say "this video encode carries AAC at 320" but could not say
+/// that eight destinations are receiving *the same* AAC bitstream. One encoder, one stream, many
+/// receivers is the whole shape of the thing, and the old form could not write it down.
+///
+/// Cycles remain impossible: an output names encodes, an encode names a bus or canvas, and
+/// neither can point back.
+struct AudioEncode {
+    Id id;
+    /// Named for what it is -- "AAC 320" -- never for a destination, same rule as `Encode`.
+    std::string name;
+    /// Which bus is encoded. Program for most shows; the Vod bus for the copyright-safe track.
+    Id bus;
+    /// "aac" or "opus".
+    std::string codec = "aac";
+    std::int32_t bitrate_kbps = 160;
+    /// Escape hatch for implementation-specific knobs, as on EncoderConfig.
+    ParamMap extra;
+    /// Where this sits on the Encode workspace's graph. See Encode::position.
+    Vec2 position;
+
+    friend bool operator==(const AudioEncode&, const AudioEncode&) = default;
 };
 
 /// One destination receiving one encode.
@@ -270,10 +301,16 @@ struct Encode {
 struct Output {
     Id id;
     std::string name;
-    /// Which bitstream this destination receives.
+    /// Which video bitstream this destination receives.
     Id encode;
+    /// Which audio bitstream it receives. Absent means the destination carries no audio, which
+    /// is a thing a file-only video capture wants and a live destination does not -- validate()
+    /// warns rather than refuses, because silence is a choice an operator can mean.
+    std::optional<Id> audio_encode;
     Destination destination;
     bool enabled = false;
+    /// Where this sits on the Encode workspace's graph. See Encode::position.
+    Vec2 position;
 
     friend bool operator==(const Output&, const Output&) = default;
 };
@@ -306,6 +343,7 @@ struct Project {
     std::vector<Asset> assets;
     /// The bitstreams. An output names one; several may name the same one.
     std::vector<Encode> encodes;
+    std::vector<AudioEncode> audio_encodes;
     std::vector<Output> outputs;
     Settings settings;
 
@@ -316,6 +354,7 @@ struct Project {
     [[nodiscard]] const Bus* bus(const Id& wanted) const;
     [[nodiscard]] const Source* source(const Id& wanted) const;
     [[nodiscard]] const Encode* encode(const Id& wanted) const;
+    [[nodiscard]] const AudioEncode* audio_encode(const Id& wanted) const;
     [[nodiscard]] const std::vector<Effect>* effect_stack(const Id& owner) const;
     [[nodiscard]] std::vector<Effect>* effect_stack(const Id& owner);
 

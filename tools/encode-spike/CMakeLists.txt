@@ -10,11 +10,13 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
 
 add_executable(encode-spike
     main.cpp
-    encoder.cpp
     audio.cpp
 )
 
+# The encoder itself moved to libs/lencode when the shell grew a use for it. The spike keeps
+# working off the same code rather than a copy that would drift.
 target_link_libraries(encode-spike PRIVATE
     libertas::spike-core
+    libertas::lencode
     PkgConfig::FFMPEG
 )

@@ -9,6 +9,8 @@
 
 #include <QElapsedTimer>
 #include <QDateTime>
+#include <QDir>
+#include <QRegularExpression>
 #include <QFontDatabase>
 #include <QFileInfo>
 #include <QImageReader>
@@ -288,6 +290,14 @@ QSize Document::canvasSizeOf(const QString& canvasId) const {
     const auto parsed = parse_id(canvas_key(canvasId));
     const ldoc::Canvas* c = parsed ? session_->project().canvas(*parsed) : nullptr;
     return c ? QSize(c->width, c->height) : QSize{};
+}
+
+double Document::canvasFpsOf(const QString& canvasId) const {
+    const auto parsed = parse_id(canvas_key(canvasId));
+    const ldoc::Canvas* c = parsed ? session_->project().canvas(*parsed) : nullptr;
+    if (!c || c->fps.den == 0)
+        return 0.0;
+    return static_cast<double>(c->fps.num) / static_cast<double>(c->fps.den);
 }
 
 namespace {
@@ -1088,6 +1098,21 @@ void Document::rebuild() {
     }
     canvases_.set_rows(std::move(canvas_rows));
 
+    // Where a node that has never been dragged is drawn. The migration places what it
+    // converts, but a project made after schema 4 starts with every position at the origin,
+    // and a pile at the corner is not a graph. Filled in here rather than written into the
+    // document on open: a project that edited itself for being looked at would be dirty
+    // before the operator touched anything.
+    constexpr double kEncodeColumn = 400.0;
+    constexpr double kOutputColumn = 760.0;
+    constexpr double kRowHeight = 150.0;
+    constexpr double kGraphTop = 60.0;
+    const auto placed = [](const ldoc::Vec2& at, double column, std::size_t index) {
+        return at == ldoc::Vec2{}
+                   ? ldoc::Vec2{column, kGraphTop + kRowHeight * static_cast<double>(index)}
+                   : at;
+    };
+
     // The encode list, which is the outputs manager's spine: one row per encode with its
     // destinations hanging off it. This is the inspector's "N concurrent encode(s) asked of the
     // GPU" in a shape the operator can act on (ADR-0029).
@@ -1112,9 +1137,37 @@ void Document::rebuild() {
             if (o.encode == e.id)
                 row.destinations.push_back(qstr(o.name));
         }
+        const auto at = placed(e.position, kEncodeColumn, encode_rows.size());
+        row.positionX = at.x;
+        row.positionY = at.y;
         encode_rows.push_back(std::move(row));
     }
     encodes_.set_rows(std::move(encode_rows));
+
+    // The audio bitstreams, the same shape as the video ones. Several destinations naming one
+    // of these share it, exactly as they share a video encode (ADR-0029).
+    std::vector<AudioEncodeRow> audio_encode_rows;
+    for (const ldoc::AudioEncode& e : p.audio_encodes) {
+        AudioEncodeRow row;
+        row.id = id_str(e.id);
+        row.name = qstr(e.name);
+        row.busId = id_str(e.bus);
+        const ldoc::Bus* b = p.bus(e.bus);
+        row.busName = b ? qstr(b->name) : QString{};
+        row.codec = qstr(e.codec);
+        row.bitrateKbps = e.bitrate_kbps;
+        for (const ldoc::Output& o : p.outputs) {
+            if (o.audio_encode && *o.audio_encode == e.id)
+                row.destinations.push_back(qstr(o.name));
+        }
+        // Audio encodes continue the middle column below the video ones.
+        const auto at = placed(e.position, kEncodeColumn,
+                               p.encodes.size() + audio_encode_rows.size());
+        row.positionX = at.x;
+        row.positionY = at.y;
+        audio_encode_rows.push_back(std::move(row));
+    }
+    audio_encodes_.set_rows(std::move(audio_encode_rows));
 
     std::vector<DeckRow> decks;
     for (const ldoc::Deck& d : p.decks) {
@@ -1183,6 +1236,14 @@ void Document::rebuild() {
         row.enabled = o.enabled;
         row.misconfigured = o.enabled && o.destination.url.empty() &&
                             o.destination.kind != ldoc::DestinationKind::File;
+        if (o.audio_encode) {
+            row.audioEncodeId = id_str(*o.audio_encode);
+            const ldoc::AudioEncode* a = p.audio_encode(*o.audio_encode);
+            row.audioEncodeName = a ? qstr(a->name) : QString{};
+        }
+        const auto at = placed(o.position, kOutputColumn, outputs.size());
+        row.positionX = at.x;
+        row.positionY = at.y;
         outputs.push_back(std::move(row));
     }
     outputs_.set_rows(std::move(outputs));
@@ -3515,6 +3576,253 @@ void Document::edit_encode(const QString& id, const std::function<void(ldoc::Enc
     if (next == *existing)
         return;
     run(ldoc::SetEncode{std::move(next)});
+}
+
+void Document::edit_audio_encode(const QString& id,
+                                 const std::function<void(ldoc::AudioEncode&)>& change,
+                                 std::string_view gesture) {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    const auto* existing = session_->project().audio_encode(*parsed);
+    if (!existing)
+        return;
+    ldoc::AudioEncode next = *existing;
+    change(next);
+    if (next == *existing)
+        return; // nothing to put on the undo stack
+    if (gesture.empty()) {
+        run(ldoc::SetAudioEncode{std::move(next)});
+        return;
+    }
+    const auto r = session_->run(ldoc::SetAudioEncode{std::move(next)}, gesture);
+    if (!r)
+        emit notice(qstr(r.error()));
+}
+
+void Document::addAudioEncode() {
+    const ldoc::Project& p = session_->project();
+    // The program bus, because that is what a new audio encode almost always wants and the
+    // alternative -- refusing until one is picked -- makes the button lie about what it does.
+    const ldoc::Bus* bus = nullptr;
+    for (const ldoc::Bus& b : p.buses) {
+        if (b.kind == ldoc::BusKind::Program)
+            bus = &b;
+    }
+    if (!bus) {
+        for (const ldoc::Bus& b : p.buses) {
+            if (b.kind == ldoc::BusKind::Vod || b.kind == ldoc::BusKind::Track) {
+                bus = &b;
+                break;
+            }
+        }
+    }
+    if (!bus) {
+        emit notice(QStringLiteral("An audio encode needs a bus to encode."));
+        return;
+    }
+    ldoc::AudioEncode e;
+    e.id = ldoc::Id::generate();
+    e.bus = bus->id;
+    e.codec = "aac";
+    e.bitrate_kbps = 160;
+    // Named for what it is, never for a destination -- the same rule as an encode.
+    e.name = std::format("AAC {}", e.bitrate_kbps);
+    run(ldoc::AddAudioEncode{std::move(e), p.audio_encodes.size()});
+}
+
+void Document::removeAudioEncode(const QString& id) {
+    const auto parsed = parse_id(id);
+    if (!parsed || !session_->project().audio_encode(*parsed))
+        return;
+    // The command refuses while an output still names it, so clear those first rather than
+    // handing the operator a refusal they would have to undo by hand.
+    std::vector<ldoc::Command> steps;
+    for (const ldoc::Output& o : session_->project().outputs) {
+        if (o.audio_encode && *o.audio_encode == *parsed) {
+            ldoc::Output next = o;
+            next.audio_encode.reset();
+            steps.push_back(ldoc::SetOutput{std::move(next)});
+        }
+    }
+    steps.push_back(ldoc::RemoveAudioEncode{*parsed});
+    run(ldoc::make_batch(std::move(steps), "Remove audio encode"));
+}
+
+void Document::renameAudioEncode(const QString& id, const QString& name) {
+    if (name.isEmpty())
+        return;
+    edit_audio_encode(id, [&](ldoc::AudioEncode& e) { e.name = to_std(name); });
+}
+
+void Document::setAudioEncodeBus(const QString& id, const QString& busId) {
+    const auto parsed = parse_id(busId);
+    if (!parsed)
+        return;
+    edit_audio_encode(id, [&](ldoc::AudioEncode& e) { e.bus = *parsed; });
+}
+
+void Document::setAudioEncodeCodec(const QString& id, const QString& codec) {
+    if (codec != QLatin1String("aac") && codec != QLatin1String("opus"))
+        return;
+    edit_audio_encode(id, [&](ldoc::AudioEncode& e) { e.codec = to_std(codec); });
+}
+
+void Document::setAudioEncodeBitrate(const QString& id, int kbps) {
+    if (kbps <= 0)
+        return;
+    edit_audio_encode(id, [kbps](ldoc::AudioEncode& e) { e.bitrate_kbps = kbps; });
+}
+
+QVariantMap Document::audioEncodeSettings(const QString& id) const {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return {};
+    const auto* e = session_->project().audio_encode(*parsed);
+    if (!e)
+        return {};
+    const ldoc::Bus* b = session_->project().bus(e->bus);
+    return {{"id", id_str(e->id)},
+            {"name", qstr(e->name)},
+            {"busId", id_str(e->bus)},
+            {"busName", b ? qstr(b->name) : QString{}},
+            {"codec", qstr(e->codec)},
+            {"bitrateKbps", e->bitrate_kbps}};
+}
+
+QVariantList Document::audioEncodeChoices() const {
+    QVariantList choices;
+    for (const ldoc::AudioEncode& e : session_->project().audio_encodes)
+        choices.append(QVariantMap{{"id", id_str(e.id)}, {"name", qstr(e.name)}});
+    return choices;
+}
+
+QVariantList Document::audioBusChoices() const {
+    QVariantList choices;
+    // Program, VOD and the numbered tracks: the buses that are a destination for a mix rather
+    // than a place one source arrives. An input bus is not something to encode.
+    for (const ldoc::Bus& b : session_->project().buses) {
+        if (b.kind == ldoc::BusKind::Program || b.kind == ldoc::BusKind::Vod ||
+            b.kind == ldoc::BusKind::Track || b.kind == ldoc::BusKind::Submix)
+            choices.append(QVariantMap{{"id", id_str(b.id)}, {"name", qstr(b.name)}});
+    }
+    return choices;
+}
+
+void Document::setOutputAudioEncode(const QString& outputId, const QString& audioEncodeId) {
+    // An empty id means no audio, which is a destination that goes out silent. validate()
+    // warns rather than refusing, because a silent file capture is a thing someone can mean.
+    std::optional<ldoc::Id> wanted;
+    if (!audioEncodeId.isEmpty()) {
+        const auto parsed = parse_id(audioEncodeId);
+        if (!parsed || !session_->project().audio_encode(*parsed))
+            return;
+        wanted = *parsed;
+    }
+    edit_output(outputId, [&](ldoc::Output& o) { o.audio_encode = wanted; });
+}
+
+QString Document::outputAudioEncode(const QString& outputId) const {
+    const auto parsed = parse_id(outputId);
+    if (!parsed)
+        return {};
+    for (const ldoc::Output& o : session_->project().outputs) {
+        if (o.id == *parsed)
+            return o.audio_encode ? id_str(*o.audio_encode) : QString{};
+    }
+    return {};
+}
+
+QString Document::recordingPathFor(const QString& encodeId) const {
+    const auto parsed = parse_id(encodeId);
+    if (!parsed)
+        return {};
+    const ldoc::Encode* e = session_->project().encode(*parsed);
+    if (!e)
+        return {};
+    // Beside the project, which is also where free space is measured (see Telemetry).
+    const std::filesystem::path base =
+        session_->path().empty()
+            ? std::filesystem::path{QDir::homePath().toStdString()}
+            : session_->path().parent_path();
+    // Stamped, because a second take that silently replaced the first would be the kind of
+    // loss nobody notices until the first one is wanted.
+    const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-hhmmss"));
+    QString name = qstr(e->name).simplified();
+    name.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]+")), QStringLiteral("-"));
+    if (name.isEmpty())
+        name = QStringLiteral("recording");
+    return qstr((base / QStringLiteral("%1-%2.mkv").arg(name, stamp).toStdString()).string());
+}
+
+QString Document::encodeCanvasOf(const QString& encodeId) const {
+    const auto parsed = parse_id(encodeId);
+    if (!parsed)
+        return {};
+    const ldoc::Encode* e = session_->project().encode(*parsed);
+    return e ? id_str(e->canvas) : QString{};
+}
+
+QVariantList Document::outputsWithAudio() const {
+    QVariantList out;
+    for (const ldoc::Output& o : session_->project().outputs) {
+        if (o.audio_encode)
+            out.append(QVariantMap{{"id", id_str(o.id)},
+                                   {"audioEncode", id_str(*o.audio_encode)}});
+    }
+    return out;
+}
+
+void Document::setGraphPosition(const QString& kind, const QString& id, double x, double y,
+                                bool dragging) {
+    // One gesture per node, named by it, so dragging two in turn is two undo steps even if the
+    // operator never lets go in between -- the same handling a fader gets.
+    const std::string gesture =
+        dragging ? std::format("graph.move:{}", to_std(id)) : std::string{};
+    const ldoc::Vec2 at{x, y};
+    if (kind == QLatin1String("encode")) {
+        const auto parsed = parse_id(id);
+        if (!parsed)
+            return;
+        const auto* existing = session_->project().encode(*parsed);
+        if (!existing || existing->position == at)
+            return;
+        ldoc::Encode next = *existing;
+        next.position = at;
+        if (gesture.empty()) {
+            run(ldoc::SetEncode{std::move(next)});
+            return;
+        }
+        const auto r = session_->run(ldoc::SetEncode{std::move(next)}, gesture);
+        if (!r)
+            emit notice(qstr(r.error()));
+        return;
+    }
+    if (kind == QLatin1String("audio-encode")) {
+        edit_audio_encode(id, [at](ldoc::AudioEncode& e) { e.position = at; }, gesture);
+        return;
+    }
+    if (kind != QLatin1String("output"))
+        return;
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    const ldoc::Output* existing = nullptr;
+    for (const ldoc::Output& o : session_->project().outputs) {
+        if (o.id == *parsed)
+            existing = &o;
+    }
+    if (!existing || existing->position == at)
+        return;
+    ldoc::Output next = *existing;
+    next.position = at;
+    if (gesture.empty()) {
+        run(ldoc::SetOutput{std::move(next)});
+        return;
+    }
+    const auto r = session_->run(ldoc::SetOutput{std::move(next)}, gesture);
+    if (!r)
+        emit notice(qstr(r.error()));
 }
 
 void Document::setOutputBitrate(const QString& id, int kbps) {

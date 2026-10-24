@@ -6,9 +6,12 @@
 
 #include "ldoc/json.hpp"
 
+#include "ldoc/migrate.hpp"
 #include "ltest.hpp"
 
+#include <algorithm>
 #include <format>
+#include <optional>
 #include <random>
 #include <string>
 
@@ -460,6 +463,131 @@ LTEST_CASE(assets_round_trip) {
     CHECK(*back == assets);
     CHECK_EQ(assets_to_json(*back), text);
     CHECK_EQ(back->front().bytes, 4294967296ULL);
+}
+
+
+LTEST_CASE(version_3_audio_settings_become_shared_audio_encodes) {
+    // The v3 -> v4 bump. Audio used to be four string keys inside each video encode, which
+    // could say "this encode carries AAC at 320" but could not say that several destinations
+    // receive the *same* AAC bitstream. Two encodes that asked for identical audio were always
+    // one stream; after the migration they say so.
+    Project p = make_default_project("audio migration");
+    p.scenes.clear();
+    p.schema_version = 3;
+
+    const Id canvas = p.canvases.front().id;
+    const auto program = std::find_if(p.buses.begin(), p.buses.end(), [](const Bus& b) {
+        return b.kind == BusKind::Program;
+    });
+    REQUIRE(program != p.buses.end());
+
+    const auto make_encode = [&](const char* name, const char* codec, std::int64_t kbps,
+                                 std::int64_t vod) {
+        Encode e;
+        e.id = Id::generate();
+        e.name = name;
+        e.canvas = canvas;
+        e.encoder.extra["audio.codec"] = std::string{codec};
+        e.encoder.extra["audio.bitrate_kbps"] = kbps;
+        e.encoder.extra["audio.track"] = std::int64_t{1};
+        e.encoder.extra["audio.vod_track"] = vod;
+        p.encodes.push_back(e);
+        return e.id;
+    };
+    // Two that match, one that does not.
+    const Id twitch = make_encode("1080p60 6 Mbps", "aac", 320, 0);
+    const Id youtube = make_encode("1080p60 8 Mbps", "aac", 320, 0);
+    const Id vertical = make_encode("1080x1920 4 Mbps", "aac", 160, 0);
+
+    const auto make_output = [&](const char* name, const Id& encode) {
+        Output o;
+        o.id = Id::generate();
+        o.name = name;
+        o.encode = encode;
+        p.outputs.push_back(o);
+        return o.id;
+    };
+    const Id out_twitch = make_output("Twitch", twitch);
+    const Id out_youtube = make_output("YouTube", youtube);
+    const Id out_vertical = make_output("TikTok", vertical);
+
+    const auto loaded = project_from_json(project_to_json(p));
+    REQUIRE_MSG(loaded.has_value(), "{}", loaded.error());
+    Project back = loaded->project;
+    const Migration m = migrate(back, loaded->legacy_outputs);
+    CHECK_EQ(m.from, 3);
+    CHECK_EQ(back.schema_version, kSchemaVersion);
+
+    // Identical audio deduplicates; different audio does not.
+    CHECK_EQ(back.audio_encodes.size(), std::size_t{2});
+
+    const auto audio_of = [&](const Id& output) -> std::optional<Id> {
+        const auto it = std::find_if(back.outputs.begin(), back.outputs.end(),
+                                     [&output](const Output& o) { return o.id == output; });
+        return it == back.outputs.end() ? std::nullopt : it->audio_encode;
+    };
+    const auto shared = audio_of(out_twitch);
+    REQUIRE_MSG(shared.has_value(), "the migrated output carries no audio encode");
+    CHECK_MSG(audio_of(out_youtube) == shared,
+              "two outputs with identical audio did not end up sharing one encode");
+    CHECK_MSG(audio_of(out_vertical) != shared,
+              "an output with different audio was folded into the shared encode");
+
+    const AudioEncode* a = back.audio_encode(*shared);
+    REQUIRE(a != nullptr);
+    CHECK_EQ(a->codec, std::string{"aac"});
+    CHECK_EQ(a->bitrate_kbps, 320);
+    CHECK_MSG(a->bus == program->id, "the audio encode was not attached to the program bus");
+
+    // The keys the migration read are gone, rather than left behind to be read twice.
+    for (const Encode& e : back.encodes) {
+        for (const char* key : {"audio.codec", "audio.bitrate_kbps", "audio.track",
+                                "audio.vod_track"}) {
+            CHECK_MSG(e.encoder.extra.find(key) == e.encoder.extra.end(),
+                      "'{}' survived the migration", key);
+        }
+    }
+
+    // And the result is a project that validates and round-trips.
+    const auto problems = validate(back);
+    const bool fatal = std::any_of(problems.begin(), problems.end(), [](const Problem& pr) {
+        return pr.severity == Severity::Error;
+    });
+    CHECK_MSG(!fatal, "the migrated project does not validate");
+    const auto again = project_from_json(project_to_json(back));
+    REQUIRE_MSG(again.has_value(), "{}", again.error());
+    CHECK_EQ(again->project.audio_encodes, back.audio_encodes);
+    CHECK_EQ(again->project.outputs, back.outputs);
+}
+
+LTEST_CASE(a_vod_track_migrates_onto_the_vod_bus) {
+    // "audio.vod_track" non-zero meant the copyright-safe mix, which is a different bus and so
+    // must not share a bitstream with the program one even at identical settings.
+    Project p = make_default_project("vod migration");
+    p.scenes.clear();
+    p.schema_version = 3;
+
+    const auto vod = std::find_if(p.buses.begin(), p.buses.end(),
+                                  [](const Bus& b) { return b.kind == BusKind::Vod; });
+    REQUIRE_MSG(vod != p.buses.end(), "the default project no longer has a VOD bus");
+
+    Encode e;
+    e.id = Id::generate();
+    e.name = "1080p60 8 Mbps";
+    e.canvas = p.canvases.front().id;
+    e.encoder.extra["audio.codec"] = std::string{"aac"};
+    e.encoder.extra["audio.bitrate_kbps"] = std::int64_t{160};
+    e.encoder.extra["audio.vod_track"] = std::int64_t{2};
+    p.encodes.push_back(e);
+
+    const auto loaded = project_from_json(project_to_json(p));
+    REQUIRE_MSG(loaded.has_value(), "{}", loaded.error());
+    Project back = loaded->project;
+    static_cast<void>(migrate(back, loaded->legacy_outputs));
+
+    REQUIRE(back.audio_encodes.size() == std::size_t{1});
+    CHECK_MSG(back.audio_encodes.front().bus == vod->id,
+              "a VOD track did not migrate onto the VOD bus");
 }
 
 LTEST_MAIN("json")

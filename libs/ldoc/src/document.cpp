@@ -131,6 +131,12 @@ const Encode* Project::encode(const Id& wanted) const {
     return it == encodes.end() ? nullptr : &*it;
 }
 
+const AudioEncode* Project::audio_encode(const Id& wanted) const {
+    const auto it = std::find_if(audio_encodes.begin(), audio_encodes.end(),
+                                 [&wanted](const AudioEncode& e) { return e.id == wanted; });
+    return it == audio_encodes.end() ? nullptr : &*it;
+}
+
 const SceneLink* Project::scene_link(const Id& wanted) const {
     const auto it = std::find_if(scene_links.begin(), scene_links.end(),
                                  [&wanted](const SceneLink& l) { return l.id == wanted; });
@@ -351,6 +357,7 @@ public:
         check_scene_links();
         check_decks();
         check_encodes();
+        check_audio_encodes();
         check_outputs();
         check_reference_cycles();
         check_precomp_cycles();
@@ -397,6 +404,8 @@ private:
             define(d.id, "deck", d.name);
         for (const Encode& e : p_.encodes)
             define(e.id, "encode", e.name);
+        for (const AudioEncode& e : p_.audio_encodes)
+            define(e.id, "audio encode", e.name);
         for (const Output& o : p_.outputs)
             define(o.id, "output", o.name);
         for (const SceneLink& l : p_.scene_links)
@@ -657,6 +666,17 @@ private:
         }
     }
 
+    void check_audio_encodes() {
+        for (const AudioEncode& e : p_.audio_encodes) {
+            if (!exists_as(e.bus, "bus"))
+                err(e.id, std::format("audio encode '{}' encodes bus {}, which does not exist",
+                                      e.name, e.bus.to_string()));
+            if (e.bitrate_kbps <= 0)
+                err(e.id, std::format("audio encode '{}' has a bitrate of {} kbps", e.name,
+                                      e.bitrate_kbps));
+        }
+    }
+
     void check_outputs() {
         for (const Output& o : p_.outputs) {
             // An output with no bitstream has nothing to send, which is the same kind of
@@ -664,6 +684,13 @@ private:
             if (!exists_as(o.encode, "encode"))
                 err(o.id, std::format("output '{}' sends encode {}, which does not exist",
                                       o.name, o.encode.to_string()));
+            // Carrying no audio is a choice -- a silent file capture means it -- so this is a
+            // warning. Naming one that is not there is not a choice.
+            if (o.audio_encode && !exists_as(*o.audio_encode, "audio encode"))
+                err(o.id, std::format("output '{}' sends audio encode {}, which does not exist",
+                                      o.name, o.audio_encode->to_string()));
+            else if (!o.audio_encode && o.enabled)
+                warn(o.id, std::format("output '{}' carries no audio", o.name));
             if (o.enabled && o.destination.url.empty())
                 err(o.id, std::format("output '{}' is enabled but has no destination", o.name));
         }

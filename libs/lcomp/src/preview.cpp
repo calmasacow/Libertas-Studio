@@ -6,6 +6,7 @@
 #include "ldoc/json.hpp"
 
 #include <algorithm>
+#include <ranges>
 #include <bit>
 #include <cerrno>
 #include <chrono>
@@ -38,6 +39,8 @@ enum class Kind : std::uint8_t {
     Fault = 8,
     Audio = 9,
     Pcm = 10,
+    Record = 11,
+    RecordState = 12,
 };
 
 constexpr std::size_t kMaxDocument = 32u * 1024u * 1024u;
@@ -328,6 +331,21 @@ std::expected<void, std::string> PreviewLink::refresh(std::uint32_t max_edge) {
     return channel_.send(commit);
 }
 
+std::expected<void, std::string> PreviewLink::send_record(const RecordRequest& request) {
+    if (request.encode.is_nil())
+        return std::unexpected(std::string{"a recording needs an encode"});
+    // A path long enough to be a problem is a bug on the way in, not something to truncate.
+    if (request.path.size() > 4096)
+        return std::unexpected(std::string{"that path is too long to record to"});
+    std::vector<std::byte> payload{static_cast<std::byte>(Kind::Record)};
+    payload.push_back(static_cast<std::byte>(request.start ? 1 : 0));
+    for (char c : request.encode.to_string())
+        payload.push_back(static_cast<std::byte>(c));
+    for (char c : request.path)
+        payload.push_back(static_cast<std::byte>(c));
+    return channel_.send(payload);
+}
+
 void PreviewLink::quit() {
     if (!channel_.valid())
         return;
@@ -384,6 +402,16 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
                             version, kPreviewProtocol));
         PreviewEvent event;
         event.kind = PreviewEvent::Kind::Hello;
+        return event;
+    }
+    if (kind == Kind::RecordState) {
+        if (payload.size() < 2)
+            return std::unexpected(std::string{"a recording state was cut short"});
+        PreviewEvent event;
+        event.kind = PreviewEvent::Kind::Record;
+        event.record.running = std::to_integer<unsigned>(payload[1]) != 0;
+        event.record.error.assign(reinterpret_cast<const char*>(payload.data() + 2),
+                                  payload.size() - 2);
         return event;
     }
     if (kind == Kind::Pcm) {
@@ -539,7 +567,8 @@ std::expected<PreviewEvent, std::string> PreviewLink::decode(lipc::Message messa
 
 std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSource frames,
                                                FramesDone done, FramesFresh fresh,
-                                               CanvasRenderer render, AudioMeters audio, AudioPcm pcm) {
+                                               CanvasRenderer render, AudioMeters audio,
+                                               AudioPcm pcm, RecordHooks record) {
     // Set whenever a project or scene message lands, so the first commit after an edit always
     // composites even if no screen has redrawn since.
     bool document_changed = true;
@@ -575,6 +604,41 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
             const auto kind = static_cast<Kind>(std::to_integer<unsigned>(payload[0]));
             if (kind == Kind::Quit)
                 return {};
+
+            if (kind == Kind::Record) {
+                RecordState state;
+                if (payload.size() < 28) {
+                    state.error = "a recording message was cut short";
+                } else if (!record.control) {
+                    // Said rather than ignored: a client that asked to record and heard
+                    // nothing would sit there believing it was recording.
+                    state.error = "this renderer cannot record";
+                } else if (!assembly.project || !assembly.error.empty()) {
+                    state.error = assembly.error.empty()
+                                      ? "a recording was asked for before the project arrived"
+                                      : assembly.error;
+                } else {
+                    const auto id = ldoc::Id::parse(std::string_view(
+                        reinterpret_cast<const char*>(payload.data() + 2), 26));
+                    if (!id) {
+                        state.error = "that is not an encode id";
+                    } else {
+                        RecordRequest request;
+                        request.start = std::to_integer<unsigned>(payload[1]) != 0;
+                        request.encode = *id;
+                        request.path.assign(reinterpret_cast<const char*>(payload.data() + 28),
+                                            payload.size() - 28);
+                        state = record.control(request, *assembly.project);
+                    }
+                }
+                std::vector<std::byte> reply{static_cast<std::byte>(Kind::RecordState)};
+                reply.push_back(static_cast<std::byte>(state.running ? 1 : 0));
+                for (char c : state.error)
+                    reply.push_back(static_cast<std::byte>(c));
+                if (auto sent = channel.send(reply); !sent)
+                    return sent;
+                continue;
+            }
 
             if (kind == Kind::Project || kind == Kind::Scene) {
                 std::size_t at = 1;
@@ -668,7 +732,13 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
             // canvas rate, which is faster than a 30 Hz screen produces, so skipping here is
             // what stops a full scale and blit per duplicate. A document change always draws:
             // the project may have moved something even if no frame arrived.
-            if (!document_changed && fresh && !fresh()) {
+            //
+            // A recording is the exception: a file whose frames stop arriving when the
+            // picture holds still is a file that plays back at the wrong speed.
+            const bool recording = record.wants && std::ranges::any_of(
+                assembly.project->canvases,
+                [&record](const ldoc::Canvas& c) { return record.wants(c.id); });
+            if (!recording && !document_changed && fresh && !fresh()) {
                 if (auto sent = send_ack(channel); !sent)
                     return sent;
                 continue;
@@ -710,6 +780,20 @@ std::expected<void, std::string> serve_preview(lipc::Channel channel, FrameSourc
                 picture.render_lag_frames = total.missed;
                 picture.fps_num = canvas.fps.valid() ? static_cast<std::uint32_t>(canvas.fps.num) : 0;
                 picture.fps_den = canvas.fps.valid() ? static_cast<std::uint32_t>(canvas.fps.den) : 0;
+                // The encoder wants the canvas at its real size; the preview wants it small
+                // enough for a panel. When both are wanted, composite twice rather than
+                // encoding the downscaled one -- a 1080p file off a 640px preview is not a
+                // recording of anything.
+                if (record.wants && record.frame && record.wants(canvas.id)) {
+                    if (max_edge == 0) {
+                        record.frame(canvas.id, picture);
+                    } else {
+                        Picture full =
+                            render ? render(*assembly.project, canvas.id, 0)
+                                   : composite_canvas(*assembly.project, canvas.id, frames);
+                        record.frame(canvas.id, full);
+                    }
+                }
                 if (auto sent = send_frame(channel, canvas.id, picture, slots); !sent)
                     return sent;
             }

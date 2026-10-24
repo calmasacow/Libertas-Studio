@@ -66,7 +66,7 @@ constexpr auto kDesktop = "org.freedesktop.portal.Desktop";
 constexpr auto kObject = "/org/freedesktop/portal/desktop";
 constexpr auto kChooser = "org.freedesktop.portal.FileChooser";
 constexpr auto kRequest = "org.freedesktop.portal.Request";
-constexpr auto kResponse = SLOT(portalResponse(uint, QVariantMap));
+const auto kResponse = SLOT(portalResponse(uint, QVariantMap));
 
 void register_filter_types() {
     static const bool once = [] {

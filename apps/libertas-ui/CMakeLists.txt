@@ -68,6 +68,11 @@ qt_add_qml_module(libertas-ui
         qml/CollectionDialog.qml
         qml/CanvasPanel.qml
         qml/ChainIcon.qml
+        qml/EncodeView.qml
+        qml/EncodeGraph.qml
+        qml/EncodeNodeCard.qml
+        qml/EncodeProperties.qml
+        qml/GraphEdges.qml
         qml/EyeIcon.qml
         qml/MixerFader.qml
         qml/NoDragScroll.qml

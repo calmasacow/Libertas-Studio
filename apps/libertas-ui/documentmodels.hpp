@@ -385,8 +385,60 @@ struct EncodeRow {
     /// The destinations fed by this one encode, by name. This is the number the inspector counts
     /// against the GPU made visible: one encode, several rows under it.
     QStringList destinations;
+    /// Where this node sits on the Encode workspace's graph.
+    double positionX = 0;
+    double positionY = 0;
 
     friend bool operator==(const EncodeRow&, const EncodeRow&) = default;
+};
+
+/// One audio bitstream, with the bus it encodes and the destinations that receive it.
+///
+/// Separate from EncodeRow rather than a flag on it: the graph draws them as different node
+/// kinds fed from different columns, and a single row type carrying "which half am I" would
+/// have to be unpacked at every use.
+struct AudioEncodeRow {
+    QString id;
+    QString name;
+    QString busId;
+    QString busName;
+    QString codec;
+    int bitrateKbps = 0;
+    /// The destinations fed by this one audio encode, by name.
+    QStringList destinations;
+    double positionX = 0;
+    double positionY = 0;
+
+    friend bool operator==(const AudioEncodeRow&, const AudioEncodeRow&) = default;
+};
+
+class AudioEncodeModel : public RowModelBase {
+    Q_OBJECT
+
+public:
+    enum Role {
+        IdRole = Qt::UserRole + 1,
+        NameRole,
+        BusIdRole,
+        BusNameRole,
+        CodecRole,
+        BitrateRole,
+        DestinationsRole,
+        PositionXRole,
+        PositionYRole,
+    };
+
+    using RowModelBase::RowModelBase;
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
+
+    void set_rows(std::vector<AudioEncodeRow> rows) { sync(rows_, std::move(rows)); }
+    [[nodiscard]] const std::vector<AudioEncodeRow>& rows() const { return rows_; }
+
+private:
+    std::vector<AudioEncodeRow> rows_;
 };
 
 class EncodeModel : public RowModelBase {
@@ -404,6 +456,8 @@ public:
         BitrateRole,
         PresetRole,
         DestinationsRole,
+        PositionXRole,
+        PositionYRole,
     };
 
     using RowModelBase::RowModelBase;
@@ -445,6 +499,12 @@ struct OutputRow {
     bool enabled = false;
     /// Enabled and pointed at nothing, which validate() calls an error.
     bool misconfigured = false;
+    /// Which audio bitstream this destination receives. Empty means none, which validate()
+    /// warns about rather than refusing: a silent file capture is a thing someone can mean.
+    QString audioEncodeId;
+    QString audioEncodeName;
+    double positionX = 0;
+    double positionY = 0;
 
     friend bool operator==(const OutputRow&, const OutputRow&) = default;
 };
@@ -469,6 +529,10 @@ public:
         EnabledRole,
         MisconfiguredRole,
         EncodeIdRole,
+        AudioEncodeIdRole,
+        AudioEncodeNameRole,
+        PositionXRole,
+        PositionYRole,
     };
 
     using RowModelBase::RowModelBase;

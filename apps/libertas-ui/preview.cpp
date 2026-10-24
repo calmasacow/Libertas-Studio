@@ -518,6 +518,16 @@ void Preview::on_readable() {
             break;
         case lcomp::PreviewEvent::Kind::Hello:
             break;
+        case lcomp::PreviewEvent::Kind::Record:
+            // Said by the renderer, not assumed here: the encoder opens over there and may
+            // refuse, and a UI that latched its own button would claim a recording nobody has.
+            if (!got.record.error.empty())
+                report(QString::fromStdString(got.record.error));
+            if (recording_ != got.record.running) {
+                recording_ = got.record.running;
+                emit recordingChanged();
+            }
+            break;
         case lcomp::PreviewEvent::Kind::Frame: {
             Held held;
             held.status = got.frame.status;
@@ -601,6 +611,36 @@ void Preview::on_writable() {
     try_send();
 }
 
+void Preview::startRecording(const QString& encodeId, const QString& path) {
+    if (path.isEmpty()) {
+        report(QStringLiteral("A recording needs somewhere to write."));
+        return;
+    }
+    send_record(encodeId, path, true);
+}
+
+void Preview::stopRecording(const QString& encodeId) {
+    send_record(encodeId, {}, false);
+}
+
+void Preview::send_record(const QString& encodeId, const QString& path, bool start) {
+    if (!link_ || !link_->channel || !link_->alive) {
+        report(QStringLiteral("The renderer is not running, so there is nothing to record."));
+        return;
+    }
+    const auto id = ldoc::Id::parse(encodeId.toStdString());
+    if (!id) {
+        report(QStringLiteral("That is not an encode."));
+        return;
+    }
+    lcomp::RecordRequest request;
+    request.start = start;
+    request.encode = *id;
+    request.path = path.toStdString();
+    if (const auto sent = link_->channel->send_record(request); !sent)
+        report(QString::fromStdString(sent.error()));
+}
+
 void Preview::lose(const QString& why) {
     // Already torn down. Hello can fail before `alive` is set, and that path still has a child
     // to reap, so "not alive" on its own is not "already gone".
@@ -612,6 +652,12 @@ void Preview::lose(const QString& why) {
     link_->in_flight = false;
     link_->have_pending = false;
     link_->dirty = false;
+    // A renderer that died took the file with it. Saying otherwise would leave a Record
+    // button latched over a recording that stopped some time ago.
+    if (recording_) {
+        recording_ = false;
+        emit recordingChanged();
+    }
     if (link_->read != nullptr)
         link_->read->setEnabled(false);
     if (link_->write != nullptr)

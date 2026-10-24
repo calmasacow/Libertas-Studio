@@ -53,7 +53,7 @@ Id fixed_id(std::uint8_t tag) {
 /// The current format, written by this build and committed. The byte-for-byte fixture.
 fs::path fixture_dir() {
     // Beside the test source, not in the build tree: it is an artefact of the repository.
-    return fs::path(LIBERTAS_TEST_FIXTURES) / "golden-project-v3";
+    return fs::path(LIBERTAS_TEST_FIXTURES) / "golden-project-v4";
 }
 
 /// The previous format, frozen. **Never regenerated**: its whole value is that it was written by
@@ -245,6 +245,7 @@ Project golden_project() {
     full.encoder.preset = "p5";
     full.encoder.rate_control = "cbr";
     full.encoder.extra.emplace("rc-lookahead", std::int64_t{20});
+    full.position = Vec2{520.0, 60.0};
     p.encodes.push_back(full);
 
     Encode downscaled;
@@ -258,7 +259,30 @@ Project golden_project() {
     downscaled.encoder.preset = "p4";
     downscaled.encoder.rate_control = "cbr";
     downscaled.rescale = Vec2{1920.0, 1080.0};
+    downscaled.position = Vec2{520.0, 210.0};
     p.encodes.push_back(downscaled);
+
+    // Two audio bitstreams, one shared and one not: the program mix every destination takes,
+    // and the copyright-safe VOD track only the recording wants. Fan-out on the audio side is
+    // the thing schema 4 exists to be able to say.
+    AudioEncode program_audio;
+    program_audio.id = fixed_id(0x7c);
+    program_audio.name = "AAC 160";
+    program_audio.bus = program.id;
+    program_audio.codec = "aac";
+    program_audio.bitrate_kbps = 160;
+    program_audio.position = Vec2{520.0, 360.0};
+    p.audio_encodes.push_back(program_audio);
+
+    AudioEncode vod_audio;
+    vod_audio.id = fixed_id(0x7d);
+    vod_audio.name = "Opus 128";
+    vod_audio.bus = vod.id;
+    vod_audio.codec = "opus";
+    vod_audio.bitrate_kbps = 128;
+    vod_audio.extra.emplace("application", std::string{"audio"});
+    vod_audio.position = Vec2{520.0, 510.0};
+    p.audio_encodes.push_back(vod_audio);
 
     Output youtube;
     youtube.id = fixed_id(0x70);
@@ -268,6 +292,8 @@ Project golden_project() {
     youtube.destination.url = "rtmps://a.rtmps.youtube.com/live2";
     youtube.destination.credential_ref = "youtube-main";
     youtube.enabled = false;
+    youtube.audio_encode = program_audio.id;
+    youtube.position = Vec2{1000.0, 60.0};
     p.outputs.push_back(std::move(youtube));
 
     Output twitch;
@@ -277,6 +303,8 @@ Project golden_project() {
     twitch.destination.kind = DestinationKind::Rtmps;
     twitch.destination.url = "rtmps://ingest.twitch.tv/app";
     twitch.destination.credential_ref = "twitch-main";
+    twitch.audio_encode = program_audio.id;
+    twitch.position = Vec2{1000.0, 210.0};
     p.outputs.push_back(std::move(twitch));
 
     Output kick;
@@ -286,6 +314,9 @@ Project golden_project() {
     kick.destination.kind = DestinationKind::Rtmps;
     kick.destination.url = "rtmps://fa723fc1b171.global-contribute.live-video.net/app";
     kick.destination.credential_ref = "kick-main";
+    // Deliberately no audio encode: a destination may carry none, and validate() warns about
+    // it rather than refusing. The fixture has to hold the shape it permits.
+    kick.position = Vec2{1000.0, 360.0};
     p.outputs.push_back(std::move(kick));
 
     Asset asset;
@@ -363,7 +394,13 @@ LTEST_CASE(the_committed_project_still_opens) {
     CHECK_EQ(p.sources.size(), std::size_t{2});
     CHECK_EQ(p.buses.size(), std::size_t{2});
     CHECK_EQ(p.encodes.size(), std::size_t{2});
+    CHECK_EQ(p.audio_encodes.size(), std::size_t{2});
     CHECK_EQ(p.outputs.size(), std::size_t{3});
+    // Two destinations sharing one audio bitstream, and one carrying none at all.
+    CHECK(p.outputs[0].audio_encode == p.outputs[1].audio_encode);
+    CHECK(!p.outputs[2].audio_encode.has_value());
+    REQUIRE(p.audio_encode(*p.outputs[0].audio_encode) != nullptr);
+    CHECK_EQ(p.audio_encode(*p.outputs[0].audio_encode)->bitrate_kbps, 160);
     CHECK_EQ(p.assets.size(), std::size_t{1});
 
     // The details most likely to be quietly lost by a format change.
@@ -422,6 +459,36 @@ LTEST_CASE(version_2_migration_preserves_existing_filters_and_starts_shared_stac
     REQUIRE(live->roots.front().children());
     CHECK_EQ(live->roots.front().children()->front().effects.size(), 1u);
     CHECK(is_valid(opened->project));
+}
+
+LTEST_CASE(version_3_audio_extras_become_audio_encodes) {
+    // These bytes were written before audio was a document object: the settings live in four
+    // string keys inside each video encode. Opening them is what exercises the real v3 -> v4
+    // migration rather than a reconstruction of what version 3 is believed to have been.
+    const ScratchDir sd;
+    const auto dir = sd.copy_of(fs::path(LIBERTAS_TEST_FIXTURES) / "golden-project-v3");
+    auto opened = open_project(dir);
+    REQUIRE_MSG(opened, "{}", opened ? std::string{} : opened.error());
+    CHECK_EQ(opened->project.schema_version, kSchemaVersion);
+    CHECK(!opened->read_only);
+
+    const Project& p = opened->project;
+    // Both encodes asked for the same audio, so they are one bitstream now and say so.
+    REQUIRE(!p.audio_encodes.empty());
+    CHECK_EQ(p.audio_encodes.size(), std::size_t{1});
+    CHECK_EQ(p.audio_encodes.front().bitrate_kbps, 160);
+    for (const Output& o : p.outputs) {
+        REQUIRE_MSG(o.audio_encode.has_value(), "output '{}' lost its audio", o.name);
+        CHECK(*o.audio_encode == p.audio_encodes.front().id);
+    }
+    // The keys the migration read are gone rather than left to be read twice.
+    for (const Encode& e : p.encodes) {
+        for (const char* key : {"audio.codec", "audio.bitrate_kbps", "audio.track",
+                                "audio.vod_track"})
+            CHECK_MSG(e.encoder.extra.find(key) == e.encoder.extra.end(),
+                      "'{}' survived the migration", key);
+    }
+    CHECK(is_valid(p));
 }
 
 LTEST_CASE(a_version_1_project_opens_and_is_migrated) {

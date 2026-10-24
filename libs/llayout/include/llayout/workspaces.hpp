@@ -65,9 +65,19 @@ public:
     /// duplicate or empty name, or a layout that does not validate.
     [[nodiscard]] std::optional<std::string> validate() const;
 
-    /// The two that must always exist.
+    /// The three that must always exist.
     static constexpr std::string_view kBuild = "Build";
     static constexpr std::string_view kLive = "Live";
+    /// The node graph. Not a dock arrangement at all: the shell draws a fixed view for this
+    /// one and never reads its layout. It is a workspace anyway so that it is a tab like the
+    /// others, with one switching rule rather than two.
+    static constexpr std::string_view kEncode = "Encode";
+
+    /// Whether a name is one of the three. The loader decides `builtin` from the name rather
+    /// than from the file, so this is the single place that list is written down.
+    [[nodiscard]] static bool is_builtin_name(std::string_view name) {
+        return name == kBuild || name == kLive || name == kEncode;
+    }
 
     friend bool operator==(const Workspaces&, const Workspaces&) = default;
 

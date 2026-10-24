@@ -28,6 +28,7 @@ Jv enc(const Source& s);
 Jv enc(const Asset& a);
 Jv enc(const Output& o);
 Jv enc(const Encode& e);
+Jv enc(const AudioEncode& e);
 Jv enc(const SceneLink& l);
 
 // ---- writing --------------------------------------------------------------------------------
@@ -338,6 +339,19 @@ Jv enc(const Encode& e) {
     o["canvas"] = enc(e.canvas);
     o["encoder"] = enc(e.encoder);
     o["rescale"] = e.rescale ? enc(*e.rescale) : Jv{Json::nullValue};
+    o["position"] = enc(e.position);
+    return o;
+}
+
+Jv enc(const AudioEncode& e) {
+    Jv o{Json::objectValue};
+    o["id"] = enc(e.id);
+    o["name"] = e.name;
+    o["bus"] = enc(e.bus);
+    o["codec"] = e.codec;
+    o["bitrate_kbps"] = e.bitrate_kbps;
+    o["extra"] = enc(e.extra);
+    o["position"] = enc(e.position);
     return o;
 }
 
@@ -346,8 +360,10 @@ Jv enc(const Output& o_) {
     o["id"] = enc(o_.id);
     o["name"] = o_.name;
     o["encode"] = enc(o_.encode);
+    o["audio_encode"] = o_.audio_encode ? enc(*o_.audio_encode) : Jv{Json::nullValue};
     o["destination"] = enc(o_.destination);
     o["enabled"] = o_.enabled;
+    o["position"] = enc(o_.position);
     return o;
 }
 
@@ -445,6 +461,7 @@ std::string project_to_json(const Project& project) {
     root["decks"] = enc_array(project.decks);
     root["sources"] = enc_array(project.sources);
     root["encodes"] = enc_array(project.encodes);
+    root["audioEncodes"] = enc_array(project.audio_encodes);
     root["outputs"] = enc_array(project.outputs);
     root["settings"] = enc(project.settings);
 
@@ -916,6 +933,27 @@ Encode dec_encode(Rd& rd, const Jv& v, std::string_view path) {
     e.encoder = dec_encoder_config(rd, v, "encoder", path);
     if (v.isMember("rescale") && !v["rescale"].isNull())
         e.rescale = dec_vec2(rd, v["rescale"], path);
+    // Absent before version 4. Zero is a corner of the graph, which is where the migration
+    // puts anything it has no better answer for.
+    if (v.isMember("position"))
+        e.position = dec_vec2(rd, v["position"], path);
+    return e;
+}
+
+AudioEncode dec_audio_encode(Rd& rd, const Jv& v, std::string_view path) {
+    AudioEncode e;
+    if (!v.isObject()) {
+        rd.fail(path, "an audio encode is not an object");
+        return e;
+    }
+    e.id = rd.id(v, "id", path);
+    e.name = rd.text(v, "name", path);
+    e.bus = rd.id(v, "bus", path);
+    e.codec = rd.text(v, "codec", path);
+    e.bitrate_kbps = rd.integer32(v, "bitrate_kbps", path, e.bitrate_kbps);
+    e.extra = dec_params(rd, v, "extra", path);
+    if (v.isMember("position"))
+        e.position = dec_vec2(rd, v["position"], path);
     return e;
 }
 
@@ -932,7 +970,13 @@ Output dec_output(Rd& rd, const Jv& v, std::string_view path) {
         o.destination.url = rd.text(*d, "url", path);
         o.destination.credential_ref = rd.text(*d, "credential_ref", path);
     }
+    // Absent before version 4, where audio was four string keys inside the video encode; the
+    // migration fills it in.
+    if (v.isMember("audio_encode") && !v["audio_encode"].isNull())
+        o.audio_encode = rd.id(v, "audio_encode", path);
     o.enabled = rd.boolean(v, "enabled", path, false);
+    if (v.isMember("position"))
+        o.position = dec_vec2(rd, v["position"], path);
     return o;
 }
 
@@ -1191,6 +1235,10 @@ std::expected<ProjectFile, std::string> project_from_json(std::string_view text)
             p.sources.push_back(dec_source(rd, v, "project.sources"));
     }
 
+    if (const Jv* a = rd.array(*root, "audioEncodes", "project")) {
+        for (const Jv& v : *a)
+            p.audio_encodes.push_back(dec_audio_encode(rd, v, "project.audioEncodes"));
+    }
     if (const Jv* a = rd.array(*root, "encodes", "project")) {
         for (const Jv& v : *a)
             p.encodes.push_back(dec_encode(rd, v, "project.encodes"));

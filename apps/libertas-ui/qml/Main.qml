@@ -27,6 +27,11 @@ Window {
     // show to be acknowledged.
     property string notice: ""
 
+    /// The Encode workspace is not a dock arrangement: it draws a fixed three-column view and
+    /// its stored layout is never read. Bound to the name rather than asked through
+    /// workspaceIsBuiltin(), which is an invokable and so would never re-evaluate.
+    readonly property bool encodeActive: Workspace.activeWorkspaceName === "Encode"
+
     function report(text) {
         root.notice = text;
         noticeTimer.restart();
@@ -115,6 +120,11 @@ Window {
         // Named so the headless check can ask where it actually is. Panel rects are in this
         // item's coordinates, not the window's, and the chrome above it is not fixed.
         objectName: "workArea"
+
+        // Hidden on the Encode tab, never unloaded. The viewport feed below is what gives the
+        // dock tree its size; take it away and panel rects come back zero-sized, so Build and
+        // Live would render empty on the way back.
+        visible: !root.encodeActive
 
         anchors.left: parent.left
         anchors.right: parent.right
@@ -284,6 +294,17 @@ Window {
         }
 
         DragGhost {}
+    }
+
+    // The node graph, in place of the dock tree rather than inside it.
+    Loader {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: workspaceTabs.bottom
+        anchors.bottom: statusBar.top
+        active: root.encodeActive
+        visible: root.encodeActive
+        sourceComponent: EncodeView {}
     }
 
     StatusBar {

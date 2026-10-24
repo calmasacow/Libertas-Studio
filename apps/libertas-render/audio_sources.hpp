@@ -14,6 +14,7 @@
 #include <mutex>
 #include <set>
 #include <thread>
+#include <utility>
 
 class AudioSources {
     struct Session {
@@ -117,6 +118,9 @@ class AudioSources {
     std::vector<ldoc::Bus> buses_;
     std::string monitor_output_ = "none";
     std::map<ldoc::Id, lcomp::AudioLevel> bus_levels_;
+    /// Which bus the encoder is following, and what it has not drained yet.
+    ldoc::Id tapped_ = ldoc::Id::nil();
+    std::vector<float> tap_;
     std::jthread mixer_{[this](std::stop_token stop) { mix(stop); }};
 
     static float gain(double db) {
@@ -322,6 +326,22 @@ class AudioSources {
             {
                 std::lock_guard lock(mu_);
                 bus_levels_ = std::move(levels);
+                // Keep the finished mix of whichever bus is being recorded. Taken here, after
+                // inserts, fader, pan and delay, because that is what the operator hears and
+                // so is what the file has to carry.
+                if (!tapped_.is_nil()) {
+                    const auto it = mixed.find(tapped_);
+                    if (it != mixed.end()) {
+                        tap_.insert(tap_.end(), it->second.begin(), it->second.end());
+                        // A second of slack. If the encoder has not drained by then it is not
+                        // keeping up, and holding more would only delay saying so.
+                        constexpr std::size_t kMaxTap = 48000 * 2;
+                        if (tap_.size() > kMaxTap)
+                            tap_.erase(tap_.begin(),
+                                       tap_.begin() +
+                                           static_cast<std::ptrdiff_t>(tap_.size() - kMaxTap));
+                    }
+                }
             }
             if (monitor_output != opened_output) {
                 monitor.reset();
@@ -363,6 +383,24 @@ class AudioSources {
                 route.session->ingest(samples);
                 break;
             }
+    }
+
+    /// Follow one bus for the encoder, or none when the id is nil. Switching buses drops
+    /// whatever was held: a file that spliced two different mixes together would be worse
+    /// than one that is a few milliseconds short.
+    void tap(const ldoc::Id& bus) {
+        std::lock_guard lock(mu_);
+        if (tapped_ == bus)
+            return;
+        tapped_ = bus;
+        tap_.clear();
+    }
+
+    /// Everything the tapped bus has produced since the last call, interleaved stereo float32
+    /// at 48 kHz.
+    std::vector<float> drain_tap() {
+        std::lock_guard lock(mu_);
+        return std::exchange(tap_, {});
     }
 
     std::vector<lcomp::AudioLevel> meters(const ldoc::Project& project) {

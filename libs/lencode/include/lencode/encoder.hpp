@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "ldoc/document.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
-namespace libertas::spike {
+namespace libertas::encode {
 
 /// Which encoder tier was actually used. ADR-0006 specifies a ladder rather than one encoder,
 /// because the top rung is not available everywhere and failing to start a show is not an option.
@@ -20,14 +22,22 @@ enum class VideoTier {
 
 const char* tier_name(VideoTier t);
 
-struct EncoderConfig {
+/// What the runtime needs to open an encoder. Deliberately not ldoc::EncoderConfig: that one
+/// is what the *document* says, in the operator's terms, and this one is what FFmpeg needs, in
+/// the muxer's. `runtime_config` below is the single place the first becomes the second.
+struct RuntimeConfig {
     std::string path;              ///< output file; the container is chosen from its extension
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    /// Zero uses the output size. The compositor supplies RGBA at the canvas size;
+    /// the capture spike supplies BGRA at the output size.
+    std::uint32_t source_width = 0;
+    std::uint32_t source_height = 0;
+    bool source_rgba = false;
     std::int32_t fps_num = 60;
     std::int32_t fps_den = 1;
     std::int64_t bitrate = 12'000'000;
-    std::string force_tier;        ///< "vulkan"|"nvenc"|"x264"; empty = walk the ladder
+    std::string force_tier;        ///< Encoder name from tier_name(); empty = walk the ladder
 
     /// Audio. Zero channels disables the audio stream entirely, which is useful for isolating a
     /// video problem but is NOT the Phase-0 gate - the gate requires synced audio.
@@ -59,9 +69,10 @@ struct EncoderDeleter {
 using EncoderPtr = std::unique_ptr<Encoder, EncoderDeleter>;
 
 /// Opens the output file and brings up both streams. Walks the encoder ladder unless pinned.
-EncoderPtr encoder_open(const EncoderConfig& cfg, std::string& error);
+EncoderPtr encoder_open(const RuntimeConfig& cfg, std::string& error);
 
-/// Submits one BGRA frame. `pts_ns` is on the SAME clock as audio_submit's - see ADR-0017: the
+/// Submits one BGRA frame, or RGBA when source_rgba is set in RuntimeConfig.
+/// `pts_ns` is on the SAME clock as encoder_audio's - see ADR-0017: the
 /// muxer does not care which clock, only that there is exactly one.
 bool encoder_video(Encoder& enc, const std::uint8_t* bgra, std::size_t stride, std::int64_t pts_ns,
                    std::string& error);
@@ -83,4 +94,17 @@ bool encoder_video_nv12(Encoder& enc, const std::uint8_t* y, int y_stride, const
 /// Whether the encoder opened with NV12, which the GPU convert path requires.
 bool encoder_is_nv12(Encoder& enc);
 
-} // namespace libertas::spike
+/// What the document says, in the terms the muxer needs.
+///
+/// The one place the two halves meet. `ldoc::Encode` carries what the operator chose -- a
+/// codec, an implementation, a bitrate in kbps, an optional rescale -- and this turns it into
+/// the pixel sizes, the bits per second and the tier name that `encoder_open` works in. Kept
+/// here rather than in ldoc because ldoc knows nothing about FFmpeg and should not start.
+///
+/// `canvas` supplies the size when the encode has no rescale of its own, and the frame rate
+/// always: a rescale changes how big the picture is, never how often it arrives.
+[[nodiscard]] RuntimeConfig runtime_config(const ldoc::Encode& encode,
+                                           const ldoc::AudioEncode& audio,
+                                           const ldoc::Canvas& canvas, std::string path);
+
+} // namespace libertas::encode
