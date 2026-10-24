@@ -57,7 +57,8 @@ LTEST_CASE(the_default_layout_is_valid_and_holds_the_expected_panels) {
     CHECK_MSG(!bad.has_value(), "{}", bad.value_or(""));
 
     CHECK_EQ(sorted_panels(l),
-             (std::vector<std::string>{"audio-mixer", "controls", "info", "log", "program",
+             (std::vector<std::string>{"audio-mixer", "broadcast-stats", "controls", "countdowns",
+                                       "favourites", "info", "log", "outputs", "program",
                                        "properties", "scenes", "sources"}));
 
     // The program canvas is a region of the workspace, not a window (ADR-0015 rule 2).
@@ -83,7 +84,7 @@ LTEST_CASE(leaves_tile_the_viewport_exactly) {
     const Viewport vp = proportional_vp(2560.0, 1440.0);
 
     const std::vector<LeafRect> lf = l.leaves(vp, cs);
-    REQUIRE(lf.size() == 6); // six groups hold the seven panels
+    REQUIRE(lf.size() == 8); // eight groups hold the twelve panels
 
     double area = 0.0;
     for (const LeafRect& a : lf) {
@@ -172,11 +173,11 @@ LTEST_CASE(a_centre_drop_makes_a_tabbed_group) {
     CHECK_EQ(l.node_of_panel("scenes"), target);
     CHECK_EQ(l.node_of_panel("scenes"), l.node_of_panel("info"));
     // The dropped panel becomes the visible tab: the user just put it there on purpose.
-    CHECK_EQ(l.tab_index_of("scenes"), std::size_t{3});
+    CHECK_EQ(l.tab_index_of("scenes"), std::size_t{4});
     const Node* n = l.find(target);
     REQUIRE(n != nullptr);
-    CHECK_EQ(n->active, std::size_t{3});
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{8});
+    CHECK_EQ(n->active, std::size_t{4});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{12});
 }
 
 LTEST_CASE(an_outer_drop_splits_the_target_on_the_right_axis_and_side) {
@@ -228,8 +229,8 @@ LTEST_CASE(an_outer_drop_splits_the_target_on_the_right_axis_and_side) {
 }
 
 LTEST_CASE(docking_along_the_parent_axis_does_not_nest_a_new_split) {
-    // Without flattening, every dock adds a level and the dividers stop lining up. The upper row
-    // of the default layout is a horizontal split, so a Left drop on one of its members should
+    // Without flattening, every dock adds a level and the dividers stop lining up. The centre column
+    // of the default layout is a vertical split, so a Top drop on one of its members should
     // widen that split rather than nest inside it.
     Layout l = Layout::default_studio();
     const Constraints cs = Constraints::studio_defaults();
@@ -242,7 +243,7 @@ LTEST_CASE(docking_along_the_parent_axis_does_not_nest_a_new_split) {
     const std::size_t nodes_before = l.node_count();
     const std::size_t depth_before = depth(l, l.root());
 
-    const DockResult r = l.dock("browser", program, Zone::Left, vp, cs);
+    const DockResult r = l.dock("browser", program, Zone::Top, vp, cs);
     REQUIRE(r.applied());
     CHECK(!l.validate().has_value());
 
@@ -253,7 +254,7 @@ LTEST_CASE(docking_along_the_parent_axis_does_not_nest_a_new_split) {
 
     // Across the axis, a new split is unavoidable and is the correct answer.
     const std::size_t nodes_mid = l.node_count();
-    const DockResult r2 = l.dock("chat", l.node_of_panel("program"), Zone::Bottom, vp, cs);
+    const DockResult r2 = l.dock("chat", l.node_of_panel("program"), Zone::Right, vp, cs);
     REQUIRE(r2.applied());
     CHECK_EQ(l.node_count(), nodes_mid + 2); // a leaf and the split that holds the pair
     CHECK(!l.validate().has_value());
@@ -279,6 +280,7 @@ LTEST_CASE(emptying_a_group_collapses_it_and_the_sibling_takes_the_space) {
     const Constraints cs = Constraints::studio_defaults();
     const Viewport vp = vp_of(2560.0, 1440.0);
 
+    REQUIRE(l.close_panel("favourites"));
     const NodeId column = l.find(l.node_of_panel("scenes"))->parent; // the scenes/sources column
     const Rect column_rect = l.rect_of(column, vp, cs).value();
     const std::size_t nodes_before = l.node_count();
@@ -302,6 +304,7 @@ LTEST_CASE(dropping_a_panel_where_it_already_is_does_nothing) {
     Layout l = Layout::default_studio();
     const Constraints cs = Constraints::studio_defaults();
     const Viewport vp = vp_of(2560.0, 1440.0);
+    REQUIRE(l.activate("properties"));
     const Layout before = l;
 
     // Its own group, centre zone, *and already the visible tab*: nothing at all to do. Dropping
@@ -372,7 +375,7 @@ LTEST_CASE(a_panel_not_yet_in_the_tree_can_be_docked) {
     const DockResult r = l.dock("chat", l.node_of_panel("audio-mixer"), Zone::Right, vp, cs);
     REQUIRE(r.applied());
     CHECK(l.has_panel("chat"));
-    CHECK_EQ(sorted_panels(l).size(), std::size_t{9});
+    CHECK_EQ(sorted_panels(l).size(), std::size_t{13});
     CHECK(!l.validate().has_value());
 }
 
@@ -388,9 +391,9 @@ LTEST_CASE(an_edge_dock_makes_a_full_height_column) {
     const Rect chat = l.rect_of(r.node, vp, cs).value();
     CHECK_NEAR(chat.h, vp.bounds.h, 1e-6);
     CHECK_NEAR(chat.right(), vp.bounds.right(), 1e-6);
-    // The divider between the new column and everything else is taken out of the window first,
-    // then the share is applied to what is left.
-    CHECK_NEAR(chat.w, (vp.bounds.w - vp.divider_px) * vp.edge_share, 1e-6);
+    // Flattening into the horizontal root shares the width left after all its dividers.
+    const auto dividers = static_cast<double>(l.find(l.root())->children.size() - 1);
+    CHECK_NEAR(chat.w, (vp.bounds.w - dividers * vp.divider_px) * vp.edge_share, 1e-6);
 
     // And nothing else reaches into its column.
     for (const LeafRect& lf : l.leaves(vp, cs)) {
@@ -578,8 +581,8 @@ LTEST_CASE(closing_the_visible_tab_leaves_a_valid_selection) {
     CHECK(l.close_panel("log"));
     const Node* n = l.find(l.node_of_panel("info"));
     REQUIRE(n != nullptr);
-    CHECK_EQ(n->tabs.size(), std::size_t{2});
-    CHECK_EQ(n->active, std::size_t{1});
+    CHECK_EQ(n->tabs.size(), std::size_t{3});
+    CHECK_EQ(n->active, std::size_t{2});
     CHECK(!l.validate().has_value());
 }
 
@@ -704,7 +707,7 @@ LTEST_CASE(a_long_random_sequence_of_gestures_never_breaks_an_invariant) {
     const std::vector<std::string> pool = {"program",  "scenes",   "sources",     "info",
                                            "log",      "controls", "audio-mixer", "properties",
                                            "outputs",  "chat",     "browser",
-                                           "replay",   "broadcast-stats", "favourites"};
+                                           "replay",   "broadcast-stats", "favourites", "countdowns"};
     const Constraints cs = Constraints::studio_defaults();
 
     for (const Viewport& vp : {vp_of(3840.0, 2160.0), vp_of(1366.0, 768.0)}) {

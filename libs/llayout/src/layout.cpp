@@ -82,11 +82,12 @@ Layout::Layout() {
 Layout Layout::default_build() {
     Layout l;
 
-    auto tabs = [&l](std::initializer_list<const char*> names) {
+    auto tabs = [&l](std::initializer_list<const char*> names, std::size_t active = 0) {
         Node n;
         n.kind = NodeKind::Tabs;
         for (const char* s : names)
             n.tabs.emplace_back(s);
+        n.active = active < n.tabs.size() ? active : 0;
         return l.alloc(std::move(n));
     };
     auto split = [&l](Axis axis, std::vector<NodeId> kids, std::vector<double> fr) {
@@ -98,17 +99,25 @@ Layout Layout::default_build() {
         return l.alloc(std::move(n));
     };
 
-    const NodeId scenes = tabs({"scenes"});
+    // This is the operator's own arrangement, recorded 2026-10-22 and shipped as the default
+    // so that a fresh config, or Reset Docks, lands here rather than somewhere they have to
+    // rebuild by hand. Change it only when they ask.
+    const NodeId scenes = tabs({"scenes", "favourites"});
     const NodeId sources = tabs({"sources"});
     const NodeId program = tabs({"program"});
-    const NodeId inspect = tabs({"properties", "info", "log"});
-    const NodeId mixer = tabs({"audio-mixer"});
+    const NodeId inspect = tabs({"properties", "info", "log", "countdowns"}, 3);
+    const NodeId outputs = tabs({"outputs"});
     const NodeId controls = tabs({"controls"});
+    const NodeId mixer = tabs({"audio-mixer"});
+    const NodeId stats = tabs({"broadcast-stats"});
 
     const NodeId left = split(Axis::Vertical, {scenes, sources}, {0.5, 0.5});
-    const NodeId upper = split(Axis::Horizontal, {left, program, inspect}, {0.18, 0.64, 0.18});
-    const NodeId lower = split(Axis::Horizontal, {mixer, controls}, {0.65, 0.35});
-    const NodeId root = split(Axis::Vertical, {upper, lower}, {0.76, 0.24});
+    const NodeId monitors = split(Axis::Horizontal, {mixer, stats}, {0.5, 0.5});
+    const NodeId centre = split(Axis::Vertical, {program, monitors}, {0.657, 0.343});
+    const NodeId right = split(Axis::Vertical, {inspect, outputs, controls},
+                               {0.343, 0.405, 0.252});
+    const NodeId root = split(Axis::Horizontal, {left, centre, right},
+                              {0.147, 0.673, 0.180});
 
     // Drop the empty root the default constructor made; this tree replaces it.
     l.erase_subtree(l.root_);

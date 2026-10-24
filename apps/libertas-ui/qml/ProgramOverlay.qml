@@ -133,7 +133,15 @@ Item {
         const point = overlay.toCanvas(x, y);
         const nodes = Document.placedNodes(overlay.canvasId);
         for (let i = 0; i < nodes.length; ++i) {
-            if (nodes[i].locked !== true && overlay.contains(nodes[i], point))
+            if (nodes[i].locked === true)
+                continue;
+            // A group is hit-tested against where its contents are, not against its own placed
+            // rect, which is the whole canvas when the group has no size of its own.
+            const box = nodes[i].isGroup === true
+                    ? {x: nodes[i].hitX, y: nodes[i].hitY,
+                       width: nodes[i].hitWidth, height: nodes[i].hitHeight}
+                    : nodes[i];
+            if (overlay.contains(box, point))
                 return nodes[i];
         }
         if (overlay.placement && overlay.placement.locked !== true &&

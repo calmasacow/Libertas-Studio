@@ -68,12 +68,13 @@ LTEST_CASE(build_and_live_hold_different_panels_for_different_jobs) {
         return std::find(in.begin(), in.end(), p) != in.end();
     };
 
-    // Building: the lists you edit, and none of the broadcast furniture.
+    // Building: the saved operator arrangement includes monitoring alongside the editing lists.
     CHECK(has(b, "scenes"));
     CHECK(has(b, "sources"));
     CHECK(has(b, "properties"));
-    CHECK_MSG(!has(b, "broadcast-stats"), "the build workspace shows broadcast statistics");
-    CHECK_MSG(!has(b, "outputs"), "the build workspace shows the output list");
+    CHECK(has(b, "broadcast-stats"));
+    CHECK(has(b, "outputs"));
+    CHECK(has(b, "countdowns"));
 
     // Live: favourites instead of the full lists, and the things that say how it is going.
     CHECK(has(v, "favourites"));

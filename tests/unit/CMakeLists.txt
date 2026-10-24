@@ -68,6 +68,18 @@ target_compile_definitions(test_obs_import PRIVATE
     LIBERTAS_CLI="$<TARGET_FILE:libertas>"
     LIBERTAS_IMAGE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/images")
 add_dependencies(test_obs_import libertas)
+# The asset cache's decision logic (ADR-0069). Only the free functions are exercised -- the
+# recipe choice and the settings reading -- but the translation unit holds a QObject, so it
+# needs moc and Qt's Qml module to link. The shell self-check covers everything that needs a
+# running shell; this covers the branches a table of sizes can reach in milliseconds.
+find_package(Qt6 REQUIRED COMPONENTS Gui Qml)
+libertas_unit_test(test_assetcache       libertas::ldoc libertas::lcore Qt6::Gui Qt6::Qml)
+target_sources(test_assetcache PRIVATE
+    ../../apps/libertas-ui/assetcache.cpp
+    ../../apps/libertas-ui/preferences.cpp)
+target_include_directories(test_assetcache PRIVATE ../../apps/libertas-ui)
+set_target_properties(test_assetcache PROPERTIES AUTOMOC ON)
+
 libertas_unit_test(test_layout          libertas::llayout)
 libertas_unit_test(test_layout_history  libertas::llayout)
 libertas_unit_test(test_layout_serialize libertas::llayout libertas::lcore)

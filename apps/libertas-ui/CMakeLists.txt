@@ -17,6 +17,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Core DBus Gui Qml Quick QuickControls2 
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(libertas-ui
+    assetcache.cpp
+    assetcache.hpp
     countdowns.cpp
     colourdialog.cpp
     colourdialog.hpp
@@ -66,6 +68,9 @@ qt_add_qml_module(libertas-ui
         qml/BroadcastStatsPanel.qml
         qml/CanvasManagerDialog.qml
         qml/CollectionDialog.qml
+        qml/CacheConfirm.qml
+        qml/CacheProgressDialog.qml
+        qml/CacheStateDialog.qml
         qml/CanvasPanel.qml
         qml/ChainIcon.qml
         qml/EncodeView.qml
@@ -81,6 +86,7 @@ qt_add_qml_module(libertas-ui
         qml/CheckLabel.qml
         qml/ChoiceField.qml
         qml/ColourField.qml
+        qml/CountdownSettingsDialog.qml
         qml/CountdownsPanel.qml
         qml/StingerDialog.qml
         qml/ControlsPanel.qml

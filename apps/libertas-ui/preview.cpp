@@ -3,8 +3,12 @@
 
 #include "preview.hpp"
 
+#include "assetcache.hpp"
+
+#include "lcomp/countdown.hpp"
 #include "lcomp/preview.hpp"
 
+#include <QDateTime>
 #include <QImage>
 #include <QQuickImageProvider>
 #include <QSocketNotifier>
@@ -338,6 +342,19 @@ void Preview::publish(const ldoc::Project& project) {
     if (!link_ || !link_->alive)
         return;
     link_->pending = project;
+    // The one place a prepared path is substituted. Done on the copy that goes to the renderer
+    // and nowhere else, so the saved project keeps the operator's own paths, the two worker
+    // processes need no new path logic -- they receive the prepared path as if it had been
+    // typed in -- and turning caching off is a flag rather than a migration.
+    if (const auto* cache = AssetCache::instance(); cache && cache->enabled())
+        for (ldoc::Source& source : link_->pending.sources)
+            substitute_source_paths(source, *cache);
+    // A countdown's text is deliberately *not* written here. The source worker computes it on
+    // its own clock (libertas-source/main.cpp, draw_text), and writing it onto this copy as
+    // well would change `settings` on every tick -- which the worker reads as a reconfigure,
+    // blanking the frame and rebuilding the source once a second instead of letting it count.
+    // The colour rules are the one thing the worker cannot derive, so they travel as settings
+    // and are resolved there too.
     if (const auto owner = ldoc::Id::parse(filter_target_.toStdString());
         owner && !project.canvases.empty()) {
         auto canvas = project.canvases.front();
@@ -409,6 +426,21 @@ void Preview::publish(const ldoc::Project& project) {
         return;
     }
     try_send();
+}
+
+std::string Preview::publishedSourceSetting(const QString& sourceId,
+                                            std::string_view key) const {
+    const auto id = ldoc::Id::parse(sourceId.toStdString());
+    if (!id || !link_)
+        return {};
+    const auto* source = link_->pending.source(*id);
+    if (!source)
+        return {};
+    const auto it = source->settings.find(key);
+    if (it == source->settings.end())
+        return {};
+    const auto* text = std::get_if<std::string>(&it->second);
+    return text ? *text : std::string{};
 }
 
 QString Preview::setFilterTarget(const QString& owner) {

@@ -31,6 +31,17 @@ Controls.MenuBar {
 
     PreferencesDialog { id: preferences }
 
+    // Parented to the window's content item, as FiltersDialog is: an overlay inside the menu
+    // bar would be clipped to 28 pixels of height.
+    CacheConfirm {
+        id: cacheConfirm
+        parent: bar.mainWindow.contentItem
+        anchors.fill: parent
+        // Above the progress overlay: confirming a rebuild is what *starts* the build, so the
+        // two are briefly on screen together.
+        z: 10001
+    }
+
     implicitHeight: 28
     background: Rectangle { color: Theme.c.panelHeader }
     delegate: Controls.MenuBarItem {
@@ -182,6 +193,7 @@ Controls.MenuBar {
         title: qsTr("&Docks")
         Pending { text: qsTr("Lock Docks") }
         Entry { objectName: "menuSaveLayout"; text: qsTr("Save Layout"); onTriggered: Workspace.saveLayoutNow() }
+        Entry { objectName: "menuRecallLayout"; text: qsTr("Recall Saved Layout"); onTriggered: Workspace.recallLayout() }
         Entry { text: qsTr("Reset Docks"); onTriggered: Workspace.resetLayout() }
         Divider {}
         Pending { text: qsTr("Custom Browser Docks") }
@@ -226,6 +238,44 @@ Controls.MenuBar {
         Pending { text: qsTr("Activity") }
         Pending { text: qsTr("Stream Info") }
         Pending { text: qsTr("Overlays") }
+    }
+    // Top-level rather than inside Edit, because what it governs is the whole show: whether
+    // this machine plays from local copies at all. The directory it keeps them in is in
+    // Preferences, where the other machine-wide settings are.
+    Menu {
+        title: qsTr("Cachin&g")
+        Entry {
+            objectName: "menuCachingEnabled"
+            text: qsTr("Enable Caching")
+            checkable: true
+            checked: AssetCache.enabled
+            enabled: !AssetCache.building
+            onTriggered: Preferences.setCachingEnabled(checked)
+        }
+        Divider {}
+        Entry {
+            objectName: "menuBuildCache"
+            // Two entries rather than one that changes meaning. The single entry asked for
+            // confirmation only when nothing was pending, so clicking it with work outstanding
+            // started a build with no dialog at all -- which read as the dialog being broken.
+            text: qsTr("Build Cache")
+            // Enabled while caching is off on purpose: preparing the copies before switching
+            // over is the order that does not interrupt a show.
+            enabled: !AssetCache.building && AssetCache.pendingCount() > 0
+            onTriggered: AssetCache.build(false)
+        }
+        Entry {
+            objectName: "menuRebuildCache"
+            text: qsTr("Rebuild Cache")
+            enabled: !AssetCache.building
+            onTriggered: cacheConfirm.ask("rebuild")
+        }
+        Entry {
+            objectName: "menuDeleteCache"
+            text: qsTr("Delete Cache")
+            enabled: !AssetCache.building
+            onTriggered: cacheConfirm.ask("clear")
+        }
     }
     Menu {
         title: qsTr("&Profile")

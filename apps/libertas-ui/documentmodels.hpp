@@ -80,6 +80,14 @@ struct NodeRow {
     bool locked = false;
     bool isGroup = false;
     int effectCount = 0;
+    /// This node's source is a type that can have prepared local copies, so the row draws a
+    /// CACHE box. Types that are not file-backed have no box at all rather than a grey one.
+    bool cacheable = false;
+    /// Its "Use caching" setting. False means the box reads as off even when the cache is on.
+    bool cacheUsed = false;
+    /// "off", "ok", "stale" or "error" -- the colour of the box, and which sentences the state
+    /// dialog shows. Computed from `AssetCache`, which has already stat-ed off-thread.
+    QString cacheState;
 
     friend bool operator==(const NodeRow&, const NodeRow&) = default;
 };
@@ -100,6 +108,9 @@ public:
         LockedRole,
         IsGroupRole,
         EffectCountRole,
+        CacheableRole,
+        CacheUsedRole,
+        CacheStateRole,
     };
 
     using RowModelBase::RowModelBase;

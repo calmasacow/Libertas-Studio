@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Libertas-Studio contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "assetcache.hpp"
 #include "document.hpp"
 #include "preferences.hpp"
 #include "preview.hpp"
@@ -152,10 +153,16 @@ int main(int argc, char** argv) {
                     "it will not run as an X11 client. Start it from a Wayland session.");
     }
 
+    // The self-check closes panels, docks panels and removes a workspace, then saves. Without
+    // this it saved over the operator's real arrangement: every `--check` run without an
+    // explicit --layout silently reset their docks. Collections, presets and preferences are
+    // already redirected below for the same reason; the layout was the one that was missed.
+    QTemporaryDir checkLayout;
     const std::filesystem::path layout_path =
         parser.isSet(layout_opt)
             ? std::filesystem::path(parser.value(layout_opt).toStdString())
-            : config_dir() / "layout.toml";
+        : check ? std::filesystem::path(checkLayout.path().toStdString()) / "layout.toml"
+                : config_dir() / "layout.toml";
 
     // The singletons are constructed by the QML engine, so everything they need that QML cannot
     // supply is handed over first.
@@ -218,10 +225,33 @@ int main(int argc, char** argv) {
     QObject::connect(&document, &libertas::ui::Document::notice, &app, say);
     QObject::connect(&preview, &libertas::ui::Preview::notice, &app, say);
     QObject::connect(&shortcuts, &libertas::ui::Shortcuts::notice, &app, say);
-    if (auto* preferences =
-            engine.singletonInstance<libertas::ui::Preferences*>("Libertas", "Preferences"))
+    auto* preferences =
+        engine.singletonInstance<libertas::ui::Preferences*>("Libertas", "Preferences");
+    if (preferences)
         QObject::connect(preferences, &libertas::ui::Preferences::restartRenderer, &preview,
                          &libertas::ui::Preview::restart);
+
+    // The cache is instantiated here rather than waiting for QML to touch it: the row builder
+    // and `Preview::publish` both ask for it by the time the first document is published, and
+    // a null answer there would mean the first frames of a show read the mount.
+    auto* cache = engine.singletonInstance<libertas::ui::AssetCache*>("Libertas", "AssetCache");
+    if (cache) {
+        QObject::connect(cache, &libertas::ui::AssetCache::notice, &app, say);
+        // Changing the directory or the flag means a different set of prepared files, and a
+        // different answer from `preparedPath` -- so re-read the index, then republish so the
+        // renderer is handed the paths that answer now implies.
+        if (preferences)
+            QObject::connect(preferences, &libertas::ui::Preferences::changed, cache,
+                             [cache] { cache->reload(); });
+        // Both, in this order. The rows carry the indicator's colour and the published project
+        // carries the prepared paths; a prepared file appearing changes both, and nothing in
+        // the document has moved to trigger the usual rebuild.
+        QObject::connect(cache, &libertas::ui::AssetCache::changed, &app, [&preview, &document] {
+            document.refreshRows();
+            preview.publish(document.projectForBindings());
+        });
+        cache->reload();
+    }
 
     // Each canvas has its own Scenes and Sources panels, so the workspace has to be told
     // which canvases exist -- to title them "Scenes: Vertical", to offer the closed ones in
@@ -311,8 +341,8 @@ int main(int argc, char** argv) {
         // The viewport is set by QML binding workArea's size, not by this function: using the
         // real path means the check fails if that binding ever stops firing.
         QCoreApplication::processEvents();
-        report(workspace.panelCount() == 6, "the default layout resolves to six panel groups");
-        report(workspace.dividerCount() == 5, "and five dividers");
+        report(workspace.panelCount() == 8, "the default layout resolves to eight panel groups");
+        report(workspace.dividerCount() == 7, "and seven dividers");
 
         // Did any of it reach the scene graph?
         //
@@ -359,7 +389,7 @@ int main(int argc, char** argv) {
 
         const QList<QQuickItem*> frames =
             collect(window->contentItem(), QStringLiteral("panelFrame"));
-        report(frames.size() == 6, "six panel items exist in the scene graph");
+        report(frames.size() == 8, "eight panel items exist in the scene graph");
         // The assertions that measured those six frames are gone, and so are the three further
         // down that measured the drop wireframe against repainted pixels.
         //
@@ -463,8 +493,8 @@ int main(int argc, char** argv) {
         {
             const auto menus = collect(window->contentItem(), QStringLiteral("mainMenu"));
             const auto headings = collect(window->contentItem(), QStringLiteral("mainMenuHeading"));
-            report(menus.size() == 1 && headings.size() == 8,
-                   "the application menu exposes all eight headings");
+            report(menus.size() == 1 && headings.size() == 9,
+                   "the application menu exposes all nine headings");
             for (auto* heading : headings) {
                 if (!heading->property("text").toString().contains(QStringLiteral("View")))
                     continue;
@@ -860,10 +890,10 @@ int main(int argc, char** argv) {
                "Build and Live put different panels on screen");
         report(build_panels.contains(QStringLiteral("scenes")),
                "the build arrangement has the scene list");
-        report(!build_panels.contains(QStringLiteral("broadcast-stats")),
-               "and not the broadcast statistics, which are in the way while building");
+        report(build_panels.contains(QStringLiteral("sources")),
+               "and the source list, which is what building is done in");
         report(live_panels.contains(QStringLiteral("broadcast-stats")),
-               "the live arrangement has them");
+               "the live arrangement has the broadcast statistics");
         report(!live_panels.contains(QStringLiteral("sources")),
                "and not the source list, which is a mis-click waiting to happen");
 
@@ -2487,6 +2517,48 @@ int main(int argc, char** argv) {
                 settle();
             }
 
+            // Moving a set of objects as one unit: lock the contents, leave the group unlocked,
+            // and a click that lands on a locked child reaches the group instead of falling
+            // through to the backdrop. Without this there is no way to drag several objects
+            // together, which is what layer linking exists for elsewhere.
+            if (frame != nullptr) {
+                document.addNewSourceToScene(QStringLiteral("Grouped"),
+                                             QStringLiteral("source.color"), true);
+                settle();
+                const QString inside = document.selectedNode();
+                document.groupSelectedNodes();
+                settle();
+                const QString group = document.selectedNode();
+                report(!group.isEmpty() && group != inside,
+                       "grouping a source selects the group rather than the source");
+                document.setNodeLocked(inside, true);
+                settle();
+                const QPointF middle =
+                    frame->mapToScene(QPointF(frame->width() / 2.0, frame->height() / 2.0));
+                document.selectNode(QString{});
+                settle();
+                post(QEvent::MouseButtonPress, middle, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, middle, Qt::LeftButton, Qt::NoButton);
+                settle();
+                report(document.selectedNode() == group,
+                       "a click on a locked group member selects the group, so the set drags "
+                       "as one unit");
+                document.setNodeLocked(group, true);
+                settle();
+                document.selectNode(QString{});
+                settle();
+                post(QEvent::MouseButtonPress, middle, Qt::LeftButton, Qt::LeftButton);
+                post(QEvent::MouseButtonRelease, middle, Qt::LeftButton, Qt::NoButton);
+                settle();
+                report(document.selectedNode() != group,
+                       "while locking the group itself passes the click through as before");
+                for (int step = 0; step < 10 && document.canUndo() &&
+                                    document.undoDescription() != after_add;
+                     ++step)
+                    document.undo();
+                settle();
+            }
+
             if (document.sourcesModel()->rowCount() == card_count + 1)
                 document.undo();
             report(document.sourcesModel()->rowCount() == card_count &&
@@ -3993,14 +4065,15 @@ int main(int argc, char** argv) {
         settle();
         report(document.outputsModel()->rowCount() == outputs_before + 1,
                "an output can be added");
-        // Outputs shares a tab group with Controls, and only the visible tab is built -- one
-        // Loader per panel, not one per panel per frame. So the tab has to be brought forward
-        // before asking what it drew, which is itself worth asserting: a panel that is a
-        // background tab must not be instantiated at all.
+        // Only a panel that is on screen is built -- one Loader per panel, not one per panel
+        // per frame -- so it has to be brought forward before being asked what it drew. That
+        // is itself worth asserting: a panel that is not on screen must not be instantiated
+        // at all. The build arrangement has the output list by default, so it is closed here
+        // to get back to the state this measures.
+        workspace.closePanel(QStringLiteral("outputs"));
+        settle();
         report(collect(window->contentItem(), QStringLiteral("outputBlock")).isEmpty(),
-               "a background tab is not built while it is hidden");
-        // The build arrangement does not show the output list at all -- that is the point of
-        // having two arrangements -- so it is opened here before being brought forward.
+               "a panel that is not on screen is not built");
         workspace.openPanel(QStringLiteral("outputs"));
         settle();
         workspace.activate(QStringLiteral("outputs"));
@@ -5408,12 +5481,33 @@ int main(int argc, char** argv) {
                     post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
                     settle();
                 };
+                // A timer binds an existing text source and never makes one, so the check adds
+                // the text first and counts the scene before and after: binding must not put
+                // anything new in it.
+                document.addNewSourceToScene(QStringLiteral("Countdown"),
+                                             QStringLiteral("source.text"));
+                settle();
+                const int sceneBeforeBinding = document.nodesModel()->rowCount();
+                auto textSources = document.countdownTextSources();
+                report(!textSources.isEmpty(), "the dock lists bindable text sources");
+                auto* countdownPanel = collect(window->contentItem(), "countdownsPanel").value(0);
+                if (countdownPanel && !textSources.isEmpty())
+                    countdownPanel->setProperty(
+                        "bindingId", textSources.front().toMap().value("id").toString());
+                settle();
                 clickTimer(countdownButtons.front());
-                report(document.countdowns().size() == 1, "creating a countdown binds real scene text");
+                report(document.countdowns().size() == 1, "binding a countdown uses existing scene text");
+                report(document.nodesModel()->rowCount() == sceneBeforeBinding,
+                       "binding a countdown adds nothing to the scene");
                 if (!document.countdowns().isEmpty()) {
                     const auto timer = document.countdowns().front().toMap().value("id").toString();
-                    document.configureCountdown(timer, {{"durationMs", 5000}, {"format", "%time%"}});
+                    report(!document.countdowns().front().toMap().value("timerId").toString().isEmpty(),
+                           "a new timer is given an ID of its own");
+                    document.configureCountdown(timer, {{"periodMinutes", 0}, {"periodSeconds", 5}});
+                    document.configureCountdown(timer, {{"format", "%time%"}});
                     settle();
+                    report(document.countdowns().front().toMap().value("periodMs").toLongLong() == 5000,
+                           "the four period fields set the timer's duration");
                     auto buttons = collect(window->contentItem(), "countdownStartPause");
                     report(!buttons.isEmpty(), "timer row exposes Start/Pause");
                     if (!buttons.isEmpty()) clickTimer(buttons.front());
@@ -5443,6 +5537,76 @@ int main(int argc, char** argv) {
                                document.countdowns().front().toMap().value("endScene").toString().isEmpty() &&
                                !document.countdownStatus(timer).value("running").toBool(),
                            "OBS companion timer import binds actual text, formatting and paused duration");
+                    // The source worker renders the time on its own clock, so what the document
+                    // must do is leave the bound source's own settings alone while it runs --
+                    // a settings change per tick reads as a reconfigure in the worker, which
+                    // blanks the frame and rebuilds the source once a second instead of
+                    // letting it count. (test_source_worker covers the drawing itself.)
+                    document.configureCountdown(timer, {{"periodMinutes", 0}, {"periodSeconds", 30}});
+                    // Spelled out rather than inherited: the import above left this timer
+                    // formatted as "IN: %time%", and this assertion is about the settings being
+                    // steady, not about the formatting.
+                    document.configureCountdown(timer, {{"useFormattedOutput", false}});
+                    document.controlCountdown(timer, "start");
+                    settle();
+                    const auto published = [&] {
+                        preview.publish(document.projectForBindings());
+                        settle();
+                        return preview.publishedSourceSetting(timer, "text");
+                    };
+                    const auto firstFrame = published();
+                    pump(1200);
+                    report(published() == firstFrame,
+                           "a running countdown does not rewrite the source the worker is drawing");
+                    report(document.countdownStatus(timer).value("text").toString() != "00:30" &&
+                               !document.countdownStatus(timer).value("text").toString().isEmpty(),
+                           "the countdown advances while it runs");
+                    document.controlCountdown(timer, "pause");
+                    report(document.hasLiveSource(),
+                           "a bound countdown keeps the preview republishing");
+                    document.configureCountdown(timer, {{"useFormattedOutput", true},
+                                                        {"format", "%minutes2%m %seconds2%s"}});
+                    document.controlCountdown(timer, "reset");
+                    report(document.countdownStatus(timer).value("text").toString() == "00m 30s",
+                           "the plugin's %minutes2%/%seconds2% tokens are substituted");
+                    document.configureCountdown(timer, {{"useFormattedOutput", false}});
+
+                    // The gear opens the settings dialog, and an edit made in it reaches the
+                    // document only when Apply is pressed -- one visit, one undo step, which is
+                    // the whole reason it holds its edits rather than writing per keystroke.
+                    auto gears = collect(window->contentItem(), "countdownSettingsButton");
+                    report(!gears.isEmpty(), "each timer row has a settings button");
+                    if (!gears.isEmpty()) {
+                        clickTimer(gears.front());
+                        // A Window, so it is a top-level window rather than a child item --
+                        // found the way the stinger dialog above is.
+                        QQuickWindow* dialogObject = nullptr;
+                        for (auto* candidate : QGuiApplication::topLevelWindows())
+                            if (candidate->objectName() == "countdownSettings" &&
+                                candidate->isVisible())
+                                dialogObject = qobject_cast<QQuickWindow*>(candidate);
+                        report(dialogObject != nullptr,
+                               "the gear opens that timer's settings");
+                        if (dialogObject != nullptr) {
+                            const auto beforeApply =
+                                document.countdowns().front().toMap().value("endMessage").toString();
+                            QMetaObject::invokeMethod(dialogObject, "edit",
+                                                      Q_ARG(QVariant, QStringLiteral("endMessage")),
+                                                      Q_ARG(QVariant, QStringLiteral("BACK SOON")));
+                            settle();
+                            report(dialogObject->property("dirty").toBool() &&
+                                       document.countdowns().front().toMap().value("endMessage")
+                                           .toString() == beforeApply,
+                                   "an edit in the dialog waits for Apply");
+                            QMetaObject::invokeMethod(dialogObject, "apply");
+                            settle();
+                            report(document.countdowns().front().toMap().value("endMessage")
+                                           .toString() == "BACK SOON",
+                                   "Apply writes the dialog's edits to the timer");
+                            QMetaObject::invokeMethod(dialogObject, "close");
+                            settle();
+                        }
+                    }
                     document.removeCountdown(timer);
                 }
             }
@@ -5495,6 +5659,235 @@ int main(int argc, char** argv) {
                 }
             }
             report(document.openCollection(original), "startup alignment check returns to the prior collection");
+        }
+
+        // Asset caching, end to end: the checkbox, the build, staleness, deletion, the flag,
+        // a failure, and cancellation. On a temporary cache directory with temporary fixture
+        // files throughout -- a check that touched a real collection's assets would be a check
+        // nobody could run twice.
+        if (cache) {
+            QTemporaryDir cacheDir;
+            QTemporaryDir assetDir;
+            const auto saved_dir = preferences ? preferences->cacheDir() : QString{};
+            const bool saved_flag = preferences && preferences->cachingEnabled();
+            report(preferences && preferences->setCacheDir(cacheDir.path()),
+                   "the cache directory is settable from Preferences");
+
+            QImage still(16, 16, QImage::Format_RGB32);
+            still.fill(Qt::green);
+            const auto assetPath = assetDir.filePath(QStringLiteral("still.png"));
+            report(still.save(assetPath), "cache fixture still saved");
+
+            const auto original_scene = document.selectedScene();
+            document.addScene(QStringLiteral("Cache check"));
+            const auto scene = document.selectedScene();
+            document.addNewSourceToScene(QStringLiteral("Cached still"),
+                                         QStringLiteral("source.image"));
+            const auto source = document.nodeProperties().value("sourceId").toString();
+            document.applySourceSettings(source, QStringLiteral("Cached still"),
+                                         {{"file", assetPath}, {"useCache", true}});
+            settle();
+
+            // 1. The checkbox exists where it should, and does not where it should not.
+            const auto has_use_cache = [&document](const char* type) {
+                for (const QVariant& field :
+                     document.sourceSettingsSchema(QString::fromLatin1(type)))
+                    if (field.toMap().value("key").toString() == QLatin1String("useCache"))
+                        return true;
+                return false;
+            };
+            report(has_use_cache("source.image") && has_use_cache("source.media") &&
+                       has_use_cache("source.playlist") && has_use_cache("source.slideshow"),
+                   "every file-backed source type offers Use caching");
+            report(!has_use_cache("source.v4l2") && !has_use_cache("source.color"),
+                   "a capture device and a flat colour do not, because they have no file");
+            report(document.sourceAssetPaths(source) == QStringList{assetPath},
+                   "a source reports the file it reads, for the cache to ask about");
+
+            // The build is a thread; this waits for it rather than assuming a pass count.
+            const auto await_build = [&](int limit = 200) {
+                for (int i = 0; i < limit && cache->building(); ++i)
+                    pump(20);
+                settle();
+                return !cache->building();
+            };
+            const auto state_of = [&] {
+                return cache->stateOf(assetPath).value(QStringLiteral("state")).toString();
+            };
+            // The row, not the cache: the point is that the indicator the operator sees agrees
+            // with what the cache thinks, having gone through the model roles to get there.
+            const auto row_state = [&]() -> QString {
+                auto* model = static_cast<libertas::ui::NodeModel*>(
+                    document.nodesFor(QString{}));
+                for (const auto& row : model->rows())
+                    if (row.sourceId == source)
+                        return row.cacheState;
+                return QStringLiteral("(no row)");
+            };
+            const auto published_file = [&] {
+                preview.publish(document.projectForBindings());
+                settle();
+                return QString::fromStdString(preview.publishedSourceSetting(source, "file"));
+            };
+
+            // 2. Enabling and building: a prepared file appears, the row goes green, the
+            //    published path points into the cache, and the document's own does not.
+            report(preferences && preferences->setCachingEnabled(true),
+                   "caching can be turned on");
+            report(cache->build(false) && await_build(), "a build starts and finishes");
+            report(state_of() == QLatin1String("ok") && row_state() == QLatin1String("ok"),
+                   "a prepared asset reads as ok, in the cache and on its row");
+            const auto prepared = cache->preparedPath(assetPath);
+            report(!prepared.isEmpty() && prepared.startsWith(cacheDir.path()) &&
+                       QFileInfo::exists(prepared),
+                   "the prepared copy is a real file inside the cache directory");
+            report(published_file() == prepared,
+                   "the project the renderer is handed points at the prepared copy");
+            report(document.sourceDetails(source).value("settings").toMap().value("file").toString() ==
+                       assetPath,
+                   "the document itself still holds the operator's own path");
+
+            // 3. Touching the original makes it stale; rebuilding makes it ok again.
+            QImage changed(32, 32, QImage::Format_RGB32);
+            changed.fill(Qt::magenta);
+            report(changed.save(assetPath), "the fixture is replaced with a different file");
+            cache->reload();
+            settle();
+            report(state_of() == QLatin1String("stale"),
+                   "an original that changed since preparation reads as stale");
+            report(published_file() == prepared,
+                   "a stale asset keeps playing the copy rather than going back to the network "
+                   "mid-show");
+            report(cache->build(false) && await_build() && state_of() == QLatin1String("ok"),
+                   "rebuilding a stale asset returns it to ok");
+
+            // 4. Deleting the cache: red, and the published path falls back.
+            report(cache->clear(), "the cache can be deleted");
+            settle();
+            report(state_of() == QLatin1String("error") && row_state() == QLatin1String("error"),
+                   "an asset with no prepared copy reads as an error");
+            report(published_file() == assetPath,
+                   "with nothing prepared, the renderer is handed the original path");
+
+            // 5. Turning caching off puts every path back, with the cache left intact.
+            report(cache->build(false) && await_build(), "the cache can be built again");
+            const auto rebuilt = cache->preparedPath(assetPath);
+            report(preferences && preferences->setCachingEnabled(false),
+                   "caching can be turned off");
+            cache->reload();
+            settle();
+            report(published_file() == assetPath && state_of() == QLatin1String("off"),
+                   "caching off sends the original path, and the row says off");
+            report(QFileInfo::exists(rebuilt),
+                   "turning it off leaves the prepared files where they are");
+            report(preferences && preferences->setCachingEnabled(true), "and back on again");
+            cache->reload();
+            settle();
+
+            // 6. One unreadable asset costs that asset and nothing else.
+            {
+                const auto brokenPath = assetDir.filePath(QStringLiteral("unreadable.png"));
+                QImage(8, 8, QImage::Format_RGB32).save(brokenPath);
+                QFile::setPermissions(brokenPath, QFileDevice::WriteOwner);
+                document.addNewSourceToScene(QStringLiteral("Broken still"),
+                                             QStringLiteral("source.image"));
+                const auto broken = document.nodeProperties().value("sourceId").toString();
+                document.applySourceSettings(broken, QStringLiteral("Broken still"),
+                                             {{"file", brokenPath}, {"useCache", true}});
+                settle();
+                cache->build(true);
+                report(await_build(), "a build with an unreadable asset still finishes");
+                report(cache->stateOf(brokenPath).value(QStringLiteral("state")).toString() ==
+                           QLatin1String("error"),
+                       "the unreadable asset is marked as a failure");
+                report(state_of() == QLatin1String("ok"),
+                       "and the asset beside it is prepared regardless");
+                preview.publish(document.projectForBindings());
+                settle();
+                report(QString::fromStdString(preview.publishedSourceSetting(broken, "file")) ==
+                           brokenPath,
+                       "the failed source keeps reading its own file");
+                QFile::setPermissions(brokenPath, QFileDevice::WriteOwner | QFileDevice::ReadOwner);
+                document.removeSourceAndUses(broken);
+            }
+
+            // 7. Stage 3: an oversized clip is re-encoded at canvas size rather than copied,
+            //    and resizing the canvas makes that copy stale -- it is the wrong number of
+            //    pixels for the show it is in. A 64x48 fixture against a 32x24 canvas, so the
+            //    check costs one tiny transcode rather than a 4K one.
+            {
+                const auto clip = (std::filesystem::path(__FILE__).parent_path() /
+                                   "../../tests/unit/fixtures/images/oversize.mp4")
+                                      .lexically_normal();
+                const auto clipPath = QString::fromStdString(clip.string());
+                report(QFileInfo::exists(clipPath), "the oversized clip fixture is present");
+                document.setCanvasSize(document.canvasIds().front(), 32, 24);
+                document.addNewSourceToScene(QStringLiteral("Oversized clip"),
+                                             QStringLiteral("source.media"));
+                const auto big = document.nodeProperties().value("sourceId").toString();
+                document.applySourceSettings(big, QStringLiteral("Oversized clip"),
+                                             {{"localFile", clipPath}, {"useCache", true}});
+                settle();
+                report(libertas::ui::recipe_for(libertas::ui::probe_asset(clipPath),
+                                                QSize(32, 24))
+                               .name == QLatin1String("downscale"),
+                       "a clip larger than the canvas is marked for downscaling");
+                cache->build(false);
+                report(await_build(600), "the transcoding build finishes");
+                const auto reencoded = cache->preparedPath(clipPath);
+                report(!reencoded.isEmpty() && reencoded.endsWith(QLatin1String(".mp4")) &&
+                           QFileInfo::exists(reencoded),
+                       "the prepared copy is a re-encoded file, not the original's bytes");
+                if (!reencoded.isEmpty()) {
+                    const auto probed = libertas::ui::probe_asset(reencoded);
+                    report(probed.size == QSize(32, 24) && probed.codec == QLatin1String("h264"),
+                           "and it is H.264 at canvas size");
+                    report(QFileInfo(reencoded).size() != QFileInfo(clipPath).size(),
+                           "so it is not a byte copy of the original");
+                }
+                // Resizing the canvas is the staleness question stage 3 adds.
+                document.setCanvasSize(document.canvasIds().front(), 48, 36);
+                settle();
+                report(cache->stateOf(clipPath).value(QStringLiteral("state")).toString() ==
+                           QLatin1String("stale"),
+                       "resizing the canvas makes a downscaled copy stale");
+                report(cache->stateOf(assetPath).value(QStringLiteral("state")).toString() ==
+                           QLatin1String("ok"),
+                       "while a byte copy beside it is unaffected by the resize");
+                document.setCanvasSize(document.canvasIds().front(), 1920, 1080);
+                document.removeSourceAndUses(big);
+                settle();
+            }
+
+            // 8. Cancelling leaves no half-written files behind.
+            {
+                // Big enough that the copy is still in its chunk loop when cancel arrives:
+                // a 16x16 PNG finishes before the next event-loop pass and would make this
+                // check pass without ever having cancelled anything.
+                QFile big(assetDir.filePath(QStringLiteral("large.bin")));
+                report(big.open(QIODevice::WriteOnly), "cancellation fixture opened");
+                big.write(QByteArray(48 * 1024 * 1024, '\0'));
+                big.close();
+                document.applySourceSettings(source, QStringLiteral("Cached still"),
+                                             {{"file", big.fileName()}, {"useCache", true}});
+                settle();
+                report(cache->build(false), "a build of the large fixture starts");
+                pump(20);
+                cache->cancel();
+                report(await_build(), "cancellation ends the build");
+                report(QDir(cacheDir.path())
+                           .entryInfoList({QStringLiteral("*.part")}, QDir::Files)
+                           .isEmpty(),
+                       "a cancelled build leaves no .part files behind");
+            }
+
+            document.activateScene(original_scene);
+            document.removeScene(scene);
+            cache->clear();
+            if (preferences) {
+                preferences->setCacheDir(saved_dir);
+                preferences->setCachingEnabled(saved_flag);
+            }
         }
 
         std::fprintf(stderr, "\n  theme: %s (%s), layout: %s\n", qPrintable(theme.name()),

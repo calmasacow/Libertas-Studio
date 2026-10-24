@@ -48,6 +48,16 @@ turns, flips, fit, stretch and centre.
 
 ### Still open here
 
+- **Speed, Output width and Output height should be detected, not typed.** A media source's
+  settings panel ends with a Speed percentage and an output box the operator has to fill in by
+  hand. None of the three is a decision anybody wants to make: the clip already states its own
+  frame rate and its own dimensions, and `ffprobe` is already run against every asset while the
+  cache is built. The three fields should go, with playback following the file and the drawn
+  size following the canvas the way every other source already does. They predate the asset
+  cache (added in `9de35e1`, before caching existed) rather than being part of it, and the same
+  three sit on `source.slideshow` and `source.playlist` in `document.cpp`. Recorded 2026-10-22
+  at the operator's request; they stay until the detection is in place, because removing them
+  first would leave a clip with no way to say how big it is drawn.
 - **A slant, a skew, and a group's own transform are not drawn.** The commands exist and the
   model carries them; the blit cannot do them, and painting an approximation would be a lie.
   The caption counts what was left out.

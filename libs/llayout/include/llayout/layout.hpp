@@ -146,11 +146,8 @@ public:
     /// An empty workspace: one Tabs node holding nothing.
     Layout();
 
-    /// The shipped default: scenes and sources stacked on the left, the program canvas centre,
-    /// stats and log right, mixer and controls along the bottom.
-    /// The arrangement for building a show: the scene and source lists, properties, and the
-    /// program canvas. Deliberately without the broadcast statistics or the output list, which
-    /// are not useful until something is going out and are in the way until then.
+    /// The operator's Build arrangement: scene and source lists, program canvas, countdowns,
+    /// properties, output controls, mixer, and broadcast statistics.
     [[nodiscard]] static Layout default_build();
 
     /// The arrangement for running one: favourites instead of the full scene and source lists,

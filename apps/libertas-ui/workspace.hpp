@@ -204,6 +204,10 @@ public:
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void resetLayout();
+
+    /// Read the saved arrangement back off disk, discarding what is on screen. The other half
+    /// of Save Layout: without it, saving is a promise the operator cannot cash.
+    Q_INVOKABLE void recallLayout();
     Q_INVOKABLE void saveNow();
     /// Same save, but it says so when it worked: Docks > Save Layout is an explicit action, and
     /// silence there cannot be told from a save that failed.

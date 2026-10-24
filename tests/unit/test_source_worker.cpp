@@ -329,6 +329,184 @@ LTEST_CASE(countdown_text_worker_draws_running_and_paused_timer) {
     REQUIRE(!capture(src).empty());
 }
 
+LTEST_CASE(countdown_digits_keep_their_place_as_the_time_changes) {
+    // A clock must not move while it runs. Two things used to make it: a proportional "1" is
+    // narrower than an "8", and the shrink-to-fit was measured against the current caption, so
+    // a narrower one picked a bigger size. Both are settled per configure now, so the ink keeps
+    // the same extent whatever the digits say.
+    const auto extent = [](const char* elapsed_from, std::int64_t elapsed) {
+        auto src = source("source.text");
+        src.settings["width"] = std::int64_t{128};
+        src.settings["height"] = std::int64_t{48};
+        src.settings["size"] = std::int64_t{32};
+        src.settings["countdown.enabled"] = true;
+        src.settings["countdown.periodMinutes"] = std::int64_t{18};
+        src.settings["countdown.periodSeconds"] = std::int64_t{51};
+        src.settings["countdown.elapsedMs"] = elapsed;
+        (void)elapsed_from;
+        auto frames = capture(src);
+        REQUIRE(!frames.empty());
+        const auto& pixels = frames.front().pixels;
+        const int width = frames.front().width;
+        int left = width, right = -1, top = 1 << 30, bottom = -1;
+        const int height = static_cast<int>(pixels.size() / 4) / width;
+        for (int y = 0; y < height; ++y)
+            for (int x = 0; x < width; ++x)
+                if (pixels[(static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+                            static_cast<std::size_t>(x)) * 4 + 3] > 0) {
+                    left = std::min(left, x);
+                    right = std::max(right, x);
+                    top = std::min(top, y);
+                    bottom = std::max(bottom, y);
+                }
+        return std::array<int, 4>{left, right, top, bottom};
+    };
+    // "18:51" against "11:11": same digit count, but all-ones is the narrowest a
+    // proportional face draws.
+    const auto eights = extent("18:51", 0);
+    const auto ones = extent("11:11", 460000);
+    // Same baseline and same cap height: the caption is not being re-sized.
+    CHECK_EQ(eights[2], ones[2]);
+    CHECK_EQ(eights[3], ones[3]);
+    // Same starting edge, and the same total width to within a pixel of hinting.
+    CHECK_EQ(eights[0], ones[0]);
+    CHECK(std::abs((eights[1] - eights[0]) - (ones[1] - ones[0])) <= 1);
+}
+
+LTEST_CASE(countdown_end_message_is_shrunk_to_fit_rather_than_cropped) {
+    // The source is sized for the digits it normally shows, so a wordy end message is routinely
+    // wider than the box. It must be made to fit rather than run off the edge.
+    auto src = source("source.text");
+    src.settings["width"] = std::int64_t{96};
+    src.settings["height"] = std::int64_t{32};
+    src.settings["size"] = std::int64_t{28};
+    src.settings["countdown.enabled"] = true;
+    src.settings["countdown.periodSeconds"] = std::int64_t{0};
+    src.settings["countdown.showEndMessage"] = true;
+    src.settings["countdown.endMessage"] = std::string("WE WILL BE RIGHT BACK");
+    auto frames = capture(src);
+    REQUIRE(!frames.empty());
+    const auto& pixels = frames.front().pixels;
+    const int width = frames.front().width;
+    const int height = static_cast<int>(pixels.size() / 4) / width;
+    REQUIRE(height > 0);
+    const auto inked = [&](int x, int y) {
+        return pixels[(static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+                       static_cast<std::size_t>(x)) *
+                          4 +
+                      3] > 0;
+    };
+    bool any = false, touches_edge = false;
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+            if (inked(x, y)) {
+                any = true;
+                // Ink in the last column or row means the glyphs ran out of the box.
+                if (x == width - 1 || y == height - 1)
+                    touches_edge = true;
+            }
+    CHECK(any);
+    CHECK(!touches_edge);
+}
+
+LTEST_CASE(countdown_colour_rule_reaches_the_drawn_pixels) {
+    auto src = source("source.text");
+    src.settings["size"] = std::int64_t{20};
+    src.settings["countdown.enabled"] = true;
+    src.settings["countdown.periodSeconds"] = std::int64_t{5};
+    src.settings["countdown.useTextColour"] = true;
+    // Pure blue under ten seconds, so the rule and the default white cannot be confused.
+    src.settings["countdown.colourRules"] = std::string("0,10000,0,0,255,255");
+    auto frames = capture(src);
+    REQUIRE(!frames.empty());
+    const auto& pixels = frames.front().pixels;
+    bool blue = false;
+    for (std::size_t i = 0; i + 3 < pixels.size(); i += 4)
+        if (pixels[i + 3] > 200 && pixels[i + 2] > 200 && pixels[i] < 80 && pixels[i + 1] < 80)
+            blue = true;
+    CHECK(blue);
+}
+
+LTEST_CASE(countdown_formats_the_way_the_obs_plugin_does) {
+    ldoc::ParamMap settings;
+    settings["countdown.enabled"] = true;
+    settings["countdown.periodMinutes"] = std::int64_t{1};
+    settings["countdown.periodSeconds"] = std::int64_t{5};
+    // Four fields rather than one duration, and the two spellings agree.
+    CHECK_EQ(lcomp::countdown_period_ms(settings), std::int64_t{65000});
+    CHECK_EQ(lcomp::countdown(settings, 0).text, std::string("01:05"));
+
+    // Every part token the plugin substitutes, bare and zero-padded.
+    settings["countdown.useFormattedOutput"] = true;
+    settings["countdown.format"] =
+        std::string("%days%/%hours%/%minutes%/%seconds% %days2%:%hours2%:%minutes2%:%seconds2% [%time%]");
+    CHECK_EQ(lcomp::countdown(settings, 0).text,
+             std::string("0/0/1/5 00:00:01:05 [01:05]"));
+
+    // An unknown token is left alone, so a literal percentage survives a format string.
+    settings["countdown.format"] = std::string("100% done in %time%");
+    CHECK_EQ(lcomp::countdown(settings, 0).text, std::string("100% done in 01:05"));
+
+    // Every unit switched off is a misconfiguration the operator can see, not a blank caption.
+    settings["countdown.format"] = std::string("%time%");
+    settings["countdown.showMinutes"] = false;
+    settings["countdown.showSeconds"] = false;
+    CHECK_EQ(lcomp::countdown(settings, 0).text, std::string("Nothing selected!"));
+    settings["countdown.showMinutes"] = true;
+    settings["countdown.showSeconds"] = true;
+
+    // Counting up shows how far it has come and ends at the period.
+    settings["countdown.countUp"] = true;
+    settings["countdown.elapsedMs"] = std::int64_t{5000};
+    CHECK_EQ(lcomp::countdown(settings, 0).text, std::string("00:05"));
+    CHECK(!lcomp::countdown(settings, 0).ended);
+    settings["countdown.elapsedMs"] = std::int64_t{65000};
+    CHECK(lcomp::countdown(settings, 0).ended);
+    settings["countdown.countUp"] = false;
+    settings["countdown.elapsedMs"] = std::int64_t{0};
+
+    // A duration written on its own still opens, and fills the four fields back in.
+    ldoc::ParamMap legacy;
+    legacy["countdown.durationMs"] = std::int64_t{90000};
+    CHECK_EQ(lcomp::countdown_period_ms(legacy), std::int64_t{90000});
+    CHECK_EQ(lcomp::countdown(legacy, 0).text, std::string("01:30"));
+}
+
+LTEST_CASE(countdown_colour_rules_pick_the_first_matching_range) {
+    ldoc::ParamMap settings;
+    settings["countdown.enabled"] = true;
+    settings["countdown.periodSeconds"] = std::int64_t{30};
+    settings["countdown.useTextColour"] = true;
+    settings["countdown.mainTextColour"] = ldoc::Rgba::from_srgb8(255, 255, 255);
+    // Red under ten seconds, amber under twenty; white otherwise.
+    settings["countdown.colourRules"] = std::string("0,10000,255,0,0,255;0,20000,255,170,0,255");
+
+    const auto at = [&](std::int64_t left) {
+        auto copy = settings;
+        copy["countdown.periodSeconds"] = left / 1000;
+        return lcomp::countdown(copy, 0);
+    };
+    CHECK(at(30000).has_colour);
+    CHECK_EQ(at(30000).colour.to_srgb8()[0], std::uint8_t{255});
+    CHECK_EQ(at(30000).colour.to_srgb8()[1], std::uint8_t{255});
+    // Fifteen seconds misses the first rule and takes the second.
+    CHECK_EQ(at(15000).colour.to_srgb8()[1], std::uint8_t{170});
+    // Five seconds matches both; the first one listed wins, as the plugin's list does.
+    CHECK_EQ(at(5000).colour.to_srgb8()[0], std::uint8_t{255});
+    CHECK_EQ(at(5000).colour.to_srgb8()[1], std::uint8_t{0});
+
+    // Switched off, nothing is coloured at all.
+    settings["countdown.useTextColour"] = false;
+    CHECK(!lcomp::countdown(settings, 0).has_colour);
+
+    // A malformed rule costs that rule and not the list.
+    settings["countdown.useTextColour"] = true;
+    settings["countdown.colourRules"] = std::string("junk;0,10000,0,0,255,255");
+    const auto rules = lcomp::countdown_colour_rules(settings);
+    CHECK_EQ(rules.size(), std::size_t{1});
+    CHECK_EQ(rules.front().colour.to_srgb8()[2], std::uint8_t{255});
+}
+
 LTEST_CASE(preloaded_media_reactivates_without_restarting_worker) {
     for (const char* file : {"motion.mkv", "alpha-60.webm"}) {
         auto src = source("source.media");

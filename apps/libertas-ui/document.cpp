@@ -3,6 +3,8 @@
 
 #include "document.hpp"
 
+#include "assetcache.hpp"
+
 #include "lcomp/composite.hpp"
 #include <lcomp/countdown.hpp>
 #include "ldoc/command.hpp"
@@ -409,8 +411,34 @@ QVariantList Document::placedNodes(const QString& canvasId) const {
         if (opacity <= 0.0)
             return;
         if (const auto* kids = node.children()) {
+            const auto before = out.size();
             for (const ldoc::Node& child : *kids)
                 self(self, child, opacity);
+            // A group goes in *after* its children, so an unlocked child still wins the click.
+            // What it catches is the rest: a click that landed on a locked child, which would
+            // otherwise fall through to whatever is behind. Locking the contents and leaving the
+            // group unlocked is how a set of objects is dragged as one unit.
+            if (node.locked || out.size() == before)
+                return;
+            QRectF hit;
+            for (auto i = before; i < out.size(); ++i) {
+                const QVariantMap& child = out[static_cast<int>(i)].toMap();
+                const QRectF box{child["x"].toDouble(), child["y"].toDouble(),
+                                 child["width"].toDouble(), child["height"].toDouble()};
+                hit = hit.isNull() ? box : hit.united(box);
+            }
+            auto map = placedRect(canvasId, id_str(node.id));
+            if (map.isEmpty() || hit.isNull())
+                return;
+            // Hit-tested against where the contents actually are, but dragged by the group's own
+            // placed rect: that is the geometry `setDrawnRect` solves against, and handing it the
+            // contents' union instead would read as a resize and distort the group.
+            map["hitX"] = hit.x();
+            map["hitY"] = hit.y();
+            map["hitWidth"] = hit.width();
+            map["hitHeight"] = hit.height();
+            map["isGroup"] = true;
+            out.push_back(map);
             return;
         }
         const auto map = placedRect(canvasId, id_str(node.id));
@@ -808,6 +836,8 @@ QVariantMap Document::nodeProperties() const {
 
 // ---- rebuilding the models -------------------------------------------------------------------
 
+void Document::refreshRows() { rebuild(); }
+
 void Document::rebuild() {
     const ldoc::Project& p = session_->project();
 
@@ -941,6 +971,20 @@ void Document::rebuild() {
                             if (const ldoc::Source* src = p.source(*placed->source)) {
                                 row.sourceName = qstr(src->name);
                                 row.sourceType = qstr(src->type);
+                                // The indicator's three answers. Asked of AssetCache, which
+                                // already holds off-thread stat results, so building a row
+                                // costs no stat on the mount these files live on.
+                                row.cacheable = source_type_cacheable(src->type);
+                                if (row.cacheable) {
+                                    row.cacheUsed = source_uses_cache(*src);
+                                    const auto* cache = AssetCache::instance();
+                                    row.cacheState =
+                                        !row.cacheUsed || !cache
+                                            ? QStringLiteral("off")
+                                            : cache->worstStateOf(source_asset_paths(*src))
+                                                  .value(QStringLiteral("state"))
+                                                  .toString();
+                                }
                                 for (const QVariant& type : sourceTypes()) {
                                     const auto entry = type.toMap();
                                     if (entry.value("id").toString() == row.sourceType) {
@@ -989,6 +1033,23 @@ void Document::rebuild() {
         sources.push_back(std::move(row));
     }
     sources_.set_rows(std::move(sources));
+
+    // What a build should prepare: every path of every cacheable source whose own checkbox is
+    // on. Told to the cache from here rather than read by it, so the cache never has to know
+    // what a project is -- and so a source switched off stops being built on the next change.
+    if (auto* cache = AssetCache::instance()) {
+        QStringList wanted;
+        for (const ldoc::Source& src : p.sources)
+            if (source_type_cacheable(src.type) && source_uses_cache(src))
+                wanted += source_asset_paths(src);
+        // The largest canvas, not the selected one. A clip prepared for a 1080p canvas is the
+        // wrong clip for the 1440p canvas beside it, and preparing for the larger of the two
+        // is the choice that never leaves the compositor upscaling.
+        QSize largest;
+        for (const ldoc::Canvas& c : p.canvases)
+            largest = {std::max(largest.width(), c.width), std::max(largest.height(), c.height)};
+        cache->setWanted(std::move(wanted), largest);
+    }
 
     std::vector<BusRow> buses;
     for (const ldoc::Bus& b : p.buses) {
@@ -1783,6 +1844,7 @@ struct FieldSpec {
 
 constexpr FieldSpec kMedia[] = {
     {"localFile", "File", "path", "", false, 0, "", ""},
+    {"useCache", "Use caching", "bool", "", true},
     // Looping by default is not a preference. `check_emergency_scene` reads this key by name
     // and warns when it is off, and a clip that plays once is a safety net that expires.
     {"loop", "Loop", "bool", "", true},
@@ -1804,6 +1866,7 @@ constexpr FieldSpec kMedia[] = {
 
 constexpr FieldSpec kSlideshow[] = {
     {"files", "Image paths (one per line)", "multiline"},
+    {"useCache", "Use caching", "bool", "", true},
     {"intervalMs", "Slide duration", "int", "", false, 5000, "", "ms"},
     {"loop", "Loop", "bool", "", true},
     {"width", "Output width", "int", "", false, 1920, "", "px"},
@@ -1812,6 +1875,7 @@ constexpr FieldSpec kSlideshow[] = {
 
 constexpr FieldSpec kPlaylist[] = {
     {"files", "Media paths (one per line)", "multiline"},
+    {"useCache", "Use caching", "bool", "", true},
     {"loop", "Loop", "bool", "", true},
     {"clearOnEnd", "Show nothing when playback ends", "bool", "", true},
     {"hardwareDecode", "Use hardware decoding when available", "bool", "", true},
@@ -1825,6 +1889,7 @@ constexpr FieldSpec kPlaylist[] = {
 
 constexpr FieldSpec kImage[] = {
     {"file", "Image file", "path"},
+    {"useCache", "Use caching", "bool", "", true},
     {"unloadWhenHidden", "Unload the image when it is not showing", "bool", "", false},
     {"alphaLinear", "Apply alpha in linear space", "bool", "", false},
 };
@@ -2360,12 +2425,18 @@ bool Document::hasLiveSource() const {
     const ldoc::Project& project = session_->project();
     for (const auto& deck : project.decks)
         if (deck.transition.starts_with("transition.stinger:")) return true;
-    // Walks every canvas's program scene, because any canvas being live is enough to keep the
-    // preview republishing -- the renderer composites all of them on one commit.
-    for (const ldoc::Canvas& canvas : project.canvases) {
-        const ldoc::Scene* scene = program_scene(project, canvas.id);
-        if (scene == nullptr)
-            continue;
+    // Walks every deck's program *and* preview scene, because any canvas being live is enough to
+    // keep the preview republishing -- the renderer composites all of them on one commit. The
+    // preview scene counts for the same reason the program one does: it is on screen, so a
+    // countdown sitting in the scene being built has to tick there too, not only once it is cut
+    // to air.
+    std::vector<const ldoc::Scene*> watched;
+    for (const ldoc::Deck& deck : project.decks)
+        for (const auto& which : {deck.program_scene, deck.preview_scene})
+            if (which)
+                if (const ldoc::Scene* found = project.scene(*which))
+                    watched.push_back(found);
+    for (const ldoc::Scene* scene : watched) {
         bool live = false;
         std::unordered_set<ldoc::Id> visited{scene->id};
         const auto walk = [&](const auto& self, const ldoc::Node& node) -> void {
@@ -2507,6 +2578,12 @@ QVariantMap Document::sourceDetails(const QString& id) const {
     m["settings"] = settings;
     m["fieldCount"] = static_cast<int>(settings.size());
     return m;
+}
+
+QStringList Document::sourceAssetPaths(const QString& id) const {
+    const auto parsed = parse_id(id);
+    const ldoc::Source* src = parsed ? session_->project().source(*parsed) : nullptr;
+    return src ? source_asset_paths(*src) : QStringList{};
 }
 
 void Document::applySourceSettings(const QString& id, const QString& name,

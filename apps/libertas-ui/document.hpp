@@ -108,6 +108,11 @@ public:
     Q_INVOKABLE QString addCountdown(const QString& sourceId);
     Q_INVOKABLE void configureCountdown(const QString& sourceId, const QVariantMap& settings);
     Q_INVOKABLE void controlCountdown(const QString& sourceId, const QString& action);
+    /// Swap this timer with its neighbour in the dock's order. Not a reorder of the project's
+    /// source list, which belongs to the sources panel.
+    Q_INVOKABLE void moveCountdown(const QString& sourceId, bool up);
+    /// The dock's play-all and stop-all, which only appear once there is more than one timer.
+    Q_INVOKABLE void controlAllCountdowns(const QString& action);
     Q_INVOKABLE QVariantMap countdownStatus(const QString& sourceId) const;
     Q_INVOKABLE void removeCountdown(const QString& sourceId);
     Q_INVOKABLE bool importCountdowns(const QString& path);
@@ -372,6 +377,9 @@ public:
     /// the field it is about. They are in the schema rather than looked up separately so that
     /// a note sits where it belongs instead of all of them piling up at the top.
     Q_INVOKABLE [[nodiscard]] QVariantList sourceSettingsSchema(const QString& type) const;
+    /// Every file this source reads, for asking `AssetCache` about its cache state. Empty for
+    /// a source type that is not file-backed, and for one that has gone from the project.
+    Q_INVOKABLE [[nodiscard]] QStringList sourceAssetPaths(const QString& id) const;
     Q_INVOKABLE void showFilters(const QString& target);
     Q_INVOKABLE QVariantMap filterDetails(const QString& target) const;
     Q_INVOKABLE QVariantList filterTypes(const QString& owner) const;
@@ -679,6 +687,10 @@ public:
 
     [[nodiscard]] const ldoc::Project& projectForBindings() const;
     void runCommand(const ldoc::Command& command);
+    /// Rebuilds the row models without the project having changed. For `AssetCache`: a prepared
+    /// file appearing or going stale changes what a Sources row's indicator should say, and
+    /// nothing in the document moved to make the usual rebuild happen.
+    void refreshRows();
 
 signals:
   void filtersRequested(const QString& owner);

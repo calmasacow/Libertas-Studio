@@ -410,8 +410,11 @@ void Workspace::saveNow() {
 void Workspace::saveLayoutNow() {
     save_timer_.stop();
     sync_active();
+    // Named, because "Layout saved." leaves the operator wondering saved *where*, and because
+    // the answer is the thing to check when an arrangement does not come back.
     if (const auto r = llayout::save(workspaces_, config_path_); r)
-        emit notice(QStringLiteral("Layout saved."));
+        emit notice(QStringLiteral("Layout saved to %1.")
+                        .arg(QString::fromStdString(config_path_.string())));
     else
         emit notice(QStringLiteral("Could not save the workspaces: %1")
                         .arg(QString::fromStdString(r.error())));
@@ -928,6 +931,31 @@ void Workspace::resetLayout() {
         layout_source_ = QStringLiteral("default layout");
         touch();
     }
+}
+
+void Workspace::recallLayout() {
+    // Straight off disk, not from history: this exists for the case where what is on screen is
+    // wrong and the saved file is right, so reading anything else would defeat the point.
+    llayout::WorkspacesLoadOutcome outcome = llayout::load_workspaces_or_default(config_path_);
+    if (!outcome.complaint.empty()) {
+        emit notice(QStringLiteral("Could not read %1: %2")
+                        .arg(QString::fromStdString(config_path_.string()),
+                             QString::fromStdString(outcome.complaint)));
+        return;
+    }
+    if (outcome.used_default) {
+        emit notice(QStringLiteral("No saved layout at %1 yet.")
+                        .arg(QString::fromStdString(config_path_.string())));
+        return;
+    }
+    working_.reset();
+    workspaces_ = std::move(outcome.workspaces);
+    // Through the history, so a recall that turns out to be the wrong call is one Ctrl+Z away.
+    history_.commit(workspaces_.active_layout());
+    layout_source_ = QString::fromStdString(config_path_.string());
+    refresh_workspace_tabs();
+    touch();
+    emit notice(QStringLiteral("Layout recalled."));
 }
 
 } // namespace libertas::ui

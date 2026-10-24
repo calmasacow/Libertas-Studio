@@ -11,6 +11,7 @@
 #include <lcomp/countdown.hpp>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontMetrics>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -49,6 +50,9 @@ class Content : public QObject {
     QElapsedTimer countdown_clock_;
     qint64 countdown_epoch_ = 0;
     std::string countdown_last_;
+    /// The longest caption this timer can ever show, which is what its font size is fitted to.
+    /// Settled once per configure so that the size cannot change while it counts.
+    QString countdown_widest_;
     std::unique_ptr<QMovie> movie_;
     std::unique_ptr<QAudioBufferOutput> audio_;
     std::vector<float> audio_pending_;
@@ -184,6 +188,11 @@ class Content : public QObject {
             return;
         }
         const auto path = files_[index_];
+        if (!QFileInfo(path).isFile()) {
+            qWarning("media source: file does not exist: %s", qPrintable(path));
+            publish({});
+            return;
+        }
         const auto suffix = QFileInfo(path).suffix().toLower();
         const auto generation = generation_;
         const auto finished = [this, generation] {
@@ -334,20 +343,81 @@ class Content : public QObject {
         browser_sink_.reset();
     }
 
+    /// Draw a caption giving every digit the same advance, so a clock does not move as its
+    /// digits change.
+    ///
+    /// A proportional face draws "1" narrower than "8", and most of the faces actually
+    /// installed on a Linux box -- Liberation Sans among them -- carry no `tnum` table to ask
+    /// for tabular figures with. So the digits are placed here instead: each one is given the
+    /// width of the widest digit in this face and centred in it, while everything that is not
+    /// a digit keeps its natural advance. Nothing is required of the font.
+    ///
+    /// Single-line only, which is what a countdown is. Anything with a newline in it falls back
+    /// to ordinary layout, because wrapping is Qt's job and not worth reimplementing here.
+    static void draw_monospaced_digits(QPainter& painter, const QRect& box, int flags,
+                                       const QString& text) {
+        const QFontMetrics first(painter.font());
+        // Only a caption that fits on one line is laid out by hand. An end message is prose
+        // that wraps, and wrapping is Qt's job; it also has no digits ticking in it, so there
+        // is nothing here for it to gain.
+        if (text.contains(QLatin1Char('\n')) ||
+            first.boundingRect(box, flags, text).height() > first.height()) {
+            painter.drawText(box, flags, text);
+            return;
+        }
+        const QFontMetrics metrics = painter.fontMetrics();
+        int cell = 0;
+        for (char digit = '0'; digit <= '9'; ++digit)
+            cell = std::max(cell, metrics.horizontalAdvance(QLatin1Char(digit)));
+        int total = 0;
+        for (const QChar c : text)
+            total += c.isDigit() ? cell : metrics.horizontalAdvance(c);
+        const QRect line = metrics.boundingRect(box, flags, text);
+        qreal x = (flags & Qt::AlignHCenter) ? box.x() + (box.width() - total) / 2.0
+                  : (flags & Qt::AlignRight) ? box.right() - total
+                                             : box.x();
+        const int baseline = line.y() + metrics.ascent();
+        for (const QChar c : text) {
+            const int advance = c.isDigit() ? cell : metrics.horizontalAdvance(c);
+            // Centred in its cell, so a narrow digit sits where a wide one would rather than
+            // hugging the left of the space it was given.
+            const qreal inset = c.isDigit() ? (cell - metrics.horizontalAdvance(c)) / 2.0 : 0.0;
+            painter.drawText(QPointF(x + inset, baseline), QString(c));
+            x += advance;
+        }
+    }
+
+    /// The longest caption this timer can produce, used to fit the font once rather than per
+    /// frame.
+    ///
+    /// Taken by asking the formatter itself at the two extremes -- the full period, and the
+    /// end -- rather than by reasoning about digit counts, so a format string, an end message
+    /// and the display-unit checkboxes are all accounted for without this having to know how
+    /// any of them work.
+    QString widest_countdown_caption() {
+        if (!flag("countdown.enabled", false))
+            return QString::fromStdString(text("text"));
+        auto probe = source_.settings;
+        probe["countdown.running"] = false;
+        probe["countdown.elapsedMs"] = std::int64_t{0};
+        QString widest;
+        const auto consider = [&](const std::string& candidate) {
+            const auto text = QString::fromStdString(candidate);
+            if (text.size() > widest.size())
+                widest = text;
+        };
+        // Full period, one tick in, and the end -- which covers the widest the digits get and
+        // the end message, whichever is longer.
+        consider(lcomp::countdown(probe, 0).text);
+        probe["countdown.elapsedMs"] = std::int64_t{1000};
+        consider(lcomp::countdown(probe, 0).text);
+        probe["countdown.elapsedMs"] = lcomp::countdown_period_ms(probe);
+        consider(lcomp::countdown(probe, 0).text);
+        return widest;
+    }
+
     void draw_text() {
         auto label = text("text");
-        if (flag("countdown.enabled", false)) {
-            label = lcomp::countdown(source_.settings,
-                                     countdown_epoch_ + countdown_clock_.elapsed()).text;
-            if (label == countdown_last_) return;
-            countdown_last_ = label;
-        }
-        QImage image(size_, QImage::Format_RGBA8888);
-        image.fill(Qt::transparent);
-        QPainter painter(&image);
-        QFont font(QString::fromStdString(text("font", "Sans")));
-        font.setPixelSize(std::clamp(number("size", 48), 1, 1024));
-        painter.setFont(font);
         QColor colour(Qt::white);
         auto it = source_.settings.find("color");
         if (it != source_.settings.end())
@@ -355,13 +425,80 @@ class Content : public QObject {
                 auto bytes = rgba->to_srgb8();
                 colour = QColor(bytes[0], bytes[1], bytes[2], bytes[3]);
             }
+        if (flag("countdown.enabled", false)) {
+            const auto value = lcomp::countdown(source_.settings,
+                                                countdown_epoch_ + countdown_clock_.elapsed());
+            label = value.text;
+            // A colour rule overrides the source's own colour, which is what makes "red under
+            // ten seconds" mean anything.
+            if (value.has_colour) {
+                const auto bytes = value.colour.to_srgb8();
+                colour = QColor(bytes[0], bytes[1], bytes[2], bytes[3]);
+            }
+            if (label == countdown_last_) return;
+            countdown_last_ = label;
+        }
+        QImage image(size_, QImage::Format_RGBA8888);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        QFont font(QString::fromStdString(text("font", "Sans")));
+        const int chosen = std::clamp(number("size", 48), 1, 1024);
+        font.setPixelSize(chosen);
+        const bool counting = flag("countdown.enabled", false);
+        if (counting) {
+            // Ask for tabular figures where the face has them. Many do not -- Liberation Sans,
+            // which is what "Sans" resolves to on a typical Linux box, has no `tnum` table and
+            // genuinely narrower ones -- so this is an optimisation, not the fix. The fix is
+            // the fixed-advance drawing below, which needs no cooperation from the font.
+            font.setFeature(QFont::Tag("tnum"), 1);
+            font.setFeature(QFont::Tag("lnum"), 1);
+        }
+        painter.setFont(font);
         painter.setPen(colour);
         const auto align = text("alignment", "Left");
         const int flags = Qt::TextWordWrap | Qt::AlignTop |
                           (align == "Right"    ? Qt::AlignRight
                            : align == "Centre" ? Qt::AlignHCenter
                                                : Qt::AlignLeft);
-        painter.drawText(image.rect(), flags, QString::fromStdString(label));
+        const QString drawn = QString::fromStdString(label);
+        // An end message is prose where the time was digits, so it is routinely wider than the
+        // box that fitted "00:15" -- and the source is sized by its own width/height, not by
+        // what it happens to be saying. Shrink to fit rather than clipping the message: a
+        // "BACK SOON" with the N cut off is worse than a slightly smaller one.
+        //
+        // Measured against the *widest* the timer will ever be rather than against this frame,
+        // so the size is a property of the timer and not of the digits showing right now --
+        // otherwise every tick that changed the width would pick a new size and the whole
+        // caption would resize under the viewer.
+        const QString widest = counting ? countdown_widest_ : drawn;
+        // Measured the way it will be drawn: the fixed-advance layout below is wider than
+        // Qt's own for a proportional face, so fitting against Qt's measure would still clip.
+        const auto measure = [&] {
+            QRect needed = painter.boundingRect(image.rect(), flags, widest);
+            if (counting && !widest.contains(QLatin1Char('\n'))) {
+                const QFontMetrics metrics = painter.fontMetrics();
+                int cell = 0;
+                for (char digit = '0'; digit <= '9'; ++digit)
+                    cell = std::max(cell, metrics.horizontalAdvance(QLatin1Char(digit)));
+                int total = 0;
+                for (const QChar c : widest)
+                    total += c.isDigit() ? cell : metrics.horizontalAdvance(c);
+                needed.setWidth(std::max(needed.width(), total));
+            }
+            return needed;
+        };
+        QRect needed = measure();
+        for (int size = chosen;
+             size > 6 && (needed.height() > image.height() || needed.width() > image.width());
+             size = size * 9 / 10) {
+            font.setPixelSize(size * 9 / 10);
+            painter.setFont(font);
+            needed = measure();
+        }
+        if (counting)
+            draw_monospaced_digits(painter, image.rect(), flags, drawn);
+        else
+            painter.drawText(image.rect(), flags, drawn);
         painter.end();
         publish(image);
     }
@@ -436,6 +573,7 @@ class Content : public QObject {
         index_ = 0;
         publish({});
         if (source.type == "source.text") {
+            countdown_widest_ = widest_countdown_caption();
             draw_text();
             if (flag("countdown.enabled", false)) countdown_timer_.start(100);
         } else if (source.type == "source.blackmagic") {

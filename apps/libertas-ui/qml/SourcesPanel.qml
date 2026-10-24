@@ -166,6 +166,12 @@ Item {
             required property bool locked
             required property bool isGroup
             required property int effectCount
+            // Declared like every other role: this delegate is `ComponentBehavior: Bound`, so
+            // a role that is not a required property of the row is simply undefined inside it
+            // -- which read as "every indicator is grey" rather than as an error.
+            required property bool cacheable
+            required property bool cacheUsed
+            required property string cacheState
 
             readonly property bool selected: Document.selectedNode === row.nodeId
             /// Selected, but not the one panels are following. Drawn a shade down from the
@@ -487,6 +493,51 @@ Item {
                     color: row.selected ? Theme.c.window : Theme.c.accent
                 }
 
+                // Immediately left of the lock, as the operator asked. Only on rows whose
+                // source is file-backed: a flat colour has nothing to prepare, and a grey box
+                // on every row would be noise rather than information.
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: row.cacheable
+                    width: 34; height: 12
+                    radius: 2
+                    color: "transparent"
+                    border.width: 1
+                    border.color: row.selected ? Theme.c.window : cacheInk.colour
+
+                    Text {
+                        id: cacheInk
+
+                        // Yellow is the operator's own #DCA70C rather than the theme's
+                        // warning: a theme may put warning anywhere, and "valid but the
+                        // original moved on" has to stay distinguishable from red at a glance.
+                        readonly property color colour:
+                              row.cacheState === "ok" ? Theme.c.good
+                            : row.cacheState === "stale" ? "#DCA70C"
+                            : row.cacheState === "error" ? Theme.c.error
+                            : Theme.c.textMuted
+
+                        anchors.centerIn: parent
+                        text: qsTr("CACHE")
+                        font.pixelSize: 7
+                        color: row.selected ? Theme.c.window : cacheInk.colour
+                        opacity: row.cacheState === "off" ? 0.45 : 1.0
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -2
+                        hoverEnabled: true
+                        onClicked: {
+                            if (row.sourceId === "")
+                                return;
+                            cacheState.open(row.sourceName,
+                                            AssetCache.worstStateOf(
+                                                Document.sourceAssetPaths(row.sourceId)));
+                        }
+                    }
+                }
+
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     text: row.locked ? "■" : "□"
@@ -567,6 +618,17 @@ Item {
 
         objectName: "sourceSettingsDialog"
         parent: panel.Window.contentItem
+    }
+
+    // Parented to the window, like the two above: an overlay clipped to a dock would be
+    // unreadable in a narrow Sources panel. The build progress overlay is *not* here -- there
+    // is one Sources panel per canvas, so it would be instantiated twice. It lives in Main.
+    CacheStateDialog {
+        id: cacheState
+
+        objectName: "cacheStateDialog"
+        parent: panel.Window.contentItem
+        z: 10000
     }
 
     Rectangle {

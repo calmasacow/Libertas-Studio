@@ -12,6 +12,8 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <string>
+#include <string_view>
 
 class QJSEngine;
 class QQmlEngine;
@@ -70,6 +72,13 @@ class Preview : public QObject {
     /// return of the command that caused it (ADR-0024). A snapshot already in flight is not
     /// sent twice: the newest one goes when the renderer acknowledges.
     void publish(const ldoc::Project& project);
+
+    /// One source setting as it stands in the project that was last published, which is not
+    /// necessarily what the document holds: this is where the asset cache's path substitution
+    /// has happened. For the self-check, which has no other way to see what the renderer was
+    /// actually handed. Empty when the source or the key is not there.
+    [[nodiscard]] std::string publishedSourceSetting(const QString& sourceId,
+                                                     std::string_view key) const;
 
     /// Keeps the picture moving while something on it is live.
     ///

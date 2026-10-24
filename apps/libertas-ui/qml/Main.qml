@@ -97,6 +97,17 @@ Window {
 
     CollectionDialog { id: collectionEditor }
 
+    // One of these for the whole shell: it shows itself whenever a cache build runs, wherever
+    // the build was started -- the Caching menu, a source row's indicator, or Preferences.
+    // z above the workspace, as FiltersDialog does. Parenting to contentItem is not enough:
+    // the workspace Item is declared after this one, so at equal z it paints on top and the
+    // overlay is invisible even while it is shown and taking key events.
+    CacheProgressDialog {
+        objectName: "cacheProgressDialog"
+        parent: root.contentItem
+        z: 10000
+    }
+
     MainMenu {
         id: mainMenu
         anchors.left: parent.left
