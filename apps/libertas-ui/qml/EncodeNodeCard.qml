@@ -21,11 +21,16 @@ Item {
     /// Drawn after the title in the muted colour: a resolution, a bitrate, a codec.
     property string subtitle: ""
     property bool selected: false
+    property bool missingConnections: false
+    readonly property color outlineColor: missingConnections ? Theme.c.error
+                                          : selected ? Theme.c.accent : Theme.c.border
     /// Whether to draw a port on the left edge, the right edge, or both. A canvas has no
     /// input and a destination has no output, and drawing one anyway would promise an edge
     /// that cannot be made.
     property bool hasInput: false
     property bool hasOutput: false
+    property var inputPorts: hasInput ? [{key: "input", y: 30, label: qsTr("Input")}] : []
+    readonly property real bodyTop: bodySlot.y
     /// Where edges attach, in the graph's coordinates. Read by GraphEdges.
     readonly property point inPort: Qt.point(card.x, card.y + 30)
     readonly property point outPort: Qt.point(card.x + card.width, card.y + 30)
@@ -37,6 +42,7 @@ Item {
     signal dragged(real mouseX, real mouseY)
     signal released
     signal contextRequested(real mouseX, real mouseY)
+    signal disconnectRequested(string port)
 
     implicitWidth: 260
     implicitHeight: header.height + bodySlot.implicitHeight + 10
@@ -46,24 +52,50 @@ Item {
         radius: 2
         color: Theme.c.panelBackground
         border.width: 1
-        border.color: card.selected ? Theme.c.accent : Theme.c.border
+        border.color: card.outlineColor
     }
 
-    // The ports. Small, and drawn on the border rather than beside it, so an edge meeting one
-    // lands on the card's own outline instead of floating off it.
+    // Ports sit on the border. Each destination track has its own labelled landing point.
     Repeater {
-        model: [{ "show": card.hasInput, "at": 0 }, { "show": card.hasOutput, "at": card.width }]
+        model: card.inputPorts.concat(card.hasOutput
+               ? [{key: "output", y: 30, label: qsTr("Output")}] : [])
 
         delegate: Rectangle {
+            id: port
             required property var modelData
 
-            visible: modelData.show
-            x: modelData.at - 3
-            y: 27
-            width: 6
-            height: 6
-            radius: 3
+            objectName: "encodePort_" + modelData.key
+            x: (modelData.key === "output" ? card.width : 0) - width / 2
+            y: modelData.y - height / 2
+            width: 12
+            height: 12
+            radius: 6
+            z: 2
             color: card.selected ? Theme.c.accent : Theme.c.textMuted
+            border.width: activeFocus ? 1 : 0
+            border.color: Theme.c.text
+            activeFocusOnTab: true
+            Accessible.role: Accessible.Button
+            Accessible.name: qsTr("Disconnect %1").arg(modelData.label)
+            Accessible.onPressAction: card.disconnectRequested(modelData.key)
+            Keys.onPressed: event => {
+                if ((event.modifiers & Qt.AltModifier) &&
+                    [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space].includes(event.key)) {
+                    card.disconnectRequested(modelData.key);
+                    event.accepted = true;
+                }
+            }
+            MouseArea {
+                anchors.fill: parent
+                anchors.margins: -4
+                acceptedButtons: Qt.LeftButton
+                cursorShape: Qt.PointingHandCursor
+                onPressed: mouse => {
+                    if (!(mouse.modifiers & Qt.AltModifier))
+                        mouse.accepted = false;
+                }
+                onClicked: card.disconnectRequested(port.modelData.key)
+            }
         }
     }
 

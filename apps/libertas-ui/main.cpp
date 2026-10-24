@@ -1088,6 +1088,117 @@ int main(int argc, char** argv) {
                     post(QEvent::MouseButtonRelease, at, button, Qt::NoButton);
                     settle();
                 };
+                const auto clickPort = [&](QQuickItem* port, bool alt = true) {
+                    const auto at = port->mapToScene(QPointF(port->width() / 2, port->height() / 2));
+                    const auto modifiers = alt ? Qt::AltModifier : Qt::NoModifier;
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton, modifiers);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton, modifiers);
+                    settle();
+                };
+                if (fileOutput != graphProject.outputs.end()) {
+                    const auto cards = collect(window->contentItem(), "outputNode_" +
+                        QString::fromStdString(fileOutput->id.to_string()));
+                    report(!cards.empty(), "Recording has a card to test track ports");
+                    if (!cards.empty()) {
+                        auto* card = cards.front();
+                        const auto videoPorts = collect(card, "encodePort_video");
+                        const auto audioPorts = collect(card, "encodePort_audio");
+                        report(videoPorts.size() == 1 && audioPorts.size() == 1 &&
+                                   collect(card, "encodePort_input").isEmpty(),
+                               "destinations have separate Video 0 and Audio 0 landing points");
+                        if (!videoPorts.empty() && !audioPorts.empty()) {
+                            auto* videoPort = videoPorts.front();
+                            auto* audioPort = audioPorts.front();
+                            report(videoPort->width() == 12 && audioPort->width() == 12 &&
+                                       videoPort->height() == 12 && audioPort->height() == 12 &&
+                                       audioPort->y() > videoPort->y() + videoPort->height(),
+                                   "track ports are twice the old size and do not overlap");
+                            const auto wireAt = [&](QQuickItem* port) {
+                                const double x = card->x() + port->x() + port->width() / 2;
+                                const double y = card->y() + port->y() + port->height() / 2;
+                                for (const auto& wire : edges->property("links").toList()) {
+                                    const auto point = wire.toMap();
+                                    if (std::abs(point.value("x2").toDouble() - x) < .5 &&
+                                        std::abs(point.value("y2").toDouble() - y) < .5)
+                                        return true;
+                                }
+                                return false;
+                            };
+                            report(wireAt(videoPort) && wireAt(audioPort),
+                                   "video and audio wires land at their own track rows");
+                            clickPort(videoPort, false);
+                            report(!card->property("missingConnections").toBool(),
+                                   "a plain port click preserves its connections");
+                            for (auto* port : {videoPort, audioPort}) {
+                                clickPort(port);
+                                const auto& outputs = document.projectForBindings().outputs;
+                                const auto changed = std::ranges::find(outputs, fileOutput->id, &ldoc::Output::id);
+                                report(changed != outputs.end() &&
+                                           (port == videoPort
+                                               ? changed->encode.is_nil() && changed->audio_encode == fileOutput->audio_encode
+                                               : changed->encode == fileOutput->encode && !changed->audio_encode),
+                                       "Alt-click disconnects only the chosen destination track");
+                                report(card->property("missingConnections").toBool() &&
+                                           card->property("outlineColor").value<QColor>() ==
+                                               QColor(theme.colors().value("error").toString()),
+                                       "a missing required connection turns the selected node border red");
+                                report(!wireAt(port) && wireAt(port == videoPort ? audioPort : videoPort),
+                                       "disconnection removes its wire and keeps the other track wire");
+                                report(document.recordingEncodeId().isEmpty(),
+                                       "an incomplete Recording route cannot start recording");
+                                report(props->property("destinationName").toString() ==
+                                           QString::fromStdString(fileOutput->name) &&
+                                           props->property(port == videoPort ? "outputVideoId" : "outputAudioId").toString().isEmpty(),
+                                       "Properties keeps the destination name and shows the disconnected track");
+                                document.undo();
+                                settle();
+                                report(!card->property("missingConnections").toBool() &&
+                                           wireAt(videoPort) && wireAt(audioPort),
+                                       "one undo restores the track, wire and healthy border");
+                            }
+                        }
+                    }
+                }
+
+                const auto checkDisconnect = [&](const QString& name, const QString& portName,
+                                                  const auto& disconnected) {
+                    const auto cards = collect(window->contentItem(), name);
+                    if (cards.empty()) {
+                        report(false, "a source or encoder port is available to disconnect");
+                        return;
+                    }
+                    const auto ports = collect(cards.front(), "encodePort_" + portName);
+                    if (ports.empty()) {
+                        report(false, "a source or encoder exposes its expected port");
+                        return;
+                    }
+                    const auto connected = document.projectForBindings();
+                    clickPort(ports.front());
+                    report(disconnected(document.projectForBindings()),
+                           "Alt-click disconnects the encoder or its outgoing wires without deleting nodes");
+                    document.undo();
+                    settle();
+                    report(document.projectForBindings() == connected,
+                           "one undo restores every connection on the port");
+                };
+                if (!graphProject.encodes.empty() && !graphProject.audio_encodes.empty()) {
+                    const auto& video = graphProject.encodes.front();
+                    const auto& audio = graphProject.audio_encodes.front();
+                    checkDisconnect("encodeNode_" + QString::fromStdString(video.id.to_string()), "input",
+                        [&](const auto& p) { return p.encode(video.id)->canvas.is_nil(); });
+                    checkDisconnect("audioEncodeNode_" + QString::fromStdString(audio.id.to_string()), "input",
+                        [&](const auto& p) { return p.audio_encode(audio.id)->bus.is_nil(); });
+                    checkDisconnect("encodeNode_" + QString::fromStdString(video.id.to_string()), "output",
+                        [&](const auto& p) { return p.outputs.size() == graphProject.outputs.size() &&
+                            std::ranges::all_of(p.outputs, [](const auto& o) { return o.encode.is_nil(); }); });
+                    checkDisconnect("audioEncodeNode_" + QString::fromStdString(audio.id.to_string()), "output",
+                        [](const auto& p) { return std::ranges::none_of(p.outputs,
+                            [](const auto& o) { return o.audio_encode.has_value(); }); });
+                    checkDisconnect("encodeCanvasNode_" + QString::fromStdString(video.canvas.to_string()), "output",
+                        [&](const auto& p) { return p.encode(video.id)->canvas.is_nil(); });
+                    checkDisconnect("encodeBusNode_" + QString::fromStdString(audio.bus.to_string()), "output",
+                        [&](const auto& p) { return p.audio_encode(audio.id)->bus.is_nil(); });
+                }
                 auto* menu = window->findChild<QQuickItem*>(QStringLiteral("encodeNodeMenu"));
                 auto* confirmation = window->findChild<QQuickItem*>(QStringLiteral("encodeRemovalConfirmation"));
                 const auto checkRemoval = [&](const QString& prefix, const ldoc::Id& nodeId) {
@@ -4139,12 +4250,11 @@ int main(int argc, char** argv) {
             if (target && duration && renderedFrames && missed && reset) {
                 const auto canvasId = document.canvasIds().front();
                 document.setCanvasFps(canvasId, 30, 1);
-                for (int i = 0; i < 50; ++i) {
-                    pump(40);
-                    if (preview.renderStats(canvasId).value("fps").toDouble() == 30.0) break;
-                }
-                const auto measured = preview.renderStats(canvasId);
-                report(target->property("value").toString() == "30.0" &&
+                // The renderer and the panel's polling timer publish independently.
+                const auto statsMatch = [&] {
+                    const auto measured = preview.renderStats(canvasId);
+                    return measured.value("fps").toDouble() == 30.0 &&
+                           target->property("value").toString() == "30.0" &&
                            renderedFrames->property("value").toULongLong() == measured.value("frames").toULongLong() &&
                            measured.value("frames").toULongLong() > 0 &&
                            duration->property("value").toString() ==
@@ -4153,7 +4263,13 @@ int main(int argc, char** argv) {
                                QStringLiteral("%1 (%2%)").arg(measured.value("missed").toULongLong())
                                    .arg(100.0 * measured.value("missed").toDouble() /
                                        (measured.value("frames").toDouble() +
-                                        measured.value("missed").toDouble()), 0, 'f', 1),
+                                        measured.value("missed").toDouble()), 0, 'f', 1);
+                };
+                for (int i = 0; i < 50; ++i) {
+                    pump(40);
+                    if (statsMatch()) break;
+                }
+                report(statsMatch(),
                        "visible render stats follow a real renderer frame while encoding is idle");
                 const auto at = reset->mapToScene(QPointF(reset->width()/2, reset->height()/2));
                 post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);

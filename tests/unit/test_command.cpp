@@ -5,6 +5,7 @@
 
 #include "ldoc/command.hpp"
 #include "ldoc/history.hpp"
+#include "ldoc/json.hpp"
 
 #include "ltest.hpp"
 
@@ -1167,6 +1168,50 @@ LTEST_CASE(a_canvas_cannot_be_given_an_impossible_size_or_rate) {
     bad.fps = Fps{30, 0};
     CHECK(!apply(f.project, SetCanvas{bad}).has_value());
     CHECK(f.project == before);
+}
+
+LTEST_CASE(disconnected_graph_inputs_round_trip_and_remain_undoable) {
+    Fixture f;
+    DocumentHistory h{f.project};
+    auto video = *h.project().encode(f.existing_encode);
+    auto audio = *h.project().audio_encode(f.existing_audio_encode);
+    auto output = h.project().outputs.front();
+    video.canvas = Id::nil();
+    audio.bus = Id::nil();
+    output.encode = Id::nil();
+    output.audio_encode.reset();
+    REQUIRE(h.run(make_batch({SetEncode{video}, SetAudioEncode{audio}, SetOutput{output}},
+                             "Disconnect inputs")));
+    CHECK(is_valid(h.project()));
+    CHECK(!validate(h.project()).empty());
+    const auto back = project_from_json(project_to_json(h.project()));
+    REQUIRE(back);
+    CHECK(back->project.encodes == h.project().encodes);
+    CHECK(back->project.audio_encodes == h.project().audio_encodes);
+    CHECK(back->project.outputs == h.project().outputs);
+
+    REQUIRE(h.undo());
+    CHECK(h.project() == f.project);
+    REQUIRE(h.redo());
+    const auto disconnected = h.project();
+    // Removing an incomplete node must still have a working Add inverse.
+    for (const Command& c : {Command{RemoveOutput{output.id}}, Command{RemoveEncode{video.id}},
+                            Command{RemoveAudioEncode{audio.id}}}) {
+        REQUIRE(h.run(c));
+        REQUIRE(h.undo());
+        CHECK(h.project() == disconnected);
+    }
+    // Missing is intentional; non-nil unknown references remain refused at the boundary.
+    video.canvas = Id::generate();
+    audio.bus = Id::generate();
+    output.encode = Id::generate();
+    CHECK(!h.run(SetEncode{video}));
+    CHECK(!h.run(SetAudioEncode{audio}));
+    CHECK(!h.run(SetOutput{output}));
+    auto deck = h.project().decks.front();
+    deck.canvas = Id::nil();
+    CHECK(!h.run(SetDeck{deck}));
+    CHECK(h.project() == disconnected);
 }
 
 LTEST_CASE(an_output_needs_a_canvas_but_a_bus_does_not_need_its_listeners) {

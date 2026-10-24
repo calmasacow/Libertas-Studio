@@ -168,7 +168,7 @@ Item {
                      ? qsTr("Stop recording and close the file")
                      : view.recordTarget !== ""
                        ? qsTr("Record the Recording output to a file beside the project")
-                       : qsTr("Add a file destination to record")
+                       : qsTr("Connect a Recording destination to video and audio encoders")
                 onClicked: {
                     if (Preview.recording) {
                         Preview.stopRecording(view.recordTarget);

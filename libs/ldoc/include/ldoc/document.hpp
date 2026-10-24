@@ -251,7 +251,7 @@ struct Encode {
     /// for a destination**: an encode called "Twitch 1080p" that keeps running after Twitch
     /// stops reads as a bug rather than as the feature it is.
     std::string name;
-    /// What is being encoded.
+    /// What is being encoded. Nil means the graph input is disconnected.
     Id canvas;
     EncoderConfig encoder;
     /// Twitch's 1080p out of a 1440p canvas. Absent means the canvas's own size.
@@ -279,6 +279,7 @@ struct AudioEncode {
     /// Named for what it is -- "AAC 320" -- never for a destination, same rule as `Encode`.
     std::string name;
     /// Which bus is encoded. Program for most shows; the Vod bus for the copyright-safe track.
+    /// Nil means the graph input is disconnected.
     Id bus;
     /// "aac" or "opus".
     std::string codec = "aac";
@@ -301,7 +302,7 @@ struct AudioEncode {
 struct Output {
     Id id;
     std::string name;
-    /// Which video bitstream this destination receives.
+    /// Which video bitstream this destination receives. Nil means Video 0 is disconnected.
     Id encode;
     /// Which audio bitstream it receives. Absent means the destination carries no audio, which
     /// is a thing a file-only video capture wants and a live destination does not -- validate()

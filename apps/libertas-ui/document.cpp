@@ -1182,7 +1182,7 @@ void Document::rebuild() {
         EncodeRow row;
         row.id = id_str(e.id);
         row.name = qstr(e.name);
-        row.canvasId = id_str(e.canvas);
+        row.canvasId = p.canvas(e.canvas) ? id_str(e.canvas) : QString{};
         row.canvasName = canvas_name(e.canvas);
         const ldoc::Canvas* c = p.canvas(e.canvas);
         const double w = e.rescale ? e.rescale->x : (c ? c->width : 0);
@@ -1212,7 +1212,7 @@ void Document::rebuild() {
         AudioEncodeRow row;
         row.id = id_str(e.id);
         row.name = qstr(e.name);
-        row.busId = id_str(e.bus);
+        row.busId = p.bus(e.bus) ? id_str(e.bus) : QString{};
         const ldoc::Bus* b = p.bus(e.bus);
         row.busName = b ? qstr(b->name) : QString{};
         row.codec = qstr(e.codec);
@@ -1255,7 +1255,7 @@ void Document::rebuild() {
     for (const ldoc::Output& o : p.outputs) {
         OutputRow row;
         row.id = id_str(o.id);
-        row.encodeId = id_str(o.encode);
+        row.encodeId = p.encode(o.encode) ? id_str(o.encode) : QString{};
         row.name = qstr(o.name);
         // An output names an encode and the encode names the canvas, so both are one hop
         // away now (ADR-0029). The row shows the encode's settings because that is what this
@@ -3534,10 +3534,61 @@ void Document::initializeEncodeGraph() {
 }
 
 QString Document::recordingEncodeId() const {
-    for (const auto& o : session_->project().outputs)
-        if (o.destination.kind == ldoc::DestinationKind::File)
+    const auto& p = session_->project();
+    for (const auto& o : p.outputs) {
+        if (o.destination.kind != ldoc::DestinationKind::File)
+            continue;
+        const auto* video = p.encode(o.encode);
+        const auto* audio = o.audio_encode ? p.audio_encode(*o.audio_encode) : nullptr;
+        if (video && p.canvas(video->canvas) && audio && p.bus(audio->bus))
             return id_str(o.encode);
+        return {};
+    }
     return {};
+}
+
+void Document::disconnectGraphPort(const QString& kind, const QString& id, const QString& port) {
+    const auto parsed = parse_id(id);
+    if (!parsed)
+        return;
+    const auto& p = session_->project();
+    std::vector<ldoc::Command> steps;
+    const bool outgoing = port == QLatin1String("output");
+    for (auto e : p.encodes) {
+        if ((kind == "encode" && port == "input" && e.id == *parsed) ||
+            (kind == "canvas" && outgoing && e.canvas == *parsed)) {
+            if (!e.canvas.is_nil()) {
+                e.canvas = ldoc::Id::nil();
+                steps.push_back(ldoc::SetEncode{std::move(e)});
+            }
+        }
+    }
+    for (auto e : p.audio_encodes) {
+        if ((kind == "audio-encode" && port == "input" && e.id == *parsed) ||
+            (kind == "bus" && outgoing && e.bus == *parsed)) {
+            if (!e.bus.is_nil()) {
+                e.bus = ldoc::Id::nil();
+                steps.push_back(ldoc::SetAudioEncode{std::move(e)});
+            }
+        }
+    }
+    for (auto o : p.outputs) {
+        bool changed = false;
+        if ((kind == "output" && port == "video" && o.id == *parsed) ||
+            (kind == "encode" && outgoing && o.encode == *parsed)) {
+            changed = !o.encode.is_nil();
+            o.encode = ldoc::Id::nil();
+        }
+        if ((kind == "output" && port == "audio" && o.id == *parsed) ||
+            (kind == "audio-encode" && outgoing && o.audio_encode == *parsed)) {
+            changed = o.audio_encode.has_value();
+            o.audio_encode.reset();
+        }
+        if (changed)
+            steps.push_back(ldoc::SetOutput{std::move(o)});
+    }
+    if (!steps.empty())
+        run(ldoc::make_batch(std::move(steps), "Disconnect graph port"));
 }
 
 void Document::removeEncode(const QString& id) {
@@ -3841,7 +3892,7 @@ QVariantMap Document::audioEncodeSettings(const QString& id) const {
     const ldoc::Bus* b = session_->project().bus(e->bus);
     return {{"id", id_str(e->id)},
             {"name", qstr(e->name)},
-            {"busId", id_str(e->bus)},
+            {"busId", b ? id_str(e->bus) : QString{}},
             {"busName", b ? qstr(b->name) : QString{}},
             {"codec", qstr(e->codec)},
             {"bitrateKbps", e->bitrate_kbps}};
@@ -3917,7 +3968,7 @@ QString Document::encodeCanvasOf(const QString& encodeId) const {
     if (!parsed)
         return {};
     const ldoc::Encode* e = session_->project().encode(*parsed);
-    return e ? id_str(e->canvas) : QString{};
+    return e && session_->project().canvas(e->canvas) ? id_str(e->canvas) : QString{};
 }
 
 QVariantList Document::outputsWithAudio() const {
@@ -4059,8 +4110,13 @@ QVariantList Document::encodeChoices() const {
 QVariantMap Document::outputEncoderSettings(const QString& id) const {
     const auto parsed = parse_id(id);
     if (!parsed) return {};
-    for (const auto& o : session_->project().outputs)
-        if (o.id == *parsed) return encodeSettings(id_str(o.encode));
+    for (const auto& o : session_->project().outputs) {
+        if (o.id == *parsed) {
+            auto settings = encodeSettings(id_str(o.encode));
+            settings["outputName"] = qstr(o.name);
+            return settings;
+        }
+    }
     return {};
 }
 

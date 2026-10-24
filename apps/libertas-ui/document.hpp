@@ -539,6 +539,8 @@ public:
     /// A new encode of the current canvas, with one unconfigured destination.
     Q_INVOKABLE void addEncode();
     Q_INVOKABLE void initializeEncodeGraph();
+    Q_INVOKABLE void disconnectGraphPort(const QString& kind, const QString& id,
+                                         const QString& port);
     Q_INVOKABLE QString recordingEncodeId() const;
     Q_INVOKABLE void removeEncode(const QString& id);
     Q_INVOKABLE QVariantMap encodeSettings(const QString& id) const;

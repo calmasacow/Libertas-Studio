@@ -654,7 +654,9 @@ private:
 
     void check_encodes() {
         for (const Encode& e : p_.encodes) {
-            if (!exists_as(e.canvas, "canvas"))
+            if (e.canvas.is_nil())
+                warn(e.id, std::format("encode '{}' has no canvas connected", e.name));
+            else if (!exists_as(e.canvas, "canvas"))
                 err(e.id, std::format("encode '{}' encodes canvas {}, which does not exist",
                                       e.name, e.canvas.to_string()));
             if (e.encoder.bitrate_kbps <= 0)
@@ -668,7 +670,9 @@ private:
 
     void check_audio_encodes() {
         for (const AudioEncode& e : p_.audio_encodes) {
-            if (!exists_as(e.bus, "bus"))
+            if (e.bus.is_nil())
+                warn(e.id, std::format("audio encode '{}' has no bus connected", e.name));
+            else if (!exists_as(e.bus, "bus"))
                 err(e.id, std::format("audio encode '{}' encodes bus {}, which does not exist",
                                       e.name, e.bus.to_string()));
             if (e.bitrate_kbps <= 0)
@@ -679,9 +683,10 @@ private:
 
     void check_outputs() {
         for (const Output& o : p_.outputs) {
-            // An output with no bitstream has nothing to send, which is the same kind of
-            // nothing a deck with no canvas has: an error, not a dangling reference.
-            if (!exists_as(o.encode, "encode"))
+            // Nil is an explicitly disconnected port. A non-nil dangling id is still an error.
+            if (o.encode.is_nil())
+                warn(o.id, std::format("output '{}' has no video encode connected", o.name));
+            else if (!exists_as(o.encode, "encode"))
                 err(o.id, std::format("output '{}' sends encode {}, which does not exist",
                                       o.name, o.encode.to_string()));
             // Carrying no audio is a choice -- a silent file capture means it -- so this is a

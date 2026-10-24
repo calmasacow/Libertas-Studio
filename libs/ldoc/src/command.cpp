@@ -1092,9 +1092,8 @@ struct Apply {
         if (c.encode.rescale && (c.encode.rescale->x <= 0.0 || c.encode.rescale->y <= 0.0))
             return std::unexpected(std::format("an encode cannot rescale to {}x{}",
                                                c.encode.rescale->x, c.encode.rescale->y));
-        // An encode without a canvas has nothing to encode at all, which validate() calls an
-        // error -- so unlike a scene reference this really is a precondition.
-        if (!p.canvas(c.encode.canvas))
+        // Nil is a deliberately disconnected graph input; non-nil references must resolve.
+        if (!c.encode.canvas.is_nil() && !p.canvas(c.encode.canvas))
             return std::unexpected(
                 std::format("there is no canvas {} to encode", c.encode.canvas.to_string()));
         if (all_ids(p).contains(c.encode.id))
@@ -1132,7 +1131,7 @@ struct Apply {
         if (c.value.rescale && (c.value.rescale->x <= 0.0 || c.value.rescale->y <= 0.0))
             return std::unexpected(std::format("an encode cannot rescale to {}x{}",
                                                c.value.rescale->x, c.value.rescale->y));
-        if (!p.canvas(c.value.canvas))
+        if (!c.value.canvas.is_nil() && !p.canvas(c.value.canvas))
             return std::unexpected(
                 std::format("there is no canvas {} to encode", c.value.canvas.to_string()));
         Applied out{SetEncode{*it}, describe(c)};
@@ -1149,9 +1148,8 @@ struct Apply {
         if (c.encode.bitrate_kbps <= 0)
             return std::unexpected(
                 std::format("a bitrate of {} kbps is not usable", c.encode.bitrate_kbps));
-        // An audio encode without a bus has nothing to encode, the same kind of nothing an
-        // encode without a canvas has.
-        if (!p.bus(c.encode.bus))
+        // A disconnected input may be saved and reconnected later.
+        if (!c.encode.bus.is_nil() && !p.bus(c.encode.bus))
             return std::unexpected(
                 std::format("there is no bus {} to encode", c.encode.bus.to_string()));
         if (all_ids(p).contains(c.encode.id))
@@ -1191,7 +1189,7 @@ struct Apply {
         if (c.value.bitrate_kbps <= 0)
             return std::unexpected(
                 std::format("a bitrate of {} kbps is not usable", c.value.bitrate_kbps));
-        if (!p.bus(c.value.bus))
+        if (!c.value.bus.is_nil() && !p.bus(c.value.bus))
             return std::unexpected(
                 std::format("there is no bus {} to encode", c.value.bus.to_string()));
         Applied out{SetAudioEncode{*it}, describe(c)};
@@ -1204,9 +1202,8 @@ struct Apply {
             return std::unexpected(std::format("output position {} is past the end", c.index));
         if (c.output.id.is_nil())
             return std::unexpected("an output needs an id");
-        // An output with no bitstream has nothing to send, the same kind of nothing a deck with
-        // no canvas has. A precondition, not a reference.
-        if (!p.encode(c.output.encode))
+        // A disconnected video input is distinct from a dangling encode reference.
+        if (!c.output.encode.is_nil() && !p.encode(c.output.encode))
             return std::unexpected(
                 std::format("there is no encode {} to send", c.output.encode.to_string()));
         if (c.output.audio_encode && !p.audio_encode(*c.output.audio_encode))
@@ -1237,7 +1234,7 @@ struct Apply {
         if (it == p.outputs.end())
             return std::unexpected(
                 std::format("there is no output {}", c.value.id.to_string()));
-        if (!p.encode(c.value.encode))
+        if (!c.value.encode.is_nil() && !p.encode(c.value.encode))
             return std::unexpected(
                 std::format("there is no encode {} to send", c.value.encode.to_string()));
         if (c.value.audio_encode && !p.audio_encode(*c.value.audio_encode))

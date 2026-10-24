@@ -21,10 +21,16 @@ Item {
 
     property var encode: ({})
     property var audio: ({})
+    property string destinationName: ""
+    property string outputVideoId: ""
+    property string outputAudioId: ""
     readonly property var extra: panel.encode.extra || ({})
     readonly property string implementation: panel.encode.implementation || ""
 
     property size canvasSize: Qt.size(0, 0)
+    property string videoCanvasId: ""
+    property var canvasIds: []
+    property var canvasLabels: ({})
     readonly property bool rescaled: (panel.encode.width || 0) > 0
     property bool customResolution: false
     onSelectedIdChanged: { customResolution = false; refresh(); }
@@ -34,7 +40,17 @@ Item {
     function refresh() {
         panel.encode = panel.selectedKind === "encode" ? Document.encodeSettings(panel.selectedId) : ({});
         panel.audio = panel.selectedKind === "audio-encode" ? Document.audioEncodeSettings(panel.selectedId) : ({});
+        const output = panel.selectedKind === "output" ? Document.outputEncoderSettings(panel.selectedId) : ({});
+        panel.destinationName = output.outputName || "";
+        panel.outputVideoId = output.id || "";
+        panel.outputAudioId = panel.selectedKind === "output" ? Document.outputAudioEncode(panel.selectedId) : "";
         panel.canvasSize = Document.canvasSizeOf(Document.encodeCanvasOf(panel.selectedId));
+        panel.videoCanvasId = Document.encodeCanvasOf(panel.selectedId);
+        panel.canvasIds = Document.canvasIds();
+        const labels = {};
+        for (const id of panel.canvasIds)
+            labels[id] = Document.canvasNameOf(id);
+        panel.canvasLabels = labels;
     }
 
     // Document emits `changed` after every command, and these are calls rather than
@@ -113,21 +129,14 @@ Item {
                 bottomPadding: 6
             }
 
-            // Name is looked up from the models for the kinds that have no settings call of
-            // their own, rather than adding two more invokables for one string each.
+            // Names for the destination and bus selections.
             QtObject {
                 id: nodeName
 
                 readonly property string value: {
                     void panel.revision;
-                    if (panel.selectedKind === "output") {
-                        const all = Document.encodeChoices();
-                        for (let i = 0; i < all.length; ++i)
-                            for (let j = 0; j < all[i].destinations.length; ++j)
-                                if (all[i].destinations[j].id === panel.selectedId)
-                                    return all[i].destinations[j].name;
-                        return "";
-                    }
+                    if (panel.selectedKind === "output")
+                        return panel.destinationName;
                     if (panel.selectedKind === "bus") {
                         const buses = Document.audioBusChoices();
                         for (let i = 0; i < buses.length; ++i)
@@ -143,6 +152,17 @@ Item {
                 width: parent.width
                 spacing: 6
                 visible: panel.selectedKind === "encode"
+
+                ChoiceField {
+                    objectName: "encodeCanvasInput"
+                    width: parent.width
+                    label: qsTr("Canvas")
+                    labelWidth: 150
+                    choices: panel.canvasIds
+                    choiceLabels: panel.canvasLabels
+                    value: panel.videoCanvasId
+                    onCommitted: value => Document.setEncodeCanvas(panel.selectedId, value)
+                }
 
                 ChoiceField {
                     objectName: "encodeVideoEncoder"
@@ -561,10 +581,7 @@ Item {
                             out[e.id] = e.name;
                         return out;
                     }
-                    value: {
-                        void panel.revision;
-                        return Document.outputEncoderSettings(panel.selectedId).id || "";
-                    }
+                    value: panel.outputVideoId
                     onCommitted: value => Document.setOutputEncode(panel.selectedId, value)
                 }
 
@@ -578,29 +595,20 @@ Item {
                     }
                     choiceLabels: {
                         void panel.revision;
-                        const out = {"": qsTr("None (silent)")};
+                        const out = {"": qsTr("Not connected")};
                         for (const e of Document.audioEncodeChoices())
                             out[e.id] = e.name;
                         return out;
                     }
-                    value: outputAudio.value
+                    value: panel.outputAudioId
                     onCommitted: value => Document.setOutputAudioEncode(panel.selectedId, value)
-                }
-
-                QtObject {
-                    id: outputAudio
-
-                    readonly property string value: {
-                        void panel.revision;
-                        return Document.outputAudioEncode(panel.selectedId);
-                    }
                 }
 
                 Text {
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    visible: outputAudio.value === ""
-                    text: qsTr("This destination carries no audio and will go out silent.")
+                    visible: panel.outputAudioId === ""
+                    text: qsTr("Audio 0 is not connected. Choose an audio encoder.")
                     font.pixelSize: 9
                     color: Theme.c.warning
                 }

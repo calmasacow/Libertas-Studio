@@ -94,9 +94,17 @@ Item {
     /// call with no binding dependency, so a graph built that way draws whatever existed the
     /// first time it ran and never gains an edge again. The models are properties, and
     /// `portRevision` covers the cards moving.
-    readonly property var links: {
-        void graph.portRevision;
-        void Document.revision;
+    property var links: []
+    onPortRevisionChanged: refreshLinks()
+    onSelectedKindChanged: refreshLinks()
+    onSelectedIdChanged: refreshLinks()
+    Component.onCompleted: refreshLinks()
+    Connections {
+        target: Document
+        function onChanged() { graph.refreshLinks(); }
+    }
+
+    function refreshLinks() {
         const out = [];
         const add = (a, b, lit) => {
             const s = graph.ports[a];
@@ -111,7 +119,7 @@ Item {
             add("canvas:" + canvas, "encode:" + e.id,
                 live("encode", e.id) || live("canvas", canvas));
             for (const d of e.destinations)
-                add("encode:" + e.id, "output:" + d.id,
+                add("encode:" + e.id, "output-video:" + d.id,
                     live("output", d.id) || live("encode", e.id));
         }
         for (const a of Document.audioEncodeChoices()) {
@@ -120,10 +128,10 @@ Item {
                 live("audio-encode", a.id) || live("bus", bus));
         }
         for (const o of Document.outputsWithAudio()) {
-            add("audio-encode:" + o.audioEncode, "output:" + o.id,
+            add("audio-encode:" + o.audioEncode, "output-audio:" + o.id,
                 live("output", o.id) || live("audio-encode", o.audioEncode));
         }
-        return out;
+        graph.links = out;
     }
 
     GraphEdges {
@@ -148,6 +156,7 @@ Item {
 
             delegate: EncodeNodeCard {
                 id: canvasCard
+                objectName: "encodeCanvasNode_" + canvasId
 
                 required property string canvasId
                 required property string name
@@ -162,6 +171,7 @@ Item {
                 hasOutput: true
                 selected: graph.isSelected("canvas", canvasCard.canvasId)
                 onPressed: graph.nodeSelected("canvas", canvasCard.canvasId)
+                onDisconnectRequested: port => Document.disconnectGraphPort("canvas", canvasCard.canvasId, port)
 
                 function report() {
                     graph.setPort("canvas:" + canvasCard.canvasId,
@@ -218,6 +228,7 @@ Item {
 
             delegate: EncodeNodeCard {
                 id: busCard
+                objectName: "encodeBusNode_" + busId
 
                 required property string busId
                 required property string name
@@ -240,6 +251,7 @@ Item {
                 hasOutput: true
                 selected: graph.isSelected("bus", busCard.busId)
                 onPressed: graph.nodeSelected("bus", busCard.busId)
+                onDisconnectRequested: port => Document.disconnectGraphPort("bus", busCard.busId, port)
 
                 function report() {
                     if (!busCard.encodable)
@@ -345,6 +357,8 @@ Item {
             hasInput: true
             hasOutput: true
             selected: graph.isSelected("encode", encodeCard.encodeId)
+            missingConnections: encodeCard.canvasId === ""
+            onDisconnectRequested: port => Document.disconnectGraphPort("encode", encodeCard.encodeId, port)
 
             onPressed: (mx, my) => {
                 graph.nodeSelected("encode", encodeCard.encodeId);
@@ -483,6 +497,8 @@ Item {
             hasInput: true
             hasOutput: true
             selected: graph.isSelected("audio-encode", audioCard.audioEncodeId)
+            missingConnections: audioCard.busId === ""
+            onDisconnectRequested: port => Document.disconnectGraphPort("audio-encode", audioCard.audioEncodeId, port)
             onContextRequested: (mx, my) => graph.nodeMenu(
                 audioCard, "audio-encode", audioCard.audioEncodeId, audioCard.name, mx, my)
 
@@ -565,6 +581,12 @@ Item {
                  : outputCard.destinationKind === "replay" ? outputCard.name.toUpperCase()
                  : qsTr("STREAM: %1").arg(outputCard.name)
             hasInput: true
+            readonly property real videoInputY: bodyTop + outputDetails.y + videoTrack.y + videoTrack.height / 2
+            readonly property real audioInputY: bodyTop + outputDetails.y + audioTrack.y + audioTrack.height / 2
+            inputPorts: [{key: "video", y: videoInputY, label: qsTr("Video 0")},
+                         {key: "audio", y: audioInputY, label: qsTr("Audio 0")}]
+            missingConnections: outputCard.encodeId === "" || outputCard.audioEncodeId === ""
+            onDisconnectRequested: port => Document.disconnectGraphPort("output", outputCard.outputId, port)
             selected: graph.isSelected("output", outputCard.outputId)
             onContextRequested: (mx, my) => graph.nodeMenu(
                 outputCard, "output", outputCard.outputId, outputCard.name, mx, my)
@@ -581,12 +603,16 @@ Item {
             onReleased: Document.endGesture()
 
             function report() {
-                graph.setPort("output:" + outputCard.outputId,
-                              x, y + 30, x + width, y + 30);
+                graph.setPort("output-video:" + outputCard.outputId,
+                              x, y + videoInputY, x + width, y + videoInputY);
+                graph.setPort("output-audio:" + outputCard.outputId,
+                              x, y + audioInputY, x + width, y + audioInputY);
             }
             Component.onCompleted: report()
             onXChanged: report()
             onYChanged: report()
+            onVideoInputYChanged: report()
+            onAudioInputYChanged: report()
 
             // The live pill. Red rather than absent when misconfigured, because an output
             // that cannot go anywhere should not look the same as one that is merely off.
@@ -612,6 +638,7 @@ Item {
             }
 
             Column {
+                id: outputDetails
                 x: 9
                 width: outputCard.width - 18
                 spacing: 2
@@ -624,9 +651,10 @@ Item {
                 }
 
                 Text {
+                    id: videoTrack
                     width: parent.width
                     text: outputCard.encodeName === ""
-                          ? qsTr("no video")
+                          ? qsTr("Video 0: Not connected")
                           : qsTr("Video track 0 (%1)").arg(outputCard.encodeName)
                     font.pixelSize: 10
                     color: Theme.c.text
@@ -644,9 +672,10 @@ Item {
                 // Said rather than left blank: a destination with no audio goes to air silent,
                 // which is a thing someone can mean and a thing nobody should discover live.
                 Text {
+                    id: audioTrack
                     width: parent.width
                     text: outputCard.audioEncodeId === ""
-                          ? qsTr("no audio")
+                          ? qsTr("Audio 0: Not connected")
                           : qsTr("Audio track 0 (%1)").arg(outputCard.audioEncodeName)
                     font.pixelSize: 10
                     color: outputCard.audioEncodeId === "" ? Theme.c.warning : Theme.c.text
