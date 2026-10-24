@@ -24,9 +24,11 @@ Item {
     property string placeholder: ""
     property bool browsable: false
     property bool commitOnEdit: false
+    property int echoMode: TextInput.Normal
 
     signal committed(string newValue)
     signal browseRequested
+    function clear() { input.clear(); }
 
     implicitHeight: 20
 
@@ -111,6 +113,7 @@ Item {
         }
 
         TextInput {
+            echoMode: field.echoMode
             id: input
             objectName: "textLineInput"
 

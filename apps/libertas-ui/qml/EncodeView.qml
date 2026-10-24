@@ -349,7 +349,7 @@ Item {
                 Text {
                     width: parent.width
                     text: removal.kind === "encode"
-                        ? qsTr("This also removes every destination connected to this video encoder. You can undo this change.")
+                        ? qsTr("Destinations will be kept with their video inputs disconnected. You can undo this change.")
                         : removal.kind === "audio-encode"
                         ? qsTr("Connected destinations will lose this audio track. You can undo this change.")
                         : qsTr("The connected encoders will be kept. You can undo this change.")

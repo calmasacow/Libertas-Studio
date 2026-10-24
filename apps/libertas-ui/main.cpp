@@ -1067,6 +1067,20 @@ int main(int argc, char** argv) {
                 document.initializeEncodeGraph();
                 report(document.projectForBindings() == graphProject,
                        "opening Encode again preserves its arrangement without duplicating nodes");
+                for (const auto& output : graphProject.outputs) {
+                    if (output.destination.kind != ldoc::DestinationKind::File &&
+                        output.destination.kind != ldoc::DestinationKind::Replay) continue;
+                    // Simulate a project saved by the version that allowed deleting these nodes.
+                    document.runCommand(ldoc::RemoveOutput{output.id});
+                    document.initializeEncodeGraph();
+                    const auto& restored = document.projectForBindings().outputs;
+                    report(std::ranges::count(restored, output.destination.kind,
+                        [](const auto& o) { return o.destination.kind; }) == 1,
+                        "opening an older graph restores each missing permanent output exactly once");
+                    document.undo();
+                    document.undo();
+                    settle();
+                }
                 if (fileOutput != graphProject.outputs.end()) {
                     const QString fileId = QString::fromStdString(fileOutput->id.to_string());
                     report(fileOutput->position.x > graphProject.encodes.front().position.x &&
@@ -1134,6 +1148,42 @@ int main(int argc, char** argv) {
                     }
                     report(checkArmed(output.enabled) && document.projectForBindings().outputs == graphProject.outputs,
                            "one undo restores arming without moving or changing destination nodes");
+                    if (view && props) {
+                        const auto oldKind = view->property("selectedKind");
+                        const auto oldId = view->property("selectedId");
+                        view->setProperty("selectedKind", "output");
+                        view->setProperty("selectedId", QString::fromStdString(output.id.to_string()));
+                        settle();
+                        auto* protocol = props->findChild<QQuickItem*>("encodeDestinationProtocol");
+                        auto* url = props->findChild<QQuickItem*>("encodeDestinationUrl");
+                        auto* key = props->findChild<QQuickItem*>("encodeDestinationKey");
+                        report(protocol && protocol->isVisible() && url && url->isVisible() &&
+                                   key && key->isVisible() && key->property("echoMode").toInt() == 2 &&
+                                   document.destinationKinds().size() == 4,
+                               "stream properties expose protocol, URL and a masked key with only stream protocols");
+                        if (parser.isSet(shot_opt))
+                            grab().save(parser.value(shot_opt) + QStringLiteral("/encode-destination-properties.png"));
+                        if (protocol && url && key) {
+                            QMetaObject::invokeMethod(protocol, "committed", Q_ARG(QString, QStringLiteral("srt")));
+                            QMetaObject::invokeMethod(url, "committed",
+                                Q_ARG(QString, QStringLiteral("srt://localhost:9000")));
+                            settle();
+                            const auto settings = document.outputEncoderSettings(QString::fromStdString(output.id.to_string()));
+                            report(settings.value("destinationKind") == "srt" &&
+                                       settings.value("url") == "srt://localhost:9000",
+                                   "destination protocol and URL fields edit the selected stream");
+                            QMetaObject::invokeMethod(key, "committed", Q_ARG(QString, QStringLiteral("arming-private-key-check")));
+                            report(ldoc::project_to_json(document.projectForBindings()).find("arming-private-key-check") == std::string::npos,
+                                   "typing a stream key never writes it to the document");
+                            document.undo();
+                            document.undo();
+                        }
+                        view->setProperty("selectedKind", oldKind);
+                        view->setProperty("selectedId", oldId);
+                        settle();
+                        report(props->property("pendingKey").toString().isEmpty(),
+                               "changing selection clears the pending stream key");
+                    }
                 }
                 if (fileOutput != graphProject.outputs.end()) {
                     const auto cards = collect(window->contentItem(), "outputNode_" +
@@ -1407,6 +1457,9 @@ int main(int argc, char** argv) {
                         click(reopened.front());
                     click(confirm.front());
                     const auto removed = document.projectForBindings();
+                    if (prefix != "outputNode_")
+                        report(removed.outputs.size() == beforeRemoval.outputs.size(),
+                               "removing an encoder preserves every destination node");
                     report(removed != beforeRemoval && std::ranges::none_of(ldoc::validate(removed), [](const auto& p) {
                                return p.severity == ldoc::Severity::Error;
                            }),
@@ -1419,8 +1472,20 @@ int main(int argc, char** argv) {
                     report(document.projectForBindings() == beforeRemoval,
                            "one undo restores the node and every connection");
                 };
-                if (fileOutput != graphProject.outputs.end())
-                    checkRemoval("outputNode_", fileOutput->id);
+                for (const auto& output : graphProject.outputs) {
+                    if (output.destination.kind != ldoc::DestinationKind::File &&
+                        output.destination.kind != ldoc::DestinationKind::Replay) {
+                        checkRemoval("outputNode_", output.id);
+                        continue;
+                    }
+                    const auto cards = collect(window->contentItem(), "outputNode_" +
+                        QString::fromStdString(output.id.to_string()));
+                    if (!cards.empty()) click(cards.front(), Qt::RightButton);
+                    report(menu && !menu->isVisible(), "permanent outputs have no Remove menu");
+                    document.removeOutput(QString::fromStdString(output.id.to_string()));
+                    report(document.projectForBindings().outputs == graphProject.outputs,
+                           "Recording and Backtrack refuse deletion at the command boundary");
+                }
                 if (!graphProject.audio_encodes.empty())
                     checkRemoval("audioEncodeNode_", graphProject.audio_encodes.front().id);
                 if (!graphProject.encodes.empty())
@@ -4952,11 +5017,14 @@ int main(int argc, char** argv) {
                 report(remove != nullptr, "every output has a Remove button in the manager");
                 if (remove) {
                     const auto count = document.outputsModel()->rowCount();
+                    const auto encodes = document.encodeCount();
                     reveal(remove);
                     click(remove);
-                    report(document.outputsModel()->rowCount() == count - 1 &&
+                    report(document.outputsModel()->rowCount() == count &&
+                               document.encodeCount() == encodes - 1 &&
+                               document.outputEncoderSettings(selected).value("id").toString().isEmpty() &&
                                manager->property("selectedOutputId").toString().isEmpty(),
-                           "manager Remove deletes the selected output and clears its editor");
+                           "manager Remove deletes only the encoder, keeps destinations and clears its editor");
                     document.undo();
                     settle();
                     report(document.outputsModel()->rowCount() == count,
@@ -5271,6 +5339,8 @@ int main(int argc, char** argv) {
             const int encodes_before = document.encodeCount();
             document.addEncode();
             settle();
+            const auto fixtureOutputId = QString::fromStdString(
+                document.projectForBindings().outputs.back().id.to_string());
 
             // Which canvas an encode reads has to be changeable, or a second canvas can never
             // be streamed: addEncode takes whichever one was current (ADR-0035).
@@ -5375,6 +5445,10 @@ int main(int argc, char** argv) {
             document.removeEncode(enc_id);
             settle();
             report(document.encodeCount() == encodes_before, "removing the group deletes its encode");
+            report(document.outputEncoderSettings(fixtureOutputId).value("id").toString().isEmpty(),
+                   "the group's original destination survives with a disconnected video input");
+            document.removeOutput(fixtureOutputId);
+            settle();
         }
 
         // The outputs manager draws the encode graph it is for.
@@ -5454,11 +5528,11 @@ int main(int argc, char** argv) {
         const int encodes_before_remove = document.encodeCount();
         document.removeEncode(document.outputEncoderSettings(out_id).value("id").toString());
         settle();
-        report(document.outputsModel()->rowCount() == outputs_before,
-               "an output can be removed");
-        // Removing an output group deletes its encode and receivers in one undo step.
+        report(document.outputsModel()->rowCount() == outputs_before + 1 &&
+                   document.outputEncoderSettings(out_id).value("id").toString().isEmpty(),
+               "removing an encoder keeps its destinations with disconnected video inputs");
         report(document.encodeCount() == encodes_before_remove - 1,
-               "and its encode goes with it, since nothing else was sending it");
+               "only the requested encoder is removed");
         document.undo();
         settle();
         report(document.outputsModel()->rowCount() == outputs_before + 1,

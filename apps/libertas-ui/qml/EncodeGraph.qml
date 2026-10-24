@@ -663,8 +663,10 @@ Item {
             missingConnections: outputCard.encodeId === "" || outputCard.audioEncodeId === ""
             onDisconnectRequested: port => Document.disconnectGraphPort("output", outputCard.outputId, port)
             selected: graph.isSelected("output", outputCard.outputId)
-            onContextRequested: (mx, my) => graph.nodeMenu(
-                outputCard, "output", outputCard.outputId, outputCard.name, mx, my)
+            onContextRequested: (mx, my) => {
+                if (outputCard.destinationKind !== "file" && outputCard.destinationKind !== "replay")
+                    graph.nodeMenu(outputCard, "output", outputCard.outputId, outputCard.name, mx, my);
+            }
 
             onPressed: (mx, my) => {
                 graph.nodeSelected("output", outputCard.outputId);

@@ -3263,7 +3263,6 @@ QVariantList Document::destinationKinds() const {
     static constexpr ldoc::DestinationKind kKinds[] = {
         ldoc::DestinationKind::Rtmps, ldoc::DestinationKind::Rtmp,
         ldoc::DestinationKind::Srt,   ldoc::DestinationKind::Whip,
-        ldoc::DestinationKind::File,  ldoc::DestinationKind::Replay,
     };
     QVariantList out;
     for (const ldoc::DestinationKind k : kKinds) {
@@ -3464,32 +3463,37 @@ void Document::addOutput(const QString& name) {
 
 void Document::removeOutput(const QString& id) {
     const auto parsed = parse_id(id);
-    if (parsed) run(ldoc::RemoveOutput{*parsed});
+    if (!parsed) return;
+    for (const auto& o : session_->project().outputs)
+        if (o.id == *parsed && (o.destination.kind == ldoc::DestinationKind::File ||
+                               o.destination.kind == ldoc::DestinationKind::Replay))
+            return;
+    run(ldoc::RemoveOutput{*parsed});
 }
 
 void Document::initializeEncodeGraph() {
     const auto& p = session_->project();
-    if (p.settings.extra.contains("encode.graph.initialized") || p.encodes.empty())
-        return;
+    const bool initialized = p.settings.extra.contains("encode.graph.initialized");
 
     std::vector<ldoc::Command> steps;
-    // Persist the initial arrangement once. Later opens, moves and removals are user choices.
+    // Arrange once; always repair missing permanent outputs from older versions.
     const auto place = [](auto nodes, double x, double top) {
         for (std::size_t i = 0; i < nodes.size(); ++i)
             if (nodes[i].position == ldoc::Vec2{})
                 nodes[i].position = {x, top + 170.0 * static_cast<double>(i)};
         return nodes;
     };
-    const auto encodes = place(p.encodes, 400.0, 60.0);
+    const auto encodes = initialized ? p.encodes : place(p.encodes, 400.0, 60.0);
+    const auto origin = encodes.empty() ? ldoc::Vec2{400.0, 60.0} : encodes.front().position;
     for (const auto& e : encodes)
         if (e != *p.encode(e.id))
             steps.push_back(ldoc::SetEncode{e});
-    auto audio = place(p.audio_encodes, 400.0,
+    auto audio = initialized ? p.audio_encodes : place(p.audio_encodes, 400.0,
                        60.0 + 170.0 * static_cast<double>(encodes.size()));
     for (std::size_t i = 0; i < audio.size(); ++i)
         if (audio[i] != p.audio_encodes[i])
             steps.push_back(ldoc::SetAudioEncode{audio[i]});
-    if (audio.empty()) {
+    if (!initialized && audio.empty()) {
         const auto bus = std::find_if(p.buses.begin(), p.buses.end(), [](const auto& b) {
             return b.kind == ldoc::BusKind::Program;
         });
@@ -3503,11 +3507,11 @@ void Document::initializeEncodeGraph() {
             steps.push_back(ldoc::AddAudioEncode{a, p.audio_encodes.size()});
         }
     }
-    auto outputs = place(p.outputs, encodes.front().position.x + 360.0, 60.0);
+    auto outputs = initialized ? p.outputs : place(p.outputs, origin.x + 360.0, 60.0);
     for (std::size_t i = 0; i < outputs.size(); ++i)
         if (outputs[i] != p.outputs[i])
             steps.push_back(ldoc::SetOutput{outputs[i]});
-    double next_y = encodes.front().position.y;
+    double next_y = origin.y;
     for (const auto& o : outputs)
         next_y = std::max(next_y, o.position.y + 170.0);
     for (const auto kind : {ldoc::DestinationKind::File, ldoc::DestinationKind::Replay}) {
@@ -3518,19 +3522,23 @@ void Document::initializeEncodeGraph() {
         ldoc::Output o;
         o.id = ldoc::Id::generate();
         o.name = kind == ldoc::DestinationKind::File ? "Recording" : "Backtrack";
-        o.encode = encodes.front().id;
+        if (!encodes.empty())
+            o.encode = encodes.front().id;
         if (!audio.empty())
             o.audio_encode = audio.front().id;
         o.destination.kind = kind;
-        o.position = {encodes.front().position.x + 360.0, next_y};
+        o.position = {origin.x + 360.0, next_y};
         next_y += 170.0;
         steps.push_back(ldoc::AddOutput{o, outputs.size()});
         outputs.push_back(o);
     }
-    auto settings = p.settings;
-    settings.extra["encode.graph.initialized"] = true;
-    steps.push_back(ldoc::SetProjectSettings{std::move(settings)});
-    run(ldoc::make_batch(std::move(steps), "Initialize Encode graph"));
+    if (!initialized) {
+        auto settings = p.settings;
+        settings.extra["encode.graph.initialized"] = true;
+        steps.push_back(ldoc::SetProjectSettings{std::move(settings)});
+    }
+    if (!steps.empty())
+        run(ldoc::make_batch(std::move(steps), "Initialize Encode graph"));
 }
 
 QString Document::recordingEncodeId() const {
@@ -3645,10 +3653,13 @@ void Document::removeEncode(const QString& id) {
     const auto parsed = parse_id(id);
     if (!parsed || !session_->project().encode(*parsed)) return;
     std::vector<ldoc::Command> steps;
-    for (const auto& o : session_->project().outputs)
-        if (o.encode == *parsed) steps.push_back(ldoc::RemoveOutput{o.id});
+    for (auto o : session_->project().outputs)
+        if (o.encode == *parsed) {
+            o.encode = {};
+            steps.push_back(ldoc::SetOutput{std::move(o)});
+        }
     steps.push_back(ldoc::RemoveEncode{*parsed});
-    run(ldoc::make_batch(std::move(steps), "Remove output group"));
+    run(ldoc::make_batch(std::move(steps), "Remove video encode"));
 }
 
 void Document::edit_output(const QString& id, const std::function<void(ldoc::Output&)>& change) {
@@ -3780,20 +3791,9 @@ void Document::setOutputEncode(const QString& output_id, const QString& encode_i
     if (!out || !onto || out->encode == *enc_parsed)
         return;
 
-    // The encode this destination is leaving. If it was the only one on it, moving away would
-    // strand it -- the same leak as removing an output used to cause -- so it goes in the same
-    // batch, as one undo step.
-    const ldoc::Id leaving = out->encode;
-    bool others_remain = false;
-    for (const ldoc::Output& o : p.outputs)
-        others_remain = others_remain || (o.id != out->id && o.encode == leaving);
-
     ldoc::Output next = *out;
     next.encode = *enc_parsed;
-    std::vector<ldoc::Command> steps{ldoc::SetOutput{std::move(next)}};
-    if (!others_remain && p.encode(leaving))
-        steps.push_back(ldoc::RemoveEncode{leaving});
-    run(ldoc::make_batch(std::move(steps), "Change encode"));
+    run(ldoc::SetOutput{std::move(next)});
 }
 
 void Document::addOutputOnEncode(const QString& encode_id, const QString& name) {
@@ -4137,6 +4137,12 @@ void Document::setOutputDestination(const QString& id, const QString& kind, cons
         return;
     }
     edit_output(id, [&](ldoc::Output& o) {
+        const auto permanent = [](ldoc::DestinationKind k) {
+            return k == ldoc::DestinationKind::File || k == ldoc::DestinationKind::Replay;
+        };
+        if (parsed_kind && *parsed_kind != o.destination.kind &&
+            (permanent(o.destination.kind) || permanent(*parsed_kind)))
+            return;
         if (parsed_kind)
             o.destination.kind = *parsed_kind;
         o.destination.url = to_std(url);
@@ -4164,6 +4170,10 @@ QVariantMap Document::outputEncoderSettings(const QString& id) const {
         if (o.id == *parsed) {
             auto settings = encodeSettings(id_str(o.encode));
             settings["outputName"] = qstr(o.name);
+            const auto kind = ldoc::to_string(o.destination.kind);
+            settings["destinationKind"] = QString::fromUtf8(kind.data(), static_cast<qsizetype>(kind.size()));
+            settings["url"] = qstr(o.destination.url);
+            settings["credentialRef"] = qstr(o.destination.credential_ref);
             return settings;
         }
     }

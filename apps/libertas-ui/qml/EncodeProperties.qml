@@ -24,6 +24,11 @@ Item {
     property string destinationName: ""
     property string outputVideoId: ""
     property string outputAudioId: ""
+    property var destination: ({})
+    property string pendingKey: ""
+    onPendingKeyChanged: if (pendingKey === "") destinationKey.clear()
+    readonly property bool streamDestination: panel.selectedKind === "output" &&
+        panel.destination.destinationKind !== "file" && panel.destination.destinationKind !== "replay"
     readonly property var extra: panel.encode.extra || ({})
     readonly property string implementation: panel.encode.implementation || ""
 
@@ -33,14 +38,15 @@ Item {
     property var canvasLabels: ({})
     readonly property bool rescaled: (panel.encode.width || 0) > 0
     property bool customResolution: false
-    onSelectedIdChanged: { customResolution = false; refresh(); }
-    onSelectedKindChanged: refresh()
+    onSelectedIdChanged: { pendingKey = ""; customResolution = false; refresh(); }
+    onSelectedKindChanged: { pendingKey = ""; refresh(); }
     Component.onCompleted: refresh()
 
     function refresh() {
         panel.encode = panel.selectedKind === "encode" ? Document.encodeSettings(panel.selectedId) : ({});
         panel.audio = panel.selectedKind === "audio-encode" ? Document.audioEncodeSettings(panel.selectedId) : ({});
         const output = panel.selectedKind === "output" ? Document.outputEncoderSettings(panel.selectedId) : ({});
+        panel.destination = output;
         panel.destinationName = output.outputName || "";
         panel.outputVideoId = output.id || "";
         panel.outputAudioId = panel.selectedKind === "output" ? Document.outputAudioEncode(panel.selectedId) : "";
@@ -559,11 +565,66 @@ Item {
                 visible: panel.selectedKind === "output"
 
                 TextLine {
+                    objectName: "encodeOutputName"
                     width: parent.width
                     label: qsTr("Name")
                     labelWidth: 150
                     value: nodeName.value
                     onCommitted: value => Document.renameOutput(panel.selectedId, value)
+                }
+
+                ChoiceField {
+                    objectName: "encodeDestinationProtocol"
+                    width: parent.width
+                    visible: panel.streamDestination
+                    label: qsTr("Protocol")
+                    labelWidth: 150
+                    choices: Document.destinationKinds.map(k => k.id)
+                    choiceLabels: {
+                        const labels = {};
+                        for (const kind of Document.destinationKinds) labels[kind.id] = kind.title;
+                        return labels;
+                    }
+                    value: panel.destination.destinationKind || "rtmp"
+                    onCommitted: value => Document.setOutputDestination(
+                        panel.selectedId, value, panel.destination.url || "")
+                }
+
+                TextLine {
+                    objectName: "encodeDestinationUrl"
+                    width: parent.width
+                    visible: panel.streamDestination
+                    label: qsTr("URL")
+                    labelWidth: 150
+                    value: panel.destination.url || ""
+                    onCommitted: value => Document.setOutputDestination(
+                        panel.selectedId, panel.destination.destinationKind, value)
+                }
+
+                TextLine {
+                    id: destinationKey
+                    objectName: "encodeDestinationKey"
+                    width: parent.width
+                    visible: panel.streamDestination
+                    label: qsTr("Key")
+                    labelWidth: 150
+                    echoMode: TextInput.Password
+                    placeholder: panel.destination.credentialRef
+                        ? qsTr("Saved reference - enter replacement key") : qsTr("Stream key")
+                    value: panel.pendingKey
+                    commitOnEdit: true
+                    onCommitted: value => panel.pendingKey = value
+                }
+
+                DialogButton {
+                    objectName: "encodeSaveDestinationKey"
+                    visible: panel.streamDestination
+                    text: qsTr("Save key to keyring")
+                    enabled: panel.pendingKey.length > 0
+                    onClicked: {
+                        Document.saveOutputKey(panel.selectedId, panel.pendingKey);
+                        panel.pendingKey = "";
+                    }
                 }
 
                 ChoiceField {
@@ -616,8 +677,8 @@ Item {
                 Text {
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    text: qsTr("Stream keys are never stored in the project. Set one through "
-                             + "the outputs manager; the project holds only its name.")
+                    visible: panel.streamDestination
+                    text: qsTr("Key stored in system keyring, never in project.")
                     font.pixelSize: 9
                     color: Theme.c.textMuted
                     topPadding: 8

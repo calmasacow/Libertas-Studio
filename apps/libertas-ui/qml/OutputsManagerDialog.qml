@@ -277,7 +277,7 @@ Item {
                                 width: 84
                                 height: parent.height
                                 label: qsTr("Remove")
-                                tip: qsTr("Remove output and its destinations (can be undone)")
+                                tip: qsTr("Remove encoder and disconnect its destinations (can be undone)")
                                 onClicked: {
                                     dialog.selectedEncodeId = "";
                                     dialog.selectedOutputId = "";
@@ -622,6 +622,7 @@ Item {
                                         height: 30
                                         label: qsTr("Remove")
                                         tip: qsTr("Remove this destination (can be undone)")
+                                        visible: destination.destinationKind !== "file" && destination.destinationKind !== "replay"
                                         onClicked: Document.removeOutput(destination.outputId)
                                     }
                                 }
@@ -639,6 +640,7 @@ Item {
                                     ChoiceField {
                                         width: parent.width
                                         label: qsTr("Protocol")
+                                        visible: destination.destinationKind !== "file" && destination.destinationKind !== "replay"
                                         labelWidth: 150
                                         choices: Document.destinationKinds.map(k => k.title)
                                         value: destination.destinationKind.toUpperCase()
