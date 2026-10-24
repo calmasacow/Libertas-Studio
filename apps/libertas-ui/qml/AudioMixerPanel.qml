@@ -700,13 +700,26 @@ Item {
         }
 
         Row {
+            id: footerActions
             anchors.left: parent.left
             anchors.leftMargin: 6
             anchors.verticalCenter: parent.verticalCenter
             spacing: 4
 
-            // No add button: a bus is not a thing made from here, and a source strip comes
-            // from the scene (ADR-0032). What this corner is for is seeing what is hidden.
+            ToolButton {
+                objectName: "addAudioOutput"
+                width: 76
+                label: qsTr("+ Output")
+                tip: qsTr("Add an audio output channel")
+                onClicked: {
+                    const names = Document.audioBusChoices().map(bus => bus.name);
+                    let number = 1;
+                    while (names.includes(qsTr("Output %1").arg(number))) ++number;
+                    Document.addBus(qsTr("Output %1").arg(number), "track");
+                    Qt.callLater(() => strips.positionViewAtEnd());
+                }
+            }
+
             ToolButton {
                 objectName: "showHiddenToggle"
                 label: ""
@@ -726,13 +739,14 @@ Item {
 
         ChoiceField {
             objectName: "monitoringOutputField"
-            anchors.left: parent.left
-            anchors.leftMargin: 35
+            anchors.left: footerActions.right
+            anchors.leftMargin: 6
             anchors.right: refreshMonitoring.left
             anchors.rightMargin: 6
             anchors.verticalCenter: parent.verticalCenter
-            label: qsTr("Monitor output")
-            labelWidth: 85
+            label: width >= 180 ? qsTr("Monitor output") : ""
+            labelWidth: width >= 180 ? 85 : 0
+            Accessible.name: qsTr("Monitor output")
             choices: panel.monitoringDevices.choices
             choiceLabels: panel.monitoringDevices.choiceLabels
             value: Document.monitoringOutput
@@ -742,6 +756,7 @@ Item {
         ToolButton {
             id: refreshMonitoring
             objectName: "refreshMonitoringOutputs"
+            width: 62
             anchors.right: parent.right
             anchors.rightMargin: 6
             anchors.verticalCenter: parent.verticalCenter

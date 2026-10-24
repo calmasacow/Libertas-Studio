@@ -4229,6 +4229,37 @@ int main(int argc, char** argv) {
                    "every fader has room to be dragged at the panel's docked size");
         }
 
+        {
+            QQuickItem* add = nullptr;
+            for (auto* button : collect(window->contentItem(), "addAudioOutput"))
+                if (button->isVisible()) add = button;
+            report(add != nullptr, "the mixer footer exposes + Output");
+            if (add) {
+                const auto before = document.projectForBindings().buses;
+                for (int i = 0; i < 2; ++i) {
+                    const auto at = add->mapToScene(QPointF(add->width()/2, add->height()/2));
+                    post(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+                    post(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+                    settle();
+                }
+                const auto& buses = document.projectForBindings().buses;
+                report(buses.size() == before.size() + 2 &&
+                           buses[buses.size()-2].kind == ldoc::BusKind::Track &&
+                           buses.back().kind == ldoc::BusKind::Track && buses.back().channels == 2 &&
+                           buses[buses.size()-2].name != buses.back().name &&
+                           std::ranges::any_of(document.audioBusChoices(), [&](const auto& choice) {
+                               return choice.toMap().value("id").toString() ==
+                                   QString::fromStdString(buses.back().id.to_string());
+                           }), "+ Output creates distinct stereo output channels available for encoding");
+                if (parser.isSet(shot_opt))
+                    grab().save(parser.value(shot_opt) + QStringLiteral("/audio-output-added.png"));
+                document.undo();
+                document.undo();
+                settle();
+                report(document.projectForBindings().buses == before,
+                       "each added output channel takes one undo step");
+            }
+        }
         document.addBus(QStringLiteral("Game"), QStringLiteral("submix"));
         settle();
         report(document.busesModel()->rowCount() == buses_before + 1, "a bus can be added");
